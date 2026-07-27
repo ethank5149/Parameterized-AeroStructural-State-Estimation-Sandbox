@@ -1,3 +1,5 @@
+% Foundational mathematical text on moving boundaries (Stefan problems). 
+% Covers historical and computational difficulties of actively tracking a melting heat shield interface during flight.
 @book{crank1984,
   author = {Crank, John},
   title = {Free and Moving Boundary Problems},
@@ -5,6 +7,7 @@
   year = {1984}
 }
 
+% Covers pitfalls of discrete mesh regeneration and the interpolation errors that occur when translating structural deformations to an aerodynamic grid.
 @book{shyy1996,
   author = {Shyy, Wei and Udaykumar, H. S. and Rao, Madhukar M. and Smith, Richard W.},
   title = {Computational Fluid Dynamics with Moving Boundaries},
@@ -12,6 +15,8 @@
   year = {1996}
 }
 
+% Definitive applied mathematics text for Chebyshev spectral methods. 
+% Justifies necessity of $C^\infty$ spatial continuity and why global spectral collocation vastly outpaces finite difference methods for quasi-static RHS matrices.
 @book{trefethen2000,
   author = {Trefethen, Lloyd N.},
   title = {Spectral Methods in MATLAB},
@@ -19,6 +24,8 @@
   year = {2000}
 }
 
+% Classic paper on the use of the Enthalpy Method. 
+% Proves that absorbing the latent heat of ablation into a smoothed enthalpy formulation eliminates the need for the computationally expensive front-tracking established by Crank.
 @article{voller1981,
   author = {Voller, V. R. and Cross, M.},
   title = {Accurate solutions of moving boundary problems using the enthalpy method},
@@ -29,6 +36,8 @@
   pages = {545-556}
 }
 
+% Genesis of adaptive Kalman filtering. 
+% Justifies the theoretical pedigree of using the innovation sequence ($\boldsymbol{\nu}_k$) to dynamically tune the covariance matrices.
 @article{mehra1970,
   author = {Mehra, R. K.},
   title = {Approaches to adaptive filtering},
@@ -39,6 +48,8 @@
   pages = {175-184}
 }
 
+% Gold standard for tracking targets in clutter.
+% Justifies using the squared Mahalanobis distance ($\gamma_k$) and the Chi-square threshold as a geometrically rigorous fault detector for the stage separation event.
 @book{barshalom2001,
   author = {Bar-Shalom, Yaakov and Li, Xiao-Rong and Kirubarajan, Thiagalingam},
   title = {Estimation with Applications to Tracking and Navigation},
@@ -46,6 +57,8 @@
   year = {2001}
 }
 
+% Considered the "Bible" of interceptor guidance.
+% Defines the Line-of-Sight (LOS) rate vector, formulating the Augmented Proportional Navigation (APN) law, and establishing the industry-standard methodology for Monte Carlo CEP covariance extraction. 
 @book{zarchan2012,
   author = {Zarchan, Paul},
   title = {Tactical and Strategic Missile Guidance},

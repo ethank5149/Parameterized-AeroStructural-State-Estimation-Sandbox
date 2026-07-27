@@ -1,3 +1,7 @@
+![Paper Status](https://img.shields.io/badge/Paper-Drafting-blue?style=for-the-badge)
+![Implementation](https://img.shields.io/badge/Code-Upcoming-lightgrey?style=for-the-badge)
+![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+
 # PASSES: Parameterized AeroStructural State-Estimation Sandbox
 
 A holistically coupled, end-to-end multidisciplinary flight-dynamics simulation, navigation, and closed-loop control framework designed to analyze multi-body continuum mechanics, non-linear filter convergence, and optimal guidance laws for civilian launch vehicles.
