@@ -1,0 +1,305 @@
+\documentclass[11pt,a4paper]{article}
+
+% --- Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath, amsfonts, amssymb, amsthm}
+\usepackage{bm} % Bold math
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{authblk} % For authors and affiliations
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{cleveref} % Smart referencing
+\usepackage[title,titletoc]{appendix}
+\usepackage[backend=biber, style=numeric]{biblatex}
+\addbibresource{references.bib}
+
+% --- Theorem Environments ---
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{assumption}[theorem]{Assumption}
+
+\numberwithin{equation}{section}
+
+% --- Custom Commands ---
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\prob}{\mathbb{P}}
+\newcommand{\diff}{\mathrm{d}}
+
+% --- Metadata ---
+\title{PASSES: A Unified, GPU-Accelerated Spectral Framework for Coupled Aeroelastic, Thermodynamic, and Stochastic GNC Flight Simulation}
+
+\author[1]{Ethan Knox\thanks{Email: \texttt{ethank5149@gmail.com}}}
+\affil[1]{Independent Researcher, Champaign, IL, USA}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+    The design and validation of atmospheric aerospace vehicles require the continuous evaluation of tightly coupled, multi-physics domains, including structural aeroelasticity, thermal ablation, and active Guidance, Navigation, and Control (GNC). Existing simulation frameworks rely heavily on discrete mesh interpolation and moving-boundary formulations, which frequently introduce numerical discontinuities and filter divergence during highly dynamic events, such as stage separation. This paper introduces PASSES, an end-to-end, high-fidelity flight simulation framework constructed entirely upon fixed-grid mathematical formulations to preserve $C^\infty$ continuity across the global state vector. 
+
+    To eliminate the necessity of front-tracking algorithms, thermal ablation is governed by an Enthalpy Method, while variable-stiffness aeroelastic dynamics are resolved via Chebyshev Spectral Collocation. The unified system of ordinary differential equations is integrated using the Method of Lines (MOL) via an RKF45 solver. To ensure navigation resilience during catastrophic transient shocks, the GNC loop employs an Extended Kalman Filter (EKF) featuring Innovation-Based Adaptive Estimation (IAE). By geometrically detecting separation anomalies in state-space via the squared Mahalanobis distance, the EKF dynamically scales its process noise utilizing a moving-window trace-ratio calculation, preventing divergence without blinding the sensor suite. Terminal recovery is executed via Augmented Proportional Navigation (APN) with gravity compensation. 
+
+    Crucially, the quasi-static nature of the framework's right-hand side (RHS) matrices allows the entire architecture to be deployed within a containerized environment and offloaded to CUDA-enabled GPU hardware. This enables the parallelized execution of massive Monte Carlo batches, culminating in the eigenvalue decomposition of bivariate normal spatial covariance matrices to extract highly rigorous Circular Error Probable (CEP) and 95\% containment radii ($R_{95}$). Ultimately, PASSES provides a mathematically elegant, highly scalable blueprint for evaluating stochastic aerospace performance bounds.
+    \\[2ex]
+    \textbf{Keywords:} Spectral Collocation, Multi-Physics Simulation, Method of Lines, Innovation-Based Adaptive Estimation (IAE), Extended Kalman Filter, Augmented Proportional Navigation, Monte Carlo Covariance Matrix, Applied Mathematics.
+    \\[1ex]
+    \textbf{AMS Subject Classification:} 65M70, 93E11, 74F10, 80A22.
+\end{abstract}
+
+\pagebreak
+
+\section{Introduction}
+\label{sec:intro}
+The design and validation of atmospheric aerospace vehicles require the continuous, high-fidelity evaluation of tightly coupled, multi-physics domains. During atmospheric maneuvering and terminal descent, a vehicle is subjected to severe aerodynamic loading, thermodynamic heating, and stochastic environmental disturbances. Historically, flight simulation architectures have compartmentalized these domains, treating structural aeroelasticity, thermal ablation, and Guidance, Navigation, and Control (GNC) as isolated discrete solvers. While effective for steady-state analysis, this discrete segregation introduces severe numerical friction during highly dynamic flight events. Traditional approaches heavily rely on moving-boundary formulations---such as front-tracking algorithms for melting heat shields \cite{crank1984} and discrete mesh regeneration for structural deformation \cite{shyy1996}. These moving-mesh paradigms inevitably introduce spatial interpolation errors, numerical discontinuities, and substantial computational overhead, fundamentally precluding the rapid execution of large-scale Monte Carlo stochastic batch analysis.
+
+To resolve these computational bottlenecks, this paper introduces the PASSES (Performance Analysis and Stochastic Simulation for Exo-atmospheric and Sub-orbital systems) framework. PASSES reimagines the multi-physics flight environment by completely eliminating moving boundaries and discrete interpolation algorithms. Instead, the framework relies entirely on fixed-domain, mathematically continuous formulations. By utilizing the Enthalpy Method \cite{voller1981}, the phase-change ablation problem is absorbed into a smoothed thermodynamic state, eliminating the need to explicitly track the receding surface. Concurrently, the vehicle's variable-stiffness structural bending dynamics are resolved utilizing Chebyshev Spectral Collocation \cite{trefethen2000}. By treating the vehicle as a unified system of ordinary differential equations integrated via the Method of Lines (MOL), PASSES achieves $C^\infty$ spatial continuity across a global state vector, $\mathbf{X}_{global}$, propagated forward in time by an RKF45 solver. 
+
+However, a mathematically rigorous physics engine is insufficient if the discrete GNC logic cannot survive catastrophic transient shocks. During stage separation, instantaneous mass loss and structural ringing routinely cause traditional Extended Kalman Filters (EKF) to diverge due to severe violations of the theoretical measurement covariance boundary. Rather than employing arbitrary blind multipliers, the PASSES GNC architecture implements Innovation-Based Adaptive Estimation (IAE) \cite{mehra1970}. By geometrically evaluating the EKF innovation sequence in state-space via the squared Mahalanobis distance \cite{barshalom2001}, the filter natively detects physical anomalies and dynamically scales the process noise matrix using a moving-window trace-ratio calculation. Once the separation transient dampens, the vehicle executes terminal recovery utilizing Augmented Proportional Navigation (APN) with gravity compensation, ensuring robust intersection with the targeted coordinates \cite{zarchan2012}.
+
+Crucially, because the spectral and thermodynamic formulations rely on quasi-static Right-Hand Side (RHS) matrices, the PASSES architecture avoids mid-flight matrix inversions. This mathematical elegance enables the entire framework to be deployed efficiently within a containerized VS Code Docker environment. Furthermore, this vectorization strategy allows the massive linear algebra formulations required for Monte Carlo batch execution to be offloaded directly to CUDA-enabled hardware. By leveraging an RTX 3090 GPU for parallelized stochastic initialization, the framework rapidly generates statistically rigorous dispersion footprints, culminating in the eigenvalue decomposition of bivariate normal covariance matrices to extract highly accurate Circular Error Probable (CEP) and 95\% containment radii ($R_{95}$).
+
+\section{Mathematical Foundations: The Unified Physics Engine}
+\label{sec:physics}
+
+The core philosophy of the PASSES framework is the strict avoidance of discrete structural interpolation and dynamically regenerating grids. To achieve a quasi-static right-hand side (RHS) suitable for rapid integration, the vehicle’s physical state must be mapped onto a continuous, fixed-domain spectral space. 
+
+\subsection{Aeroelastic Dynamics and Spectral Collocation}
+The structural bending dynamics of the vehicle are governed by the Euler-Bernoulli beam theory. During atmospheric flight, the vehicle experiences highly non-uniform mass distribution $m(x)$ and variable bending stiffness $EI(x)$ due to fuel consumption, localized aerodynamic heating, and stage configuration. The governing partial differential equation (PDE) for the transverse deflection $w(x,t)$ is defined as:
+\begin{equation}
+\frac{\partial^2}{\partial x^2} \left( EI(x) \frac{\partial^2 w(x,t)}{\partial x^2} \right) + m(x) \frac{\partial^2 w(x,t)}{\partial t^2} = q(x,t)
+\end{equation}
+where $q(x,t)$ represents the localized aerodynamic forcing function. Traditional finite element methods (FEM) resolve this by discretizing the vehicle into interconnected nodes, requiring continuous inversion of the mass and stiffness matrices as boundary conditions shift. 
+
+Instead, PASSES utilizes Chebyshev Spectral Collocation to approximate the structural state. The continuous spatial domain $x \in [-1, 1]$ is discretized at the Gauss-Lobatto collocation points, clustering the nodes near the vehicle's boundaries to prevent the Runge phenomenon. The spatial derivatives are computed through global differentiation matrices ($\mathbf{D}$), mapping the continuous PDE into a discrete system of ordinary differential equations:
+\begin{equation}
+\mathbf{M} \mathbf{\ddot{w}} + \mathbf{K} \mathbf{w} = \mathbf{Q}
+\end{equation}
+where $\mathbf{M} = \text{diag}(m(x))$ and $\mathbf{K} = \mathbf{D}^2 \text{diag}(EI(x)) \mathbf{D}^2$. Because the differentiation matrices are computed globally over the fixed Chebyshev domain, spatial continuity ($C^\infty$) is intrinsically preserved. 
+
+To couple the highly transient aerodynamic forcing function $q(x,t)$ to this fixed spectral grid without inducing localized numerical shocks, the framework employs a localized Galerkin projection matrix. This mapping systematically projects the external aerodynamic and thrust-vectoring pressure distributions onto the spectral collocation points, scaling the localized forces by the Chebyshev weighting functions. By employing this algebraic smoothing, the complex fluid-structure interaction is stabilized, ensuring that the mass ($\mathbf{M}$) and stiffness ($\mathbf{K}$) matrices remain strictly quasi-static throughout the flight regime.
+
+\subsection{Thermodynamics and Ablation via the Enthalpy Method}
+
+During atmospheric descent, the vehicle's heat shield is subjected to severe aerodynamic heating, initiating thermal ablation. In standard finite difference or finite volume models, ablation is treated as a classic Stefan problem. This requires a front-tracking algorithm to continuously calculate the recession rate of the boundary, necessitating the dynamic regeneration of the spatial mesh as the physical domain shrinks.
+
+To retain the fixed-domain architecture established by the spectral structural model, PASSES utilizes a smoothed Enthalpy Method. Rather than tracking a moving geometric interface, the phase-change physics are absorbed directly into a singular thermodynamic state variable: the volumetric enthalpy, $H(x,t)$. 
+
+The transient thermal response of the vehicle is governed by the energy conservation equation:
+\begin{equation}
+\frac{\partial H}{\partial t} = \frac{\partial}{\partial x} \left( k(T) \frac{\partial T}{\partial x} \right)
+\end{equation}
+
+The framework introduces a smoothed ablation fraction, $\phi(T)$, utilizing a hyperbolic tangent function over a narrow computational temperature bandwidth, $\Delta T$:
+\begin{equation}
+\phi(T) = \frac{1}{2} \left[ 1 + \tanh\left(\frac{T - T_m}{\Delta T}\right) \right]
+\end{equation}
+
+The corresponding continuous enthalpy-temperature mapping becomes:
+\begin{equation}
+H(T) = \int_{T_{ref}}^{T} \rho c_p(s) ds + \rho L \phi(T)
+\end{equation}
+
+By defining the thermodynamic state via $H(T)$, the melting interface is no longer a discrete moving boundary, but rather a steep, continuous gradient propagating through the fixed spectral grid. 
+
+\subsection{The Global State Vector and Method of Lines (MOL)}
+
+With both the aeroelastic and thermodynamic PDEs mapped onto a unified, fixed Chebyshev spatial domain, the vehicle's complete internal state can be concatenated into a single global vector, $\mathbf{X}_{global}$. 
+
+Let $\mathbf{w}$ represent the vector of structural deflections at the collocation points, and $\mathbf{H}$ represent the vector of nodal enthalpies. The continuous physical framework is thus reduced to a system of coupled ordinary differential equations (ODEs):
+\begin{equation}
+\mathbf{X}_{global} = \begin{bmatrix} \mathbf{w} \\ \mathbf{\dot{w}} \\ \mathbf{H} \end{bmatrix}
+\end{equation}
+
+\begin{equation}
+\mathbf{\dot{X}}_{global} = \begin{bmatrix} \mathbf{\dot{w}} \\ \mathbf{M}^{-1}(\mathbf{Q} - \mathbf{K}\mathbf{w}) \\ \mathbf{D} \left( \mathbf{k}(T) \circ (\mathbf{D}\mathbf{T}) \right) \end{bmatrix}
+\end{equation}
+where $\mathbf{D}$ is the Chebyshev spectral differentiation matrix, and $\circ$ denotes the element-wise Hadamard product. 
+
+\section{Guidance, Navigation, and Control (GNC) Architecture}
+\label{sec:gnc}
+
+The GNC system operates entirely on discrete-time intervals, pulling noisy sensor data to estimate the continuous state vector $\mathbf{X}_{global}$, and generating actuator commands to close the guidance loop.
+
+\subsection{Stochastic Navigation and Innovation-Based Adaptive Estimation (IAE)}
+
+The baseline navigation filter is an Extended Kalman Filter (EKF). During stage separation, the innovation sequence ($\boldsymbol{\nu}_k = \mathbf{z}_k - \mathbf{h}(\hat{\mathbf{x}}_{k\vert{}k-1})$) wildly exceed the theoretical measurement covariance boundary $\mathbf{S}_k$. PASSES implements IAE by calculating the squared Mahalanobis distance ($\gamma_k$):
+\begin{equation}
+\gamma_k = \boldsymbol{\nu}_k^T \mathbf{S}_k^{-1} \boldsymbol{\nu}_k
+\end{equation}
+
+When $\gamma_k$ breaches the Chi-square threshold, the process noise matrix is dynamically scaled:
+\begin{equation}
+\alpha_k = \max \left(1, \frac{\text{tr}(\hat{\mathbf{C}}_k - \mathbf{R}_k)}{\text{tr}(\mathbf{H}_k \mathbf{P}_{k\vert{}k-1}\mathbf{H}_k^T)} \right)
+\end{equation}
+\begin{equation}
+\mathbf{Q}_{k}^* = \alpha_k \mathbf{Q}_{nominal}
+\end{equation}
+
+\subsection{Terminal Closed-Loop Guidance via Aerodynamically-Compensated APN}
+
+Once the navigation filter has stabilized the state estimate following separation, the flight computer transitions to the terminal recovery phase. Standard Augmented Proportional Navigation (APN) inherently assumes a constant closing velocity, resulting in a linear time-to-go ($t_{go}$) prediction. For an exo-atmospheric vehicle executing a terminal atmospheric descent, thermal ablation and massive aerodynamic drag induce highly non-linear deceleration profiles. Relying on a linear $t_{go}$ under these conditions forces the guidance loop to underestimate the remaining flight time, resulting in delayed actuator commands and severe terminal saturation.
+
+To resolve this, PASSES implements Aerodynamically-Compensated APN utilizing a Quadratic Time-to-Go prediction. By extracting the filtered closing acceleration estimate ($\hat{A}_c = \dot{\hat{V}}_c$) directly from the stabilized EKF state vector, the kinematic range equation is modeled as a quadratic:
+\begin{equation}
+    \frac{1}{2}\hat{A}_c t_{go}^2 + \hat{V}_c t_{go} - \Vert{}\mathbf{r}_{LOS}\Vert{} = 0
+\end{equation}
+Solving for the positive root yields a velocity-compensated temporal boundary:
+\begin{equation}
+    t_{go} = \frac{-\hat{V}_c + \sqrt{\hat{V}_c^2 + 2 \hat{A}_c \Vert{}\mathbf{r}_{LOS}\Vert{}}}{\hat{A}_c}
+\end{equation}
+
+By relying strictly on the EKF-derived $\hat{A}_c$, the framework maintains a rigorous isolation between the deterministic physical environment and the discrete stochastic flight computer. The updated $t_{go}$ fundamentally scales the Line-of-Sight (LOS) rotation rate vector ($\boldsymbol{\dot{\lambda}}_{LOS}$):
+\begin{equation}
+    \boldsymbol{\dot{\lambda}}_{LOS} = \frac{\mathbf{r}_{LOS} \times \mathbf{V}_r}{\Vert{}\mathbf{r}_{LOS}\Vert{}^2}
+\end{equation}
+
+The final ideal commanded lateral acceleration ($\mathbf{a}_n$) is formulated strictly orthogonal to the relative velocity vector, incorporating both the aerodynamically-scaled navigation gain and a feed-forward gravity compensation term:
+\begin{equation}
+    \mathbf{a}_n = N' \cdot \mathbf{V}_r \times \boldsymbol{\dot{\lambda}}_{LOS} + \frac{N'}{2} \left[ \mathbf{g} - \left(\mathbf{g} \cdot \frac{\mathbf{r}_{LOS}}{\Vert{}\mathbf{r}_{LOS}\Vert{}}\right)\frac{\mathbf{r}_{LOS}}{\Vert{}\mathbf{r}_{LOS}\Vert{}} \right]
+\end{equation}
+where $N'$ is the dynamically scaled effective navigation ratio.
+\subsection{Actuator Mapping and TVC Saturation}
+The Cartesian acceleration command $\mathbf{a}_n$ is translated into a Thrust Vector Control (TVC) nozzle deflection ($\delta$):
+\begin{equation}
+\delta_{command} \approx \arcsin \left( \frac{m(t) \Vert{}\mathbf{a}_{n, body}\Vert{}}{\Vert{}\mathbf{F}_{thrust}\Vert{}} \right)
+\end{equation}
+
+The command is passed through a saturation filter to maintain physical realism:
+\begin{equation}
+\delta_c(t) = \max(-\delta_{max}, \min(\delta_{max}, \delta_{command}))
+\end{equation}
+
+\section{Computational Architecture and Hardware Optimization}
+\label{sec:architecture}
+The mathematical structure of PASSES allows for significant hardware optimization. By avoiding mid-flight matrix inversions through quasi-static RHS formulations, the framework is well-suited for GPU acceleration. Linear algebra operations, including the RKF45 integration steps and EKF updates, are offloaded to CUDA kernels, enabling massive parallelization for Monte Carlo simulations.
+
+\section{Conclusion}
+\label{sec:conclusion}
+This paper presented PASSES, a unified, GPU-accelerated spectral framework for aerospace vehicle simulation. By utilizing fixed-domain spectral collocation and the Enthalpy Method, we eliminated the numerical instabilities associated with moving boundaries. The integration of an adaptive EKF ensured robustness during transient flight events, while APN provided precise terminal guidance. Future work will focus on expanding the framework to 6-DOF rigid body dynamics and incorporating hypersonic aerodynamic heating models.
+
+\section*{Acknowledgments}
+We thank the anonymous reviewers for their valuable feedback.
+
+\pagebreak
+
+\printbibliography
+
+\pagebreak
+
+\begin{appendices}
+
+\section{Expanded Mathematical Derivations}
+\label{app:math}
+
+\subsection{Chebyshev Collocation Matrices}
+The spatial domain $x \in [a, b]$ is mapped to the canonical domain $\xi \in [-1, 1]$ via the linear transformation $\xi = \frac{2(x-a)}{b-a} - 1$. The Gauss-Lobatto points are defined as:
+\begin{equation}
+    \xi_j = \cos\left(\frac{\pi j}{N}\right), \quad j = 0, 1, \dots, N
+\end{equation}
+The entries of the first-order differentiation matrix $\mathbf{D}$ are given by:
+\begin{equation}
+    D_{ij} = \begin{cases} 
+        \frac{c_i}{c_j} \frac{(-1)^{i+j}}{\xi_i - \xi_j} & i \neq j \\
+        -\frac{\xi_i}{2(1-\xi_i^2)} & 1 \leq i = j \leq N-1 \\
+        \frac{2N^2+1}{6} & i = j = 0 \\
+        -\frac{2N^2+1}{6} & i = j = N
+    \end{cases}
+\end{equation}
+where $c_0 = c_N = 2$ and $c_i = 1$ otherwise. Higher-order derivatives are obtained via matrix multiplication, e.g., $\mathbf{D}^{(2)} = \mathbf{D}^2$.
+
+Because the differentiation matrix $\mathbf{D}$ is formulated on the canonical domain $\xi \in [-1, 1]$, physical spatial derivatives on the domain $x \in [a, b]$ must be scaled by the Jacobian of the linear transformation. Thus, the physical first-order and second-order derivative matrices are defined as:
+\begin{equation}
+    \mathbf{D}_x = \left(\frac{2}{b-a}\right) \mathbf{D}, \quad \mathbf{D}_x^{(2)} = \left(\frac{2}{b-a}\right)^2 \mathbf{D}^2
+\end{equation}
+
+\subsection{EKF Jacobians and Linearization}
+The state transition matrix $\boldsymbol{\Phi}_k$ and observation matrix $\mathbf{H}_k$ are derived by linearizing the non-linear continuous plant $\dot{\mathbf{x}} = \mathbf{f}(\mathbf{x}, \mathbf{u})$ and discrete measurement model $\mathbf{z}_k = \mathbf{h}(\mathbf{x}_k)$:
+\begin{equation}
+    \mathbf{F}(t) = \left. \frac{\partial \mathbf{f}}{\partial \mathbf{x}} \right|_{\hat{\mathbf{x}}(t)}
+\end{equation}
+To map this continuous-time Jacobian to the discrete-time state transition matrix over the integration interval $\Delta t$, a first-order Taylor expansion of the matrix exponential is utilized:
+\begin{equation}
+    \boldsymbol{\Phi}_k = \exp(\mathbf{F} \Delta t) \approx \mathbf{I} + \mathbf{F} \Delta t + \frac{1}{2}\mathbf{F}^2 \Delta t^2
+\end{equation}
+The discrete observation matrix simply follows the spatial partial derivatives evaluated at the prior estimate:
+\begin{equation}
+    \mathbf{H}_k = \left. \frac{\partial \mathbf{h}}{\partial \mathbf{x}} \right|_{\hat{\mathbf{x}}_{k|k-1}}
+\end{equation}
+
+\subsection{Enthalpy Smoothing Function and Apparent Heat Capacity}
+The smoothed ablation fraction $\phi(T)$ maps the phase change over a temperature bandwidth $\Delta T$. To integrate the thermal PDE, the derivative of enthalpy with respect to temperature yields the apparent heat capacity, $C_{app}(T)$:
+\begin{equation}
+    C_{app}(T) = \frac{\partial H}{\partial T} = \rho c_p(T) + \rho L \frac{\partial \phi}{\partial T}
+\end{equation}
+Taking the derivative of the hyperbolic tangent smoothing function yields:
+\begin{equation}
+    \frac{\partial \phi}{\partial T} = \frac{1}{2 \Delta T} \text{sech}^2\left(\frac{T - T_m}{\Delta T}\right)
+\end{equation}
+As $\Delta T \to 0$, this derivative strictly converges to the Dirac delta function $\delta(T - T_m)$, recovering the exact analytic Stefan problem limit. Maintaining a finite $\Delta T > 0$ bounds the gradient, ensuring the RKF45 solver does not infinitely stall at the ablation threshold.
+
+\section{Computational Architecture and Reproducibility}
+\label{app:comp}
+
+\subsection{Containerized Environment via GitOps}
+To guarantee numerical reproducibility and isolate environmental dependencies, the PASSES framework is fully containerized. Deployment is managed via a Git-tracked Docker Compose stack and the VS Code DevContainer specification. By establishing the build context atop an \texttt{nvidia/cuda:12.x-devel} base image, the environment ensures deterministic compilation of the underlying C++ linear algebra backends and identical RKF45 solver behavior regardless of the host machine.
+
+\subsection{CUDA Memory Architecture and Parallelization}
+Because the mass ($\mathbf{M}$) and stiffness ($\mathbf{K}$) matrices are mathematically stabilized as strictly quasi-static, they are initialized exactly once and bound directly to the global device memory of the execution hardware (e.g., NVIDIA RTX 3090). 
+
+During a massive Monte Carlo batch execution, individual thread blocks are instantiated where each distinct GPU thread represents a completely independent flight simulation trial. The Chebyshev differentiation matrix $\mathbf{D}$, which is accessed constantly during the spatial derivative calculations of the MOL integration, is pre-loaded into the localized shared memory of each streaming multiprocessor. This memory coalescence drastically reduces VRAM bottlenecking, allowing thousands of heavily coupled, stochastic multi-physics simulations to be solved simultaneously in real-time.
+
+\section{Monte Carlo Statistical Methodology}
+\label{app:stats}
+
+\subsection{Eigenvalue Decomposition for Dispersion Ellipses}
+The terminal spatial covariance matrix $\boldsymbol{\Sigma}$ is decomposed as:
+\begin{equation}
+    \boldsymbol{\Sigma} = \mathbf{V} \boldsymbol{\Lambda} \mathbf{V}^T
+\end{equation}
+where the eigenvalues in $\boldsymbol{\Lambda}$ define the semi-major and semi-minor axes of the 1-$\sigma$ dispersion ellipse. The $R_{95}$ radius is then derived by scaling these axes by $\sqrt{-2 \ln(1 - 0.95)} \approx 2.447$.
+
+\subsection{Bivariate Normal Assumptions}
+Impact dispersions are modeled as a bivariate normal distribution in the tangent plane. The validity of this assumption is verified via the Shapiro-Wilk test on the Monte Carlo sample population.
+
+\section{Nomenclature}
+\label{app:nomenclature}
+
+\subsection{Roman Symbols}
+\begin{description}
+    \item[$A$] State transition matrix
+    \item[$\mathbf{D}$] Spectral differentiation matrix
+    \item[$EI$] Bending stiffness
+    \item[$H$] Volumetric enthalpy
+    \item[$m$] Mass per unit length
+    \item[$N$] Navigation ratio
+    \item[$\mathbf{Q}$] Forcing vector or Process noise matrix
+    \item[$T$] Temperature
+\end{description}
+
+\subsection{Greek Symbols}
+\begin{description}
+    \item[$\alpha$] Adaptive scaling factor
+    \item[$\gamma$] Mahalanobis distance
+    \item[$\delta$] TVC deflection angle
+    \item[$\boldsymbol{\nu}$] Innovation vector
+    \item[$\phi$] Smoothed phase fraction
+\end{description}
+
+\end{appendices}
+
+\end{document}
