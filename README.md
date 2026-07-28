@@ -10,34 +10,41 @@ A unified, GPU-accelerated spectral framework for coupled aeroelastic, thermodyn
 
 PASSES is an integrated computational suite developed to model the full atmospheric, orbital, and atmospheric entry life cycle of multi-stage vehicles. To eliminate numerical friction and interpolation errors common in moving-mesh simulations, the framework unifies distinct domains of aerospace mathematics into a singular, fixed-grid software sandbox:
 
-1. **6-DOF Fixed-Grid Multi-Physics:** Modeling of non-linear structural flexing via **Chebyshev Spectral Collocation** for 1D beams and 2D plates. Kinematics are tracked in 6-DOF using quaternions to avoid gimbal lock during extreme atmospheric maneuvering.
-2. **Hypersonic Aerothermodynamics:** Analytical closure of aerodynamic loops using **Modified Newtonian Theory** ($C_p \propto \sin^2 \delta_c$) and **Sutton-Graves Convective Heating** for stagnation point heat flux.
+1. **6-DOF Multi-Physics (Bivariate Spectral Collocation):** Modeling of non-linear structural flexing via 2D tensor-product Chebyshev grids. Kinematics are tracked in 6-DOF using quaternions to avoid gimbal lock during extreme atmospheric maneuvering.
+2. **Hypersonic Aerothermodynamics:** Analytical closure of aerodynamic loops using **Modified Newtonian Theory** ($C_p = C_{p,max} \sin^2 \delta_c$) and **Sutton-Graves Convective Heating** for stagnation point heat flux.
 3. **Phase-Change Thermodynamics (Enthalpy Method):** Simulation of moving-boundary ablation physics without mesh regeneration, utilizing a smoothed Enthalpy Method for $C^\infty$ continuity.
-4. **Resilient GNC & Predictor-Corrector Guidance:** Implementation of an **Innovation-Based Adaptive Estimation (IAE)** EKF for state estimation, coupled with a GPU-accelerated **Predictor-Corrector** guidance loop for energy management during long-duration hypersonic glides.
-5. **Orbital Perturbations & FOBS:** Integration of high-fidelity planetary gravitational harmonics ($J_2$ through $J_4$) and non-inertial reference frame kinematics for partial-orbit trajectories.
+4. **Resilient GNC & Predictor-Corrector Guidance:** Implementation of an **Innovation-Based Adaptive Estimation (IAE)** EKF for state estimation, coupled with a GPU-accelerated **Predictor-Corrector** guidance loop featuring **Exterior Penalty Functions** for autonomous thermal boundary management.
+5. **Orbital Mechanics & "Physics Idle":** Integration of $J_2$-perturbed Keplerian orbital coast phases with a continuous transition from atmospheric flight to exo-atmospheric orbital mechanics within a single, unbroken integration run.
 
 ---
 
 ## Architectural Breakdown & Core Mathematics
 
-### 1. Expanded 6-DOF Global State Vector
-To support waveriders and skipping trajectories, the global state vector $\mathbf{X}_{global}$ incorporates full rigid-body kinematics alongside spectral structural modes and nodal enthalpies:
-$$\mathbf{X}_{global} = [\mathbf{r}_E, \mathbf{v}_E, \mathbf{q}, \boldsymbol{\omega}_B, m_{bulk}, \mathbf{w}, \mathbf{\dot{w}}, \mathbf{H}]^T$$
-Where $\mathbf{q}$ is the attitude quaternion and $\boldsymbol{\omega}_B$ is the body-frame angular velocity.
+### 1. 2D Spectral Plate Dynamics (Aeroelasticity)
+For lifting bodies and waveriders, PASSES elevates structural dynamics from 1D beams to **2D Spectral Plates** using bivariate Chebyshev grids $(\xi, \eta) \in [-1, 1]$. Using **Kronecker tensor products ($\otimes$)**, the framework constructs global differentiation matrices that govern longitudinal bending and torsional twisting simultaneously:
 
-### 2. Spectral Plate Expansion (2D Aeroelasticity)
-For lifting bodies and HGVs, PASSES elevates structural dynamics from 1D beams to **2D Spectral Plates** (Kirchhoff-Love theory) using bivariate Chebyshev grids ($\xi, \eta \in [-1, 1]$). This captures complex torsional modes and asymmetric flutter induced by bank-angle modulation:
-$$\mathbf{M} \mathbf{\ddot{w}} + \mathbf{K} \mathbf{w} = \mathbf{Q}_{aero} + \mathbf{Q}_{thrust}$$
+$$\mathbf{K} = \mathbf{D}_x^2 \mathbf{D}_{11} \mathbf{D}_x^2 + 2 \mathbf{D}_{xy} \mathbf{D}_{66} \mathbf{D}_{xy} + \mathbf{D}_y^2 \mathbf{D}_{22} \mathbf{D}_y^2$$
 
-### 3. Hypersonic Forcing & Sutton-Graves Heating
-Aerodynamic and thermal loads are calculated analytically at every spectral node, ensuring global differentiability:
-*   **Pressure Distribution:** $C_p = C_{p,max} \sin^2 \delta_c$ (Modified Newtonian Flow)
-*   **Thermal Flux:** $\dot{q}_{conv} = k \sqrt{\rho} V_r^3$ (Sutton-Graves Stagnation Heating)
+Where $\mathbf{D}_{11}$, $\mathbf{D}_{22}$, and $\mathbf{D}_{66}$ represent the anisotropic flexural rigidity tensors (Knox-Xi tensors).
 
-### 4. GNC: Adaptive EKF & Predictor-Corrector Guidance
-The GNC architecture combines high-frequency state estimation with real-time trajectory optimization:
-*   **IAE-EKF:** Monitors the **Squared Mahalanobis Distance** ($\gamma_k$) to detect separation shocks or plume impingement, dynamically scaling process noise $\mathbf{Q}_k$ via trace-ratio calculations.
-*   **Shadow Physics Predictor:** For HGV glide phases, the flight computer calls a "shadow" version of the GPU-accelerated PASSES engine to project the vehicle footprint forward and iteratively adjust bank-angle commands for optimal energy management.
+### 2. Hypersonic Forcing & Sutton-Graves Heating
+Aerodynamic and thermal loads are calculated analytically at every spectral node:
+*   **Pressure Distribution:** $C_p(\xi, \eta) = C_{p,max} \sin^2(\delta_c(\xi, \eta))$
+*   **Thermal Flux:** $\dot{q}_s = K \sqrt{\rho_\infty / R_{eff}} \vert{}\mathbf{v}_\infty\vert{}^3$ (Sutton-Graves Stagnation Heating)
+
+Local incidence angles $\delta_c$ are mapped to the deformed surface normal $\mathbf{n}(\xi, \eta, t)$ to capture the coupling between structural flexing and aerothermal loading.
+
+### 3. Predictor-Corrector Guidance & Thermal Penalties
+The HGV guidance suite utilizes a **Shadow Physics Predictor** (a 3-DOF version of the GPU-accelerated engine) to project the footprint forward. To enforce thermal limits ($\dot{q}_{max}$), an **Exterior Penalty Function** ($\Phi_{heat}$) is mapped into the downrange error space:
+
+$$\tilde{R}_{pred}(\mathbf{u}) = R_{pred}(\mathbf{u}) - W_{heat} \Phi_{heat}(\mathbf{u})$$
+
+This "virtual undershoot" tricks the Secant Corrector into aggressively reducing bank angles to steer the vehicle toward cooler, lower-density atmospheric regimes.
+
+### 4. Orbital Coast & Reentry (The "Physics Idle")
+During the transition to LEO (Karman line), the RKF45 solver detects the decay of dynamic pressure and automatically expands its integration step size ($\Delta t$). The framework propagates $J_2$-perturbed orbital mechanics until the de-orbit burn:
+
+$$\mathbf{g}(\mathbf{r}) = -\frac{\mu}{\vert{}\mathbf{r}\vert{}^3} \mathbf{r} + \mathbf{g}_{J_2}(\mathbf{r})$$
 
 ---
 
