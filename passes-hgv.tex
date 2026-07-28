@@ -50,53 +50,367 @@
 \maketitle
 
 \begin{abstract}
-
+This paper presents PASSES-HGV, an open-source, continuous mathematical framework that expands the original fixed-grid spectral formulation into a full 6-Degree-of-Freedom (6-DOF) hypersonic glide and Fractional Orbital Bombardment System (FOBS) architecture. By replacing traditional discrete finite element methods and decoupled aerodynamic look-up tables with a 2D bivariate Chebyshev tensor-product space and Kronecker product operators, the framework maintains $C^\infty$ continuity across complex waverider geometries. Anisotropic flexural rigidity and localized torsional flutter are governed continuously across the planform, while a coupled, unclassified aerothermodynamic model links modified Newtonian pressure and Sutton-Graves convective heating directly to a smoothed enthalpy-based ablation matrix. To ensure autonomous trajectory optimization, an embedded numerical Predictor-Corrector guidance algorithm utilizes a novel exterior penalty function mapped directly into the downrange error space, forcing the shadow solver to respect convective heating limits without disrupting the rapid Jacobian convergence. Finally, the integration architecture handles a continuous physics "idle" during the Karman line transition, propagating a $J_2$-perturbed Keplerian orbital coast before re-engaging quaternion kinematics for the terminal hypersonic reentry phase—all within a single, unbroken, GPU-accelerated numerical integration run.
 \end{abstract}
 
 \pagebreak
 
 \section{Introduction}
 \label{sec:intro}
+The modeling and simulation of Hypersonic Glide Vehicles (HGVs) and Fractional Orbital Bombardment Systems (FOBS) present a highly coupled, multi-physics challenge that fundamentally strains traditional computational aerospace methods. Legacy trajectory and aeroelastic analysis often relies on discrete Finite Element Methods (FEM) and rigidly decoupled aerodynamic look-up tables. While effective for localized, static structural validation, these discrete methodologies introduce discontinuous boundary conditions, require mid-flight matrix inversions, and mandate prohibitively long computational wall-times. This renders them highly sub-optimal for the rapid, large-scale Monte-Carlo dispersion studies required in modern trajectory design and autonomous guidance validation.
+
+This manuscript introduces PASSES-HGV, a comprehensive expansion of the original spectral multi-physics framework. By elevating the core fixed-grid, quasi-static architecture to a full 6-Degree-of-Freedom (6-DOF) kinematic environment, this framework establishes a continuous mathematical pipeline capable of seamlessly simulating lifting-body aerodynamics and exo-atmospheric orbital mechanics. To circumvent the computational bottlenecks of traditional meshing, the HGV structural and thermodynamic domains are mapped onto a 2D bivariate Chebyshev tensor product space. The complex, direction-dependent torsional and transverse bending modes inherent to waverider geometries are governed continuously by the Knox-Xi tensor, ensuring an exact, $C^\infty$ differentiable representation of anisotropic flexural rigidity across the entire vehicle planform.
+
+Furthermore, this framework integrates a fully autonomous, unclassified hypersonic aerothermodynamic model. By coupling modified Newtonian flow approximations and Sutton-Graves convective heating directly to the structural state vector, the right-hand side forcing operators remain perfectly continuous and suitable for massive GPU acceleration. Navigational control is achieved via an embedded numerical Predictor-Corrector guidance algorithm utilizing continuous exterior penalty functions, allowing the vehicle to actively manage kinetic energy while autonomously respecting strict thermal and skip-out constraints. Ultimately, PASSES-HGV demonstrates the capability to execute an unbroken, highly parallelized numerical integration spanning from a dynamic atmospheric boost phase, through a $J_2$-perturbed fractional Keplerian orbit, and deep into the extreme aerothermal regime of hypersonic reentry.
+
 
 \section{The Expanded Global State Vector}
 \label{sec:global_state_vector}
-To handle skipping trajectories, waverider aerodynamics, and orbital mechanics, the vehicle can no longer be treated as a purely axisymmetric point-mass with 1D bending. The global state vector $\mathbf{X}_{global}$ must be expanded to full 6-Degree-of-Freedom (6-DOF) rigid body kinematics.
-\begin{itemize}
-    \item \textbf{Attitude Representation:} We will need to introduce a quaternion vector $\mathbf{q} = [q_0, q_1, q_2, q_3]^T$ into the state to avoid gimbal lock during extreme atmospheric maneuvering and partial-orbit insertion.
-    \item \textbf{The New Vector:} The state expands from $[\mathbf{r}_E, \mathbf{v}_E, m_{bulk}, \mathbf{w}, \mathbf{\dot{w}}, \mathbf{H}]^T$ to include the quaternion $\mathbf{q}$ and the body-frame angular velocity $\boldsymbol{\omega}_B$.
-\end{itemize}
 
+\subsection{The 6-DOF Attitude State}
+To prevent singularity issues (gimbal lock) when the HGV executes aggressive, near-vertical dive maneuvers or exo-atmospheric tumbles, we parameterize the vehicle's attitude using a unit quaternion $\mathbf{q} = [q_0, q_1, q_2, q_3]^T$, where $q_0$ is the scalar component.
+
+The time evolution of the attitude is coupled to the body-frame angular velocity $\boldsymbol{\omega}_B = [p, q, r]^T$ via the quaternion kinematic differential equation:
+
+$$\dot{\mathbf{q}} = \frac{1}{2} \mathbf{Q}(\boldsymbol{\omega}_B) \mathbf{q}$$
+
+where $\mathbf{Q}(\boldsymbol{\omega}_B)$ is the skew-symmetric matrix multiplier for the angular rates. This differential equation is integrated concurrently with the structural state $\mathbf{w}$ within the RKF45 solver.
+
+\subsection{The Direction Cosine Matrix (DCM)}
+To calculate aerodynamic forces, we must transform the Earth-relative freestream velocity vector, $\mathbf{v}_\infty$, from the inertial frame (or Earth-Centered Earth-Fixed frame) into the vehicle's body frame.
+
+We map the quaternion $\mathbf{q}$ to the standard rotation matrix, $\mathbf{T}_I^B(\mathbf{q})$:
+
+$$\mathbf{T}_I^B(\mathbf{q}) = \begin{bmatrix} q_0^2 + q_1^2 - q_2^2 - q_3^2 & 2(q_1 q_2 + q_0 q_3) & 2(q_1 q_3 - q_0 q_2) \\ 2(q_1 q_2 - q_0 q_3) & q_0^2 - q_1^2 + q_2^2 - q_3^2 & 2(q_2 q_3 + q_0 q_1) \\ 2(q_1 q_3 + q_0 q_2) & 2(q_2 q_3 - q_0 q_1) & q_0^2 - q_1^2 - q_2^2 + q_3^2 \end{bmatrix}$$
+
+The body-frame velocity vector is then simply $\mathbf{v}_B = \mathbf{T}_I^B \mathbf{v}_\infty$. From $\mathbf{v}_B$, the global angle of attack ($\alpha$) and sideslip angle ($\beta$) are instantaneously derived.
+
+\subsection{Local Incidence Angle Mapping}
+Because the waverider is not a flat plate—it has complex curvature and continuous aeroelastic deformation—the global angle of attack $\alpha$ is insufficient. We need the local incidence angle, $\delta_c(\xi, \eta)$, at every node on the bivariate Chebyshev grid.
+
+For a rigid, undeflected shape, the local surface normal vector $\mathbf{n}_0(\xi, \eta)$ is known from the CAD transcription. However, under high dynamic pressure, the spectral plate bends by $\mathbf{w}(\xi, \eta)$. The *deformed* local surface normal $\mathbf{n}(\xi, \eta, t)$ is a function of the spatial derivatives of the structural state (which we have readily available via our Kronecker matrices $\mathbf{D}_x$ and $\mathbf{D}_y$).
+
+The local incidence angle is thus the dot product of the normalized body-frame velocity vector and the deformed surface normal:
+
+$$\sin(\delta_c(\xi, \eta)) = \mathbf{n}(\xi, \eta, t) \cdot \frac{\mathbf{v}_B}{\vert{}\mathbf{v}_B\vert{}}$$
+
+\subsection{Constructing the RHS Forcing Vector}
+With $\delta_c$ defined at every grid point, we can instantly map the modified Newtonian pressure field to the vehicle surface. Any node located in the aerodynamic shadow (where $\delta_c < 0$) is assigned zero pressure. For the windward nodes, the local pressure coefficient is:
+
+$$C_p(\xi, \eta) = C_{p,max} \sin^2(\delta_c(\xi, \eta))$$
+
+The continuous dynamic pressure $q_{dyn} = \frac{1}{2} \rho \vert{}\mathbf{v}_\infty\vert{}^2$ scales this field into physical dimensional pressure. Flattening this 2D continuous pressure field over the bivariate grid yields our highly sought-after quasi-static RHS forcing vector:
+
+$$\mathbf{Q}_{aero} = q_{dyn} \mathbf{C}_p$$
+
+This couples the rigid-body 6-DOF kinematics, the freestream environment, and the flexible structural dynamics into one seamless, continuous mathematical pipeline.
 
 \section{Unclassified Hypersonic Aerothermodynamics}
 \label{sec:hypersonic_aerothermodynamics}
-Since we do not have access to classified CFD databases for specific waverider geometries, we can mathematically close the aerodynamic and thermodynamic loops using well-established, unclassified hypersonic theories.
-\begin{itemize}
-    \item \textbf{Modified Newtonian Aerodynamics:} For extreme Mach numbers, the localized pressure coefficient on any structural node can be rigorously approximated using Newtonian flow theory: $$C_p = C_{p,max} \sin^2 \delta_c$$ where $\delta_c$ is the local impact angle of the velocity vector relative to the spectral surface normal. This allows you to generate realistic, continuous spatial pressure distributions $\mathbf{Q}_{aero}$ across the vehicle body without needing look-up tables.
-    \item \textbf{Sutton-Graves Convective Heating:} For the continuous thermal ablation boundary condition, we can utilize the classic empirical Sutton-Graves equation for stagnation point heat flux: $$\dot{q}_{conv} = k \sqrt{\rho} V_r^3$$
-\end{itemize}
 
-This provides a violently non-linear, highly realistic heat flux forcing function to feed into your smoothed Enthalpy Method, perfectly stressing the RKF45 solver during a simulated 20-minute glide phase.
+\subsection{The Stagnation Point Heat Flux}
+The most extreme heating occurs at the leading edges and the nose of the waverider. We can anchor our continuous thermal model using the classical Sutton-Graves empirical relation for the stagnation point convective heat flux:
 
-\section{Structural Generality: Beyond Euler-Bernoulli}
+$$\dot{q}_s = K \sqrt{\frac{\rho_\infty}{R_{eff}}} \vert{}\mathbf{v}_\infty\vert{}^3$$
+
+where $K$ is the Sutton-Graves constant for the specific planetary atmosphere, $\rho_\infty$ is the freestream density (derived from our atmospheric model using the vehicle's altitude), and $R_{eff}$ is the effective nose radius.
+
+Rather than a static constant, $R_{eff}$ can be dynamically extracted from the 2D CAD transcription's local curvature at the stagnation node, ensuring the model adapts if the vehicle geometry is actively ablating.
+
+\subsection{The Continuous Distributed Heat Flux Tensor}
+The HGV is not a sphere; the heat flux decays as the flow expands over the lifting body. To maintain the $C^\infty$ quasi-static philosophy, we map the stagnation heating across the entire bivariate grid using the incidence angle we computed from the quaternion kinematics.
+
+For the windward nodes ($\delta_c > 0$), a continuous empirical distribution (such as a modified Lees' distribution or a localized sine taper) governs the local heat flux at every coordinate:
+
+$$\dot{q}_{conv}(\xi, \eta) = \dot{q}_s \sin(\delta_c(\xi, \eta)) \left( \frac{R_{eff}}{x(\xi)} \right)^{0.5}$$
+
+This generates a massive 2D matrix of heat flux values across the waverider's surface. Because this thermal RHS is formulated strictly through continuous tensor-product operations rather than discrete, localized control-volume branching, it maps flawlessly to highly parallelized C/C++ CUDA kernels. We can compute the entire vehicle's thermal load simultaneously without thread divergence slowing down the RKF45 integration.
+
+\subsection{Coupling to the Smoothed Enthalpy Matrix}
+
+In the original PASSES framework, we handled bulk mass loss via a smoothed enthalpy method to bypass the discontinuous tracking of the Stefan problem. This translates perfectly to the 2D model.
+
+The distributed heat flux tensor $\mathbf{Q}_{thermal} = \text{diag}(\dot{q}_{conv}(\xi_i, \eta_j))$ becomes the direct, time-varying Neumann boundary condition for the internal conduction solver. At the surface of the vehicle, the energy balance dictates:
+
+$$-k_{thermal} \frac{\partial T}{\partial n} = \mathbf{Q}_{thermal} - \epsilon \sigma T^4$$
+
+where $\epsilon \sigma T^4$ is the radiative cooling.
+
+When the local enthalpy at a specific grid node exceeds the material's heat of ablation, that specific coordinate on the 2D grid begins to recede. Because everything is built on a fixed spectral grid, the ablation mathematically manifests as a smooth, continuous updating of the thickness map $m(\xi, \eta)$ and the flexural rigidity tensor $\mathbf{D}(\xi, \eta)$ from the previous step.
+
+The structure slowly burns away, dynamically altering the stiffness matrix $\mathbf{K}$, which in turn alters the aeroelastic bending $\mathbf{w}$, which changes the incidence angle $\delta_c$, which updates the pressure and heat flux.
+
+% Kirchoff-Love vs. Mindlin plate theory
+
+\section{Structural Generality: Beyond Euler-Bernoulli} 
 \label{sec:structural_generality}
-HGVs are lifting bodies. They do not just bend along a 1D longitudinal axis; they experience severe torsional (twisting) forces and 3D aeroelastic flutter due to continuous bank-angle modulation and asymmetric aerodynamic loading.
+Transitioning from a slender rocket to a hypersonic lifting body (like a waverider) means the vehicle no longer behaves as a simple 1D beam. As the HGV executes continuous, high-G banking maneuvers to manage its thermal energy, the asymmetric aerodynamic pressures will induce severe **torsional (twisting) modes** and 3D aeroelastic flutter.
+
+To capture this without resorting to discrete finite elements, we must elevate our 1D Chebyshev collocation into a bivariate (2D) spectral tensor product space. Here is the mathematical framework for how we can structure this in the new paper.
+
+\subsection{The 2D Variable-Stiffness Flexural PDE}
+Rather than the Euler-Bernoulli beam theory, the HGV's structural dynamics are governed by a generalized anisotropic plate formulation. Let $w(x,y,t)$ represent the transverse deflection of the lifting body. Because the waverider has a highly non-uniform cross-section (thick at the root, razor-thin at the leading edges), the flexural rigidity $D(x,y)$ and mass distribution $m(x,y)$ are spatially continuous 2D fields.
+
+The governing PDE for the aeroelastic plate is formulated as:
+
+$$\frac{\partial^2}{\partial x^2} \left( D_{xx}(x,y) \frac{\partial^2 w}{\partial x^2} \right) + 2 \frac{\partial^2}{\partial x \partial y} \left( D_{xy}(x,y) \frac{\partial^2 w}{\partial x \partial y} \right) + \frac{\partial^2}{\partial y^2} \left( D_{yy}(x,y) \frac{\partial^2 w}{\partial y^2} \right) + m(x,y) \frac{\partial^2 w}{\partial t^2} = q(x,y,t)$$
+
+where $D_{xx}$, $D_{yy}$, and $D_{xy}$ represent the longitudinal, transverse, and torsional stiffness tensors, respectively, and $q(x,y,t)$ is the localized hypersonic aerodynamic pressure.
+
+\subsection{The Bivariate Chebyshev Grid and Kronecker Products}
+To solve this over a continuous fixed domain, we map the vehicle's planform onto a canonical 2D computational domain $(\xi, \eta) \in [-1, 1] \times [-1, 1]$. We construct the bivariate Gauss-Lobatto grid by taking the Cartesian product of two 1D spectral grids:
+
+$$\xi_i = \cos\left(\frac{i \pi}{N_x}\right), \quad \eta_j = \cos\left(\frac{j \pi}{N_y}\right)$$
+
+Instead of a 1D vector, the structural state is now a flattened matrix of grid nodes. To preserve the quasi-static right-hand side (RHS) matrix architecture that allows for massive GPU acceleration, we utilize **Kronecker tensor products ($\otimes$)** to construct global 2D differentiation matrices.
+
+If $\mathbf{D}_{N_x}$ and $\mathbf{D}_{N_y}$ are the standard 1D Chebyshev differentiation matrices, the global 2D partial derivative operators are analytically constructed as:
+
+$$\mathbf{D}_x = \mathbf{D}_{N_x} \otimes \mathbf{I}_{N_y}$$
+
+$$\mathbf{D}_y = \mathbf{I}_{N_x} \otimes \mathbf{D}_{N_y}$$
+
+where $\mathbf{I}$ is the identity matrix. The mixed partial derivative operator for the torsional twisting mode is simply:
+
+$$\mathbf{D}_{xy} = \mathbf{D}_{N_x} \otimes \mathbf{D}_{N_y}$$
+
+\subsection{The 2D Quasi-Static Mass and Stiffness Matrices}
+By flattening the 2D continuous stiffness and mass distributions into diagonalized vectors, $\mathbf{M} = \text{diag}(\mathbf{m})$ and $\mathbf{D}_{flex} = \text{diag}(\mathbf{D}(x,y))$, we can assemble the global structural matrices exactly as we did in the 1D case, but now encompassing the entire lifting body planform:
+
+$$\mathbf{K} = \mathbf{D}_x^2 \mathbf{D}_{xx, flex} \mathbf{D}_x^2 + 2 \mathbf{D}_{xy} \mathbf{D}_{xy, flex} \mathbf{D}_{xy} + \mathbf{D}_y^2 \mathbf{D}_{yy, flex} \mathbf{D}_y^2$$
+
+The global ODE system for the structural domain remains beautifully identical in form to the first paper:
+
+$$\mathbf{M} \mathbf{\ddot{w}} + \mathbf{K} \mathbf{w} = \mathbf{Q}$$
+
+However, $\mathbf{K}$ is now a massive, highly sparse tensor-product matrix that governs both longitudinal bending and localized wing-twist (flutter) simultaneously. Because it relies purely on Kronecker products of Chebyshev matrices, it remains infinitely differentiable ($C^\infty$) and never requires inversion mid-flight.
+
+\subsection{2D Geometric CAD Transcription}
+To feed $D_{xx}$, $D_{xy}$, and $m(x,y)$ into this solver, the 1D discrete cosine transform (DCT) from the Appendix must be upgraded to a 2D DCT. We would take a 3D STL file of the waverider, extract a grid of vertical thickness columns, and project that discrete thickness map into a 2D continuous Chebyshev polynomial surface:
+
+$$m(\xi, \eta) \approx \sum_{k=0}^{N_x} \sum_{l=0}^{N_y} c_{kl} T_k(\xi) T_l(\eta)$$
+
+This ensures the sharp edges of the lifting body are mathematically smoothed, preventing the Gibbs phenomenon from polluting the 2D spectral grid.
+
+\section{Boundary Conditions}
+In the 1D model, we embedded the free-free constraints (zero moment, zero shear) directly into the stiffness matrix $\mathbf{K}$ via explicit row replacement. Expanding this to a 2D lifting body is algebraically intense because a free-floating waverider is governed by the Kirchhoff-Love boundary conditions along its entire perimeter, which couples the longitudinal and transverse bending modes.
+
+\subsection{Anisotropic Rigidity Tensor}
+
+Because the hypersonic glide vehicle relies on a blended, multi-material aerodynamic shell, its resistance to bending and torsion is highly direction-dependent. Rather than relying on simplified isotropic constants, we define the vehicle's spatially continuous anisotropic flexural rigidity tensor, $\mathbf{D}(\xi, \eta)$.
+
+This tensor maps the continuous planform to four primary stiffness distributions:
+
 \begin{itemize}
-    \item \textbf{Spectral Plate Expansion:} We can elevate the structural RHS matrix from the 1D Euler-Bernoulli beam theory to a 2D Kirchhoff-Love or Mindlin plate theory, still utilizing the Chebyshev Collocation philosophy. By mapping the continuous structural domain to a bivariate spectral grid $\xi, \eta \in [-1, 1]$, you preserve the exact $C^\infty$ geometric transcription you already established, while unlocking multi-dimensional aeroelastic modes.
+    \item $\mathbf{D}_{11}(\xi, \eta)$: Longitudinal bending stiffness
+    \item $\mathbf{D}_{22}(\xi, \eta)$: Transverse (chordwise) bending stiffness
+    \item $\mathbf{D}_{12}(\xi, \eta)$: Poisson-effect coupling stiffness
+    \item $\mathbf{D}_{66}(\xi, \eta)$: Torsional (twisting) stiffness
 \end{itemize}
+
+When flattened into diagonalized matrices over the bivariate Gauss-Lobatto grid (e.g., $\mathbf{D}_{11} = \text{diag}(\mathbf{D}_{11}(\xi_i, \eta_j))$), these components become the core weighting matrices nestled between the Kronecker differentiation operators to form the unconstrained global stiffness matrix $\mathbf{K}_{unc}$.
+
+\subsection{The Free-Free Kirchhoff Boundary Conditions}
+For an unconstrained plate floating in the atmosphere, the edges must experience zero bending moment and zero effective shear. Let's isolate the boundaries along the longitudinal edges ($x = \pm L_x$, corresponding to canonical nodes $\xi = \pm 1$).
+
+The zero bending moment ($M_x = 0$) constraint is coupled by the Knox-Xi tensor:
+
+$$M_x = -\mathbf{D}_{11} \frac{\partial^2 w}{\partial x^2} - \mathbf{D}_{12} \frac{\partial^2 w}{\partial y^2} = 0$$
+
+The zero effective Kirchhoff shear ($V_x = 0$) constraint requires the sum of the transverse shear and the gradient of the twisting moment to vanish:
+
+$$V_x = -\frac{\partial}{\partial x} \left( \mathbf{D}_{11} \frac{\partial^2 w}{\partial x^2} + \mathbf{D}_{12} \frac{\partial^2 w}{\partial y^2} \right) - 2 \frac{\partial}{\partial y} \left( \mathbf{D}_{66} \frac{\partial^2 w}{\partial x \partial y} \right) = 0$$
+
+\subsection{Spectral Row Replacement in the Flattened Tensor Space}
+To enforce these constraints without relying on discrete ghost nodes, we must embed them directly into the quasi-static matrices.
+
+In a 1D grid, the boundaries are simply indices $0$ and $N$. In the 2D tensor product grid of size $(N_x+1) \times (N_y+1)$, the structural state vector $\mathbf{w}$ is flattened. We define a boundary index set $\mathcal{B}$ containing the 1D indices of all nodes lying on the perimeter (the top/bottom rows and left/right columns of the logical grid).
+
+For every index $b \in \mathcal{B}$:
+\begin{itemize}
+    \item \textbf{Decouple Inertia:} The $b$-th row of the global mass matrix is overwritten with zeros ($\mathbf{M}_{b, :} = \mathbf{0}$), and the corresponding row in the forcing vector is zeroed ($\mathbf{Q}_b = 0$).
+    \item \textbf{Overwrite Stiffness:} The $b$-th row of the global stiffness matrix $\mathbf{K}$ is replaced by the discrete spectral boundary operators.
+\end{itemize}
+
+For a node on the edge $\xi = 1$, the moment row replacement using the pre-computed Kronecker matrices becomes:
+
+$$\mathbf{K}_{b, :} = \left[ \mathbf{D}_{11} \mathbf{D}_x^2 + \mathbf{D}_{12} \mathbf{D}_y^2 \right]_{b, :}$$
+
+And the shear row replacement for the adjacent inner boundary layer becomes:
+
+$$\mathbf{K}_{b-1, :} = \left[ \mathbf{D}_x \left( \mathbf{D}_{11} \mathbf{D}_x^2 + \mathbf{D}_{12} \mathbf{D}_y^2 \right) + 2 \mathbf{D}_y \left( \mathbf{D}_{66} \mathbf{D}_{xy} \right) \right]_{b-1, :}$$
+
+By sweeping through the perimeter set $\mathcal{B}$ and injecting these exact Kronecker rows into $\mathbf{K}$, the plate's free-free physics are mathematically locked into the RHS operator before the flight simulation even begins. The RKF45 solver will naturally propagate the twisting and bending waves to the edges and perfectly reflect them back into the vehicle structure, avoiding the Gibbs phenomenon.
 
 \section{GNC: Energy Management vs. Terminal Intercept}
 \label{sec:gnc}
-AC-APN is useless for a 20-minute boost-glide trajectory. The HGV is effectively a glider trading kinetic energy for range, bounded by strict thermal and structural limits.
+
+\subsection{The HGV Flight Corridor Constraints}
+Before predicting the trajectory, the algorithm must understand its bounds. An HGV must thread the needle between two physical limits, defining the "Equilibrium Glide Phase":
+
 \begin{itemize}
-    \item \textbf{Predictor-Corrector Guidance:} The GNC section will shift from APN to a numerical Predictor-Corrector algorithm. Since your MOL physics engine is completely vectorized and GPU-accelerated, the flight computer can literally call a low-resolution "shadow" version of the PASSES physics engine in real-time. It can rapidly project the current state forward to predict the footprint, and iteratively adjust the bank-angle command to bleed off energy while staying within the structural heat-flux boundary.
+    \item \textbf{Upper Bound (Thermal Limit):} The vehicle cannot dive too steeply, or the Sutton-Graves convective heat flux $\dot{q}_{conv}$ and dynamic pressure $q_{dyn}$ will exceed structural limits.
+    \item \textbf{Lower Bound (Skip-Out Limit):} The vehicle cannot fly too high, or the aerodynamic lift will exceed the apparent weight, causing the vehicle to skip back out of the atmosphere.
 \end{itemize}
+
+The nominal lift required to maintain equilibrium flight is:
+
+$$L_{eq} = m \left( g - \frac{V^2}{r} \right)$$
+
+where $V$ is Earth-relative velocity and $r$ is the radial distance from the Earth's center. The bank angle $\sigma$ directs this lift vector. The vertical component keeps the vehicle in the corridor, while the horizontal component steers it laterally.
+
+\subsection{The Numerical Predictor (The "Shadow" Solver)}
+
+Traditional ballistic missiles use analytical approximations (like Keplerian ellipses) to predict the impact point. HGVs cannot do this because aerodynamic forces dominate over gravity.
+
+Instead of relying on analytical approximations, the flight computer can spawn a lightweight, "shadow" version of our RKF45 solver in real-time. Because our architecture is designed around C/C++ and CUDA acceleration, these forward-projections can be executed in milliseconds. We simply dedicate a subset of GPU threads to integrate a 3-DOF point-mass version of the equations of motion from the current time $t_0$ to the terminal target velocity $V_f$.
+
+During this forward projection, the shadow solver integrates:
+
+$$\mathbf{\dot{r}} = \mathbf{v}$$
+
+$$\mathbf{\dot{v}} = \mathbf{g}(\mathbf{r}) + \frac{1}{m} \mathbf{T}_B^I \mathbf{F}_{aero}(\alpha, \sigma)$$
+
+using a parameterized guess for the bank angle profile, often defined as a linear function of specific energy $E$:
+
+$$\sigma(E) = \sigma_0 + k (E - E_0)$$
+
+\subsection{The Secant Corrector (Jacobian Update)}
+
+Once the shadow solver hits the terminal velocity condition $V = V_f$, it spits out the predicted terminal downrange $R_{pred}$ and crossrange $C_{pred}$.
+
+We construct an error vector between the predicted coordinates and the target coordinates:
+
+$$\mathbf{e} = \begin{bmatrix} R_{pred} - R_{target} \\ C_{pred} - C_{target} \end{bmatrix}$$
+
+To drive this error to zero, the flight computer mathematically "corrects" the bank angle parameters $\mathbf{u} = [\sigma_0, k]^T$ using a numerical Newton-Raphson or Secant update. The algorithm computes the sensitivity matrix (Jacobian) $\mathbf{J}$ by perturbing the control variables slightly, running two more shadow predictions, and measuring the change in the terminal footprint:
+
+$$\mathbf{J} = \begin{bmatrix} \frac{\partial R}{\partial \sigma_0} & \frac{\partial R}{\partial k} \\ \frac{\partial C}{\partial \sigma_0} & \frac{\partial C}{\partial k} \end{bmatrix}$$
+
+The control update for the next time step is then:
+
+$$\mathbf{u}_{new} = \mathbf{u}_{old} - \gamma \mathbf{J}^{-1} \mathbf{e}$$
+
+where $\gamma \in (0, 1]$ is a relaxation factor to prevent solver divergence.
+
+\subsection{Handling Bank Reversals}
+
+Because the HGV must constantly bleed off energy while remaining in the corridor, it often requires a massive bank angle (e.g., $60^\circ$). However, holding a $60^\circ$ bank angle for 15 minutes will drive the vehicle hundreds of miles off-target laterally (crossrange error).
+
+To solve this, the P-C algorithm implements **Bank Reversals**. The magnitude of the bank angle $\vert{}\sigma\vert{}$ is controlled by the downrange predictor (to manage energy and time-of-flight), but the *sign* of the bank angle $\text{sgn}(\sigma)$ is flipped whenever the predicted crossrange error exceeds a predefined deadband azimuth.
+
+\subsection{Exterior Penalty Function}
+To mathematically enforce the convective heating boundary without destroying the rapid, root-finding efficiency of the Secant Corrector, we must avoid hard inequality constraints, which typically require slow, computationally expensive interior-point optimizers.
+
+Instead, we can embed an **Exterior Penalty Function** directly into the Secant algorithm's error space. By translating thermal limit violations into a "virtual trajectory error," we can mathematically trick the Jacobian into steering the vehicle to a higher altitude.
+
+\subsection{The Continuous Thermal Violation Metric}
+Let $\dot{q}_{max}$ represent the absolute structural limit for stagnation point convective heat flux (e.g., the thermal threshold of the carbon-carbon leading edges).
+
+During the execution of the fast "shadow" RKF45 solver, the predicted trajectory spans from the current time $t_0$ to the terminal time $t_f$. At every integration step, the shadow solver evaluates the predicted heat flux $\dot{q}_{conv}(t)$.
+
+We define the instantaneous constraint violation as a rectified linear threshold:
+
+$$g(t, \mathbf{u}) = \max\left(0, \dot{q}_{conv}(t, \mathbf{u}) - \dot{q}_{max}\right)$$
+
+where $\mathbf{u} = [\sigma_0, k]^T$ represents the current bank angle parameter guess.
+
+To quantify the total severity of the thermal overload across the entire predicted glide phase, we integrate this violation. We square the integrand to ensure the penalty function remains $C^1$ continuous, which is strictly required to prevent the Secant Jacobian from shattering due to non-smooth gradients:
+
+$$\Phi_{heat}(\mathbf{u}) = \int_{t_0}^{t_f} \left[ \max\left(0, \dot{q}_{conv}(t, \mathbf{u}) - \dot{q}_{max}\right) \right]^2 dt$$
+
+If the trajectory is thermodynamically safe, $\Phi_{heat} = 0$. If it dips too deep into the atmosphere, $\Phi_{heat} > 0$.
+
+\subsection{Mapping Heat to Virtual Range (The Penalty Translation)}
+The core physical relationship of the hypersonic glide phase is that decreasing the magnitude of the bank angle ($\vert{}\sigma\vert{}$) directs more of the aerodynamic lift vertically. This raises the vehicle's altitude, drops the freestream density $\rho_\infty$, and cools the vehicle, while simultaneously stretching the downrange glide distance.
+
+The standard Secant algorithm attempts to zero out the downrange error $e_R = R_{pred} - R_{target}$. If $e_R < 0$ (the vehicle is falling short), the Jacobian naturally commands a smaller bank angle to stretch the glide.
+
+We can exploit this physical linkage by defining an augmented, penalized downrange prediction:
+
+$$\tilde{R}_{pred}(\mathbf{u}) = R_{pred}(\mathbf{u}) - W_{heat} \Phi_{heat}(\mathbf{u})$$
+
+where $W_{heat}$ is a large, scalar penalty weight.
+
+When the heat limit is violated ($\Phi_{heat} > 0$), this penalty artificially shrinks the algorithm's perception of its downrange travel. The flight computer calculates a massive "virtual undershoot."
+
+\subsection{The Augmented Secant Jacobian}
+We substitute the true predicted range $R_{pred}$ with our penalized range $\tilde{R}_{pred}$ in the error vector:
+
+$$\tilde{\mathbf{e}}(\mathbf{u}) = \begin{bmatrix} \tilde{R}_{pred}(\mathbf{u}) - R_{target} \\ C_{pred}(\mathbf{u}) - C_{target} \end{bmatrix}$$
+
+To execute the correction, the algorithm perturbs the control vector $\mathbf{u}$ to compute the numerical Jacobian (sensitivity matrix) based on the *penalized* error:
+
+$$\tilde{\mathbf{J}} = \begin{bmatrix} \frac{\partial \tilde{R}_{pred}}{\partial \sigma_0} & \frac{\partial \tilde{R}_{pred}}{\partial k} \\ \frac{\partial C_{pred}}{\partial \sigma_0} & \frac{\partial C_{pred}}{\partial k} \end{bmatrix}$$
+
+Applying the chain rule to the downrange sensitivities reveals the underlying mechanics of the penalty:
+
+$$\frac{\partial \tilde{R}_{pred}}{\partial \sigma_0} = \frac{\partial R_{pred}}{\partial \sigma_0} - W_{heat} \frac{\partial \Phi_{heat}}{\partial \sigma_0}$$
+
+The control update is then executed via the standard Newton-like iteration:
+
+$$\mathbf{u}_{new} = \mathbf{u}_{old} - \gamma \tilde{\mathbf{J}}^{-1} \tilde{\mathbf{e}}(\mathbf{u}_{old})$$
+
+\subsection{The Resulting Autonomous Behavior}
+By mathematically forcing the heat limit into the downrange error space, we create a highly elegant, self-correcting physics loop:
+
+\begin{enumerate}
+    \item \textbf{Thermal Threat Detected:} The shadow solver predicts a dive that violates $\dot{q}_{max}$.
+    \item \textbf{Virtual Undershoot Triggered:} The penalty function activates, mapping the excess heat into a massive subtraction from $\tilde{R}_{pred}$.
+    \item \textbf{Jacobian Response:} The Secant matrix $\tilde{\mathbf{J}}^{-1}$ reacts to the virtual undershoot by aggressively reducing the bank angle $\sigma_0$ in the next control update.
+    \item \textbf{Physical Correction:} The actual vehicle levels its wings, increasing vertical lift. It physically "pulls up" to a higher altitude regime where the atmospheric density is lower, successfully tracking the thermal boundary without requiring a secondary, dedicated altitude controller.
+\end{enumerate}
 
 \section{Orbital Mechanics and FOBS}
 \label{sec:orbital_mechanics_fobs}
-To capture the FOBS (Fractional Orbital Bombardment System) requirement, we implement a long-duration exo-atmospheric coast phase.
-\begin{itemize}
-    \item \textbf{The Physics Idle:} When the dynamic pressure $q \to 0$, the aerodynamic forcing and convective heating naturally zero out in your continuous equations. The structural and thermal solvers effectively "idle" computationally, while the 6-DOF kinematics switch to Keplerian orbital propagation governed strictly by the $J_2-J_4$ gravitational gradients until the de-orbit burn is commanded.
-\end{itemize}
+
+\subsection{The Continuous Atmospheric Fade (The "Physics Idle")}
+As the vehicle ascends past the Karman line (approx. $100$ km), the atmospheric density $\rho(h)$ exponentially decays toward zero. Because our entire right-hand side (RHS) forcing vector is scaled by the dynamic pressure $q_{dyn} = \frac{1}{2} \rho \vert{}\mathbf{v}_\infty\vert{}^2$, the aerodynamic pressure $\mathbf{Q}_{aero}$ naturally and continuously vanishes.
+
+Simultaneously, the Sutton-Graves convective heat flux $\dot{q}_{conv}$, which relies on $\sqrt{\rho}$, decays to zero.
+
+Mathematically, the multi-physics PDE system gracefully degrades into an unforced system:
+
+$$\mathbf{M} \mathbf{\ddot{w}} + \mathbf{K} \mathbf{w} = \mathbf{0}$$
+
+With no external forcing, internal structural damping quickly dissipates any residual aeroelastic vibrations. The structural velocity $\mathbf{\dot{w}}$ approaches zero, and the vehicle enters a rigid-body state. Because the structural derivatives are no longer exhibiting high-frequency oscillations, the RKF45 time-stepping algorithm will automatically detect the drop in stiffness and massively expand its integration step size ($\Delta t$), allowing the flight computer to simulate a 45-minute orbital coast in a fraction of a second.
+
+\subsection{$J_2$ Perturbed Orbital Mechanics}
+In a true FOBS trajectory, a simple spherical Earth gravity model ($\mathbf{g} = -\frac{\mu}{r^3} \mathbf{r}$) is grossly insufficient. A low Earth orbit (LEO) coast phase is highly sensitive to the Earth's oblateness (the equatorial bulge). Over a fractional orbit, this induces secular variations in the trajectory that will cause catastrophic crossrange errors during reentry if ignored.
+
+We must update the translational kinematics to include the $J_2$ geopotential harmonic. In the Earth-Centered Inertial (ECI) Cartesian frame, the gravitational acceleration vector $\mathbf{g}(\mathbf{r})$ becomes:
+
+$$\mathbf{g}(\mathbf{r}) = -\frac{\mu}{\vert{}\mathbf{r}\vert{}^3} \mathbf{r} + \mathbf{g}_{J_2}(\mathbf{r})$$
+
+The $J_2$ perturbation vector is derived from the gradient of the geopotential function:
+
+$$\mathbf{g}_{J_2}(\mathbf{r}) = -\frac{3}{2} J_2 \left(\frac{\mu}{\vert{}\mathbf{r}\vert{}^2}\right) \left(\frac{R_E}{\vert{}\mathbf{r}\vert{}}\right)^2 \begin{bmatrix} \left(1 - 5\frac{z^2}{\vert{}\mathbf{r}\vert{}^2}\right) \frac{x}{\vert{}\mathbf{r}\vert{}} \\ \left(1 - 5\frac{z^2}{\vert{}\mathbf{r}\vert{}^2}\right) \frac{y}{\vert{}\mathbf{r}\vert{}} \\ \left(3 - 5\frac{z^2}{\vert{}\mathbf{r}\vert{}^2}\right) \frac{z}{\vert{}\mathbf{r}\vert{}} \end{bmatrix}$$
+
+where $R_E$ is the Earth's equatorial radius, $\mu$ is the standard gravitational parameter, and $x, y, z$ are the ECI coordinates of the vehicle. This addition is computationally cheap but elevates the trajectory propagation to true orbital fidelity.
+
+\subsection{Exo-Atmospheric Thermal Equilibrium}
+While the structural vibrations damp out, the thermal solver remains active but undergoes a boundary condition inversion. With convective heating gone ($\mathbf{Q}_{thermal} = \mathbf{0}$), the exterior Neumann boundary condition of the 2D spectral plate is governed purely by Stefan-Boltzmann radiative cooling:
+
+$$-k_{thermal} \frac{\partial T}{\partial n} = -\epsilon \sigma T^4$$
+
+During the long fractional orbit, the vehicle acts as a blackbody radiator. The massive heat load absorbed during the boost phase is slowly radiated away into deep space, while internal conduction diffuses the thermal gradients through the thickness map $m(\xi, \eta)$. By the time the FOBS commands its de-orbit burn, the thermal solver will have accurately tracked the vehicle's cool-down, resetting the initial state for the extreme hypersonic reentry phase.
+
+\subsection{The De-Orbit Burn Kinematics}
+To terminate the fractional orbit, the vehicle must execute a retrograde burn. This re-engages the 6-DOF quaternion kinematics.
+
+The flight computer commands a target attitude $\mathbf{q}_{target}$ to orient the vehicle's main engine against the velocity vector. A standard Proportional-Derivative (PD) quaternion controller commands the body-frame angular velocity $\boldsymbol{\omega}_B$ to align the vehicle:
+
+$$\mathbf{T}_{burn} = \text{diag}(T_x, T_y, T_z)$$
+
+where $T_x$ is the primary retro-thrust.
+
+The translational kinematics equation briefly re-awakens the RHS forcing vector:
+
+$$\mathbf{\dot{v}}_E = \mathbf{g}(\mathbf{r}) + \frac{1}{m_{bulk}} \mathbf{T}_I^B(\mathbf{q})^T \mathbf{T}_{burn}$$
+
+Once the required $\Delta V$ is achieved to drop the perigee into the sensible atmosphere, the engine cuts off. As the vehicle descends, $\rho(h)$ begins to rise, the dynamic pressure activates, and the RKF45 solver automatically tightens its time step as the Newtonian pressure and Sutton-Graves heating smoothly return to dominate the physics engine.
+
+This architecture allows the framework to transition from boost, to orbital coast, to hypersonic reentry seamlessly within a single, unbroken numerical integration run.
 
 \section{Conclusion}
 \label{sec:conclusion}
