@@ -4,59 +4,54 @@
 
 # PASSES: Parameterized AeroStructural State-Estimation Sandbox
 
-A holistically coupled, end-to-end multidisciplinary flight-dynamics simulation, navigation, and closed-loop control framework designed to analyze multi-body continuum mechanics, non-linear filter convergence, and optimal guidance laws for civilian launch vehicles.
+A unified, GPU-accelerated spectral framework for coupled aeroelastic, thermodynamic, and stochastic GNC flight simulation. PASSES is designed to analyze multi-body continuum mechanics, non-linear filter convergence, and optimal guidance laws for civilian launch vehicles through a global $C^\infty$ continuous state vector.
 
 ## Project Overview
 
-PASSES is an integrated computational suite developed to model the full atmospheric, orbital, and atmospheric entry life cycle of multi-stage vehicles within non-inertial reference frames. Written to bridge the gap between high-fidelity structural physics and advanced statistical estimation theory, the framework unifies five distinct domains of aerospace mathematics into a singular, parameterized software sandbox:
+PASSES is an integrated computational suite developed to model the full atmospheric, orbital, and atmospheric entry life cycle of multi-stage vehicles. To eliminate numerical friction and interpolation errors common in moving-mesh simulations, the framework unifies five distinct domains of aerospace mathematics into a singular, fixed-grid software sandbox:
 
-1. **Coupled Continuum Mechanics:** Modeling of non-linear structural flexing (Euler-Bernoulli beam theory), fluid-structure interactions (liquid propellant sloshing pendulums), and moving-boundary aerothermodynamics (Stefan-problem ablation physics).
-2. **Advanced Multi-Body Kinematics:** Simulation of discrete-event staging discontinuities, engine inertial reaction forces (the tail-wags-dog effect), and non-spherical planetary gravitational harmonics (J₂ anomalies).
-3. **Inertial Measurement Unit (IMU) Realism & Sensor Degradation:** Synthesizing of raw IMU telemetry injected with high-frequency white noise jitter, scale factor errors, and time-correlated random-walk sensor drift biases.
-4. **Non-Linear Guidance, Navigation, and Control (GNC):** Implementation of a dual-rate adaptive Extended Kalman Filter (EKF) for sensor fusion, coupled to automated Thrust Vector Control (TVC) actuator models with hard rate saturation boundaries.
-5. **Terminal Guidance & Statistical Error Assessment:** Implementation of optimal closed-loop Proportional Navigation (PN) terminal trajectories paired with bivariate normal stochastic processors to calculate Circular Error Probable (CEP).
+1. **Fixed-Grid Multi-Physics (Spectral Collocation):** Modeling of non-linear structural flexing via Chebyshev Spectral Collocation and fluid-structure interactions (propellant slosh) projected onto spectral grids.
+2. **Phase-Change Thermodynamics (Enthalpy Method):** Simulation of moving-boundary ablation physics without mesh regeneration, utilizing a smoothed Enthalpy Method for $C^\infty$ continuity.
+3. **Multi-Body Separation & Plume Dynamics:** Modeling of discrete-event staging discontinuities, plume impingement reflections (Roberts continuum model), and the "tail-wags-dog" (TWD) inertial reaction effect.
+4. **Resilient GNC (IAE-EKF):** Implementation of an Innovation-Based Adaptive Estimation (IAE) Extended Kalman Filter that uses Mahalanobis distance thresholds to scale process noise during catastrophic shocks.
+5. **Terminal Guidance (AC-APN):** Implementation of Aerodynamically-Compensated Augmented Proportional Navigation (AC-APN) featuring quadratic time-to-go ($t_{go}$) prediction for non-linear atmospheric deceleration.
 
 ---
 
 ## Architectural Breakdown & Core Mathematics
 
-### 1. Non-Inertial Reference Frame Kinematics & Gravity
-To preserve tracking accuracy relative to a rotating planet, translational vehicle acceleration is mapped within the rotating Earth-Centered, Earth-Fixed (ECEF) frame, fully accounting for Coriolis and centrifugal accelerations relative to the Earth-Centered Inertial (ECI) frame:
+### 1. Aeroelasticity & Spectral Collocation
+The flexible fuselage is modeled as a free-free continuous beam. Instead of discrete Finite Element Methods (FEM), PASSES utilizes **Chebyshev Spectral Collocation** to map the Euler-Bernoulli PDE into a discrete system of ODEs:
 
-$$\mathbf{\ddot{x}}_E = \mathbf{\ddot{x}}_I - 2(\boldsymbol{\Omega}_E \times \mathbf{\dot{x}}_E) - \boldsymbol{\Omega}_E \times (\boldsymbol{\Omega}_E \times \mathbf{x}_E)$$
+$$\mathbf{M} \mathbf{\ddot{w}} + \mathbf{K} \mathbf{w} = \mathbf{Q}$$
 
-True forces are integrated continuously in the inertial frame utilizing an adaptive Runge-Kutta-Fehlberg 4th and 5th order method (RKF45) scheme, incorporating planetary equatorial bulge via the gradient of the J₂ gravitational potential harmonic expansion:
+Where $\mathbf{K} = \mathbf{D}^2 \text{diag}(EI(x)) \mathbf{D}^2$ and $\mathbf{D}$ is the global spectral differentiation matrix. This preserves $C^\infty$ spatial continuity, allowing for quasi-static RHS matrices that are ideal for GPU offloading.
 
-$$\mathcal{V}_{J2}(\mathbf{x}_I) = -\frac{\mu_E}{\Vert{}\mathbf{x}_I\Vert{}} \left[ 1 - \frac{J_2}{2} \left( \frac{R_E}{\Vert{}\mathbf{x}_I\Vert{}} \right)^2 \left( 3\left(\frac{z_I}{\Vert{}\mathbf{x}_I\Vert{}}\right)^2 - 1 \right) \right]$$
+### 2. Thermodynamics & The Enthalpy Method
+Ablation is treated as a classic Stefan problem but solved on a fixed grid to avoid front-tracking complexities. The framework introduces a smoothed ablation fraction $\phi(T)$ to absorb phase-change physics into a singular volumetric enthalpy state $H$:
 
-### 2. Aeroelasticity & Tail-Wags-Dog (TWD) Actuation
-The flexible fuselage is modeled as a free-free continuous beam using Euler-Bernoulli theory. Rapidly pivoting a heavy engine bell creates a dramatic lateral inertial reaction force (\(F_{TWD}\)) at the gimbal bearing that feeds back into the aft structure. This creates a non-linear feedback loop capable of exciting destructive resonance modes during rapid transonic Mach transitions:
+$$\frac{\partial H}{\partial t} = \frac{\partial}{\partial x} \left( k(T) \frac{\partial T}{\partial x} \right), \quad \phi(T) = \frac{1}{2} \left[ 1 + \tanh\left(\frac{T - T_m}{\Delta T}\right) \right]$$
 
-$$F_{TWD} = -m_e x_g \ddot{\delta} + m_e \dot{x}_g \dot{\delta}$$
+### 3. Innovation-Based Adaptive Estimation (IAE)
+To prevent filter divergence during stage separation shocks or plume impingement, the GNC core monitors the **Squared Mahalanobis Distance** ($\gamma_k$) of the EKF innovation sequence:
 
-$$\frac{\partial^2}{\partial x^2}\left( EI(x)\frac{\partial^2 y_f}{\partial x^2} \right) + \mu(x)\frac{\partial^2 y_f}{\partial t^2} = f_{aero}(x, t, M) + \left[F_{thrust}\sin(\delta) + F_{TWD}\right]\delta_D(x - x_g)$$
+$$\gamma_k = \boldsymbol{\nu}_k^T \mathbf{S}_k^{-1} \boldsymbol{\nu}_k$$
 
-Digital notch filters are hardcoded into the TVC actuator controller to attenuate commands at the fuselage's natural structural frequencies, dampening cross-talk between the steering mechanism and the elastic body.
+If $\gamma_k$ breaches a Chi-square threshold, the filter dynamically scales the process noise matrix $\mathbf{Q}_k$ using a moving-window trace-ratio calculation, allowing the state estimate to absorb the transient without losing track of the vehicle.
 
-### 3. IMU Modeling & Adaptive EKF State Estimation
-The navigation core receives data from a simulated IMU. The software generates true kinematic acceleration and angular velocity, then corrupts them using a time-correlated stochastic differential equation tracking accelerometer and gyroscope random-walk bias drift ($\mathbf{b}_{IMU}$):
+### 4. Terminal Guidance (AC-APN)
+For terminal recovery, the guidance suite utilizes **Aerodynamically-Compensated APN** with a **Quadratic Time-to-Go** prediction to account for non-linear atmospheric drag:
 
-$$\dot{\mathbf{b}}_{IMU}(t) = \mathbf{w}_{bias}(t), \quad E[\mathbf{w}_{bias}(t)\mathbf{w}_{bias}^T(\tau)] = \mathbf{Q}_{bias}\delta_D(t-\tau)$$
+$$\frac{1}{2}\hat{A}_c t_{go}^2 + \hat{V}_c t_{go} - \Vert{}\mathbf{r}_{LOS}\Vert{} = 0$$
 
-The dual-rate Extended Kalman Filter (EKF) recalculates the state Jacobian ($\mathbf{F}_k$) and measurement Jacobian ($\mathbf{H}_k$) to isolate actual vehicle motion from high-frequency structural noise:
+$$\mathbf{a}_n = N' \cdot \mathbf{V}_r \times \boldsymbol{\dot{\lambda}}_{LOS} + \text{Gravity Compensation}$$
 
-$$\mathbf{K}_k = \mathbf{P}_{k\vert{}k-1}\mathbf{H}_k^T \left( \mathbf{H}_k \mathbf{P}_{k\vert{}k-1}\mathbf{H}_k^T + \mathbf{R}_k \right)^{-1}$$
+---
 
-$$\hat{\mathbf{x}}_{k\vert{}k} = \hat{\mathbf{x}}_{k\vert{}k-1} + \mathbf{K}_k \left( \mathbf{z}_k - \mathbf{h}(\hat{\mathbf{x}}_{k\vert{}k-1}) \right)$$
-
-During stage separation discontinuities, a discrete-event handler automatically scales up the process noise covariance matrix (\(\mathbf{Q}_k\)) to prevent filter divergence caused by staging shocks.
-
-### 4. Terminal Closed-Loop Guidance (Proportional Navigation)
-Upon atmospheric entry or recovery phase initialization, the guidance suite transitions to a closed-loop terminal steering routine. The framework utilizes **Proportional Navigation (PN)**, driving lateral acceleration commands ($\mathbf{a}_n$) proportionally to the rotation rate of the Line-of-Sight vector ($\boldsymbol{\lambda}_{LOS}$) between the vehicle and the destination coordinates:
-
-$$\mathbf{a}_n = N \cdot \mathbf{V}_r \times \boldsymbol{\dot{\lambda}}_{LOS}$$
-
-Where N is the navigation constant (tuned between 3.0 and 5.0) and $\mathbf{V}_r$ is the relative velocity vector. Commands are continuously checked against TVC actuator saturation thresholds ($\delta_{max}$, $\dot{\delta}_{max}$).
+## Geometric Transcription (CAD to $C^\infty$)
+PASSES includes a pre-processing pipeline that transcribes discrete CAD meshes (STL/OBJ) into continuous analytical domains.
+* **Chebyshev Projection:** Discrete geometric slices are projected onto truncated Chebyshev polynomials to filter out $C^0$ faceting.
+* **Hyperbolic Blending:** Multi-material interfaces (e.g., carbon-to-titanium joints) are smoothed via hyperbolic tangent functions to maintain differentiability at structural boundaries.
 
 ### 5. Statistical Error Analysis (Circular Error Probable)
 To measure the end-to-end performance and accuracy of the coupled GNC framework under aerodynamic disturbances and sensor anomalies, a Monte Carlo simulation engine executes batch runs. The terminal touchdown coordinates are passed to a bivariate normal spatial distribution processor to calculate the **Circular Error Probable (CEP)** at a 50% confidence radius:
