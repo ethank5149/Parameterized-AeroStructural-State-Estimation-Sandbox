@@ -4,47 +4,40 @@
 
 # PASSES: Parameterized AeroStructural State-Estimation Sandbox
 
-A unified, GPU-accelerated spectral framework for coupled aeroelastic, thermodynamic, and stochastic GNC flight simulation. PASSES is designed to analyze multi-body continuum mechanics, non-linear filter convergence, and optimal guidance laws for civilian launch vehicles through a global $C^\infty$ continuous state vector.
+A unified, GPU-accelerated spectral framework for coupled aeroelastic, thermodynamic, and stochastic GNC flight simulation. PASSES is designed to analyze multi-body continuum mechanics, non-linear filter convergence, and optimal guidance laws for civilian launch vehicles, **Hypersonic Glide Vehicles (HGV)**, and **Fractional Orbital Bombardment Systems (FOBS)** through a global $C^\infty$ continuous state vector.
 
 ## Project Overview
 
-PASSES is an integrated computational suite developed to model the full atmospheric, orbital, and atmospheric entry life cycle of multi-stage vehicles. To eliminate numerical friction and interpolation errors common in moving-mesh simulations, the framework unifies five distinct domains of aerospace mathematics into a singular, fixed-grid software sandbox:
+PASSES is an integrated computational suite developed to model the full atmospheric, orbital, and atmospheric entry life cycle of multi-stage vehicles. To eliminate numerical friction and interpolation errors common in moving-mesh simulations, the framework unifies distinct domains of aerospace mathematics into a singular, fixed-grid software sandbox:
 
-1. **Fixed-Grid Multi-Physics (Spectral Collocation):** Modeling of non-linear structural flexing via Chebyshev Spectral Collocation and fluid-structure interactions (propellant slosh) projected onto spectral grids.
-2. **Phase-Change Thermodynamics (Enthalpy Method):** Simulation of moving-boundary ablation physics without mesh regeneration, utilizing a smoothed Enthalpy Method for $C^\infty$ continuity.
-3. **Multi-Body Separation & Plume Dynamics:** Modeling of discrete-event staging discontinuities, plume impingement reflections (Roberts continuum model), and the "tail-wags-dog" (TWD) inertial reaction effect.
-4. **Resilient GNC (IAE-EKF):** Implementation of an Innovation-Based Adaptive Estimation (IAE) Extended Kalman Filter that uses Mahalanobis distance thresholds to scale process noise during catastrophic shocks.
-5. **Terminal Guidance (AC-APN):** Implementation of Aerodynamically-Compensated Augmented Proportional Navigation (AC-APN) featuring quadratic time-to-go ($t_{go}$) prediction for non-linear atmospheric deceleration.
+1. **6-DOF Fixed-Grid Multi-Physics:** Modeling of non-linear structural flexing via **Chebyshev Spectral Collocation** for 1D beams and 2D plates. Kinematics are tracked in 6-DOF using quaternions to avoid gimbal lock during extreme atmospheric maneuvering.
+2. **Hypersonic Aerothermodynamics:** Analytical closure of aerodynamic loops using **Modified Newtonian Theory** ($C_p \propto \sin^2 \delta_c$) and **Sutton-Graves Convective Heating** for stagnation point heat flux.
+3. **Phase-Change Thermodynamics (Enthalpy Method):** Simulation of moving-boundary ablation physics without mesh regeneration, utilizing a smoothed Enthalpy Method for $C^\infty$ continuity.
+4. **Resilient GNC & Predictor-Corrector Guidance:** Implementation of an **Innovation-Based Adaptive Estimation (IAE)** EKF for state estimation, coupled with a GPU-accelerated **Predictor-Corrector** guidance loop for energy management during long-duration hypersonic glides.
+5. **Orbital Perturbations & FOBS:** Integration of high-fidelity planetary gravitational harmonics ($J_2$ through $J_4$) and non-inertial reference frame kinematics for partial-orbit trajectories.
 
 ---
 
 ## Architectural Breakdown & Core Mathematics
 
-### 1. Aeroelasticity & Spectral Collocation
-The flexible fuselage is modeled as a free-free continuous beam. Instead of discrete Finite Element Methods (FEM), PASSES utilizes **Chebyshev Spectral Collocation** to map the Euler-Bernoulli PDE into a discrete system of ODEs:
+### 1. Expanded 6-DOF Global State Vector
+To support waveriders and skipping trajectories, the global state vector $\mathbf{X}_{global}$ incorporates full rigid-body kinematics alongside spectral structural modes and nodal enthalpies:
+$$\mathbf{X}_{global} = [\mathbf{r}_E, \mathbf{v}_E, \mathbf{q}, \boldsymbol{\omega}_B, m_{bulk}, \mathbf{w}, \mathbf{\dot{w}}, \mathbf{H}]^T$$
+Where $\mathbf{q}$ is the attitude quaternion and $\boldsymbol{\omega}_B$ is the body-frame angular velocity.
 
-$$\mathbf{M} \mathbf{\ddot{w}} + \mathbf{K} \mathbf{w} = \mathbf{Q}$$
+### 2. Spectral Plate Expansion (2D Aeroelasticity)
+For lifting bodies and HGVs, PASSES elevates structural dynamics from 1D beams to **2D Spectral Plates** (Kirchhoff-Love theory) using bivariate Chebyshev grids ($\xi, \eta \in [-1, 1]$). This captures complex torsional modes and asymmetric flutter induced by bank-angle modulation:
+$$\mathbf{M} \mathbf{\ddot{w}} + \mathbf{K} \mathbf{w} = \mathbf{Q}_{aero} + \mathbf{Q}_{thrust}$$
 
-Where $\mathbf{K} = \mathbf{D}^2 \text{diag}(EI(x)) \mathbf{D}^2$ and $\mathbf{D}$ is the global spectral differentiation matrix. This preserves $C^\infty$ spatial continuity, allowing for quasi-static RHS matrices that are ideal for GPU offloading.
+### 3. Hypersonic Forcing & Sutton-Graves Heating
+Aerodynamic and thermal loads are calculated analytically at every spectral node, ensuring global differentiability:
+*   **Pressure Distribution:** $C_p = C_{p,max} \sin^2 \delta_c$ (Modified Newtonian Flow)
+*   **Thermal Flux:** $\dot{q}_{conv} = k \sqrt{\rho} V_r^3$ (Sutton-Graves Stagnation Heating)
 
-### 2. Thermodynamics & The Enthalpy Method
-Ablation is treated as a classic Stefan problem but solved on a fixed grid to avoid front-tracking complexities. The framework introduces a smoothed ablation fraction $\phi(T)$ to absorb phase-change physics into a singular volumetric enthalpy state $H$:
-
-$$\frac{\partial H}{\partial t} = \frac{\partial}{\partial x} \left( k(T) \frac{\partial T}{\partial x} \right), \quad \phi(T) = \frac{1}{2} \left[ 1 + \tanh\left(\frac{T - T_m}{\Delta T}\right) \right]$$
-
-### 3. Innovation-Based Adaptive Estimation (IAE)
-To prevent filter divergence during stage separation shocks or plume impingement, the GNC core monitors the **Squared Mahalanobis Distance** ($\gamma_k$) of the EKF innovation sequence:
-
-$$\gamma_k = \boldsymbol{\nu}_k^T \mathbf{S}_k^{-1} \boldsymbol{\nu}_k$$
-
-If $\gamma_k$ breaches a Chi-square threshold, the filter dynamically scales the process noise matrix $\mathbf{Q}_k$ using a moving-window trace-ratio calculation, allowing the state estimate to absorb the transient without losing track of the vehicle.
-
-### 4. Terminal Guidance (AC-APN)
-For terminal recovery, the guidance suite utilizes **Aerodynamically-Compensated APN** with a **Quadratic Time-to-Go** prediction to account for non-linear atmospheric drag:
-
-$$\frac{1}{2}\hat{A}_c t_{go}^2 + \hat{V}_c t_{go} - \Vert{}\mathbf{r}_{LOS}\Vert{} = 0$$
-
-$$\mathbf{a}_n = N' \cdot \mathbf{V}_r \times \boldsymbol{\dot{\lambda}}_{LOS} + \text{Gravity Compensation}$$
+### 4. GNC: Adaptive EKF & Predictor-Corrector Guidance
+The GNC architecture combines high-frequency state estimation with real-time trajectory optimization:
+*   **IAE-EKF:** Monitors the **Squared Mahalanobis Distance** ($\gamma_k$) to detect separation shocks or plume impingement, dynamically scaling process noise $\mathbf{Q}_k$ via trace-ratio calculations.
+*   **Shadow Physics Predictor:** For HGV glide phases, the flight computer calls a "shadow" version of the GPU-accelerated PASSES engine to project the vehicle footprint forward and iteratively adjust bank-angle commands for optimal energy management.
 
 ---
 
