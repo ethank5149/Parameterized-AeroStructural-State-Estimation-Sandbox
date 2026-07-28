@@ -1,0 +1,116 @@
+\documentclass[11pt,a4paper]{article}
+
+% --- Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath, amsfonts, amssymb, amsthm}
+\usepackage{bm} % Bold math
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{authblk} % For authors and affiliations
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{cleveref} % Smart referencing
+\usepackage[title,titletoc]{appendix}
+\usepackage[backend=biber, style=numeric]{biblatex}
+\addbibresource{references.bib}
+
+% --- Theorem Environments ---
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{assumption}[theorem]{Assumption}
+
+\numberwithin{equation}{section}
+
+% --- Custom Commands ---
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\prob}{\mathbb{P}}
+\newcommand{\diff}{\mathrm{d}}
+
+% --- Metadata ---
+\title{PASSES-HGV: Expanding the Continuous Spectral Framework to 6-DOF Hypersonic Glide and Fractional Orbital Trajectories}
+
+\author[1]{Ethan Knox\thanks{Email: \texttt{ethank5149@gmail.com}}}
+\affil[1]{Independent Researcher, Champaign, IL, USA}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+
+\end{abstract}
+
+\pagebreak
+
+\section{Introduction}
+\label{sec:intro}
+
+\section{The Expanded Global State Vector}
+\label{sec:global_state_vector}
+To handle skipping trajectories, waverider aerodynamics, and orbital mechanics, the vehicle can no longer be treated as a purely axisymmetric point-mass with 1D bending. The global state vector $\mathbf{X}_{global}$ must be expanded to full 6-Degree-of-Freedom (6-DOF) rigid body kinematics.
+\begin{itemize}
+    \item \textbf{Attitude Representation:} We will need to introduce a quaternion vector $\mathbf{q} = [q_0, q_1, q_2, q_3]^T$ into the state to avoid gimbal lock during extreme atmospheric maneuvering and partial-orbit insertion.
+    \item \textbf{The New Vector:} The state expands from $[\mathbf{r}_E, \mathbf{v}_E, m_{bulk}, \mathbf{w}, \mathbf{\dot{w}}, \mathbf{H}]^T$ to include the quaternion $\mathbf{q}$ and the body-frame angular velocity $\boldsymbol{\omega}_B$.
+\end{itemize}
+
+
+\section{Unclassified Hypersonic Aerothermodynamics}
+\label{sec:hypersonic_aerothermodynamics}
+Since we do not have access to classified CFD databases for specific waverider geometries, we can mathematically close the aerodynamic and thermodynamic loops using well-established, unclassified hypersonic theories.
+\begin{itemize}
+    \item \textbf{Modified Newtonian Aerodynamics:} For extreme Mach numbers, the localized pressure coefficient on any structural node can be rigorously approximated using Newtonian flow theory: $$C_p = C_{p,max} \sin^2 \delta_c$$ where $\delta_c$ is the local impact angle of the velocity vector relative to the spectral surface normal. This allows you to generate realistic, continuous spatial pressure distributions $\mathbf{Q}_{aero}$ across the vehicle body without needing look-up tables.
+    \item \textbf{Sutton-Graves Convective Heating:} For the continuous thermal ablation boundary condition, we can utilize the classic empirical Sutton-Graves equation for stagnation point heat flux: $$\dot{q}_{conv} = k \sqrt{\rho} V_r^3$$
+\end{itemize}
+
+This provides a violently non-linear, highly realistic heat flux forcing function to feed into your smoothed Enthalpy Method, perfectly stressing the RKF45 solver during a simulated 20-minute glide phase.
+
+\section{Structural Generality: Beyond Euler-Bernoulli}
+\label{sec:structural_generality}
+HGVs are lifting bodies. They do not just bend along a 1D longitudinal axis; they experience severe torsional (twisting) forces and 3D aeroelastic flutter due to continuous bank-angle modulation and asymmetric aerodynamic loading.
+\begin{itemize}
+    \item \textbf{Spectral Plate Expansion:} We can elevate the structural RHS matrix from the 1D Euler-Bernoulli beam theory to a 2D Kirchhoff-Love or Mindlin plate theory, still utilizing the Chebyshev Collocation philosophy. By mapping the continuous structural domain to a bivariate spectral grid $\xi, \eta \in [-1, 1]$, you preserve the exact $C^\infty$ geometric transcription you already established, while unlocking multi-dimensional aeroelastic modes.
+\end{itemize}
+
+\section{GNC: Energy Management vs. Terminal Intercept}
+\label{sec:gnc}
+AC-APN is useless for a 20-minute boost-glide trajectory. The HGV is effectively a glider trading kinetic energy for range, bounded by strict thermal and structural limits.
+\begin{itemize}
+    \item \textbf{Predictor-Corrector Guidance:} The GNC section will shift from APN to a numerical Predictor-Corrector algorithm. Since your MOL physics engine is completely vectorized and GPU-accelerated, the flight computer can literally call a low-resolution "shadow" version of the PASSES physics engine in real-time. It can rapidly project the current state forward to predict the footprint, and iteratively adjust the bank-angle command to bleed off energy while staying within the structural heat-flux boundary.
+\end{itemize}
+
+\section{Orbital Mechanics and FOBS}
+\label{sec:orbital_mechanics_fobs}
+To capture the FOBS (Fractional Orbital Bombardment System) requirement, we implement a long-duration exo-atmospheric coast phase.
+\begin{itemize}
+    \item \textbf{The Physics Idle:} When the dynamic pressure $q \to 0$, the aerodynamic forcing and convective heating naturally zero out in your continuous equations. The structural and thermal solvers effectively "idle" computationally, while the 6-DOF kinematics switch to Keplerian orbital propagation governed strictly by the $J_2-J_4$ gravitational gradients until the de-orbit burn is commanded.
+\end{itemize}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+% \section*{Acknowledgments}
+
+\pagebreak
+
+\printbibliography
+
+\pagebreak
+
+\begin{appendices}
+
+\end{appendices}
+
+\end{document}
