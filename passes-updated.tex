@@ -6,11 +6,13 @@
 \usepackage{amsmath, amsfonts, amssymb, amsthm}
 \usepackage{bm} % Bold math
 \usepackage{graphicx}
+\usepackage{xcolor}
 \usepackage{hyperref}
 \usepackage[margin=1in]{geometry}
 \usepackage{authblk} % For authors and affiliations
 \usepackage{microtype}
 \usepackage{booktabs}
+\usepackage{longtable}
 \usepackage{cleveref} % Smart referencing
 \usepackage[title,titletoc]{appendix}
 \usepackage[backend=biber, style=numeric]{biblatex}
@@ -30,12 +32,25 @@
 
 \numberwithin{equation}{section}
 
+% cleveref needs explicit names for the amsthm `definition`-style environments
+\crefname{assumption}{Assumption}{Assumptions}
+\Crefname{assumption}{Assumption}{Assumptions}
+\crefname{remark}{Remark}{Remarks}
+\Crefname{remark}{Remark}{Remarks}
+\crefname{proposition}{Proposition}{Propositions}
+\Crefname{proposition}{Proposition}{Propositions}
+
 % --- Custom Commands ---
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\N}{\mathbb{N}}
 \newcommand{\E}{\mathbb{E}}
 \newcommand{\prob}{\mathbb{P}}
 \newcommand{\diff}{\mathrm{d}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\diag}{\operatorname{diag}}
+
+% Results not yet produced are marked so they cannot ship by accident.
+\newcommand{\PENDING}[1]{\textcolor{red}{\textbf{[PENDING: #1]}}}
 
 % --- Metadata ---
 \title{PASSES: A Unified, GPU-Accelerated Spectral Framework for Coupled Aeroelastic, Thermodynamic, and Stochastic GNC Flight Simulation}
@@ -50,123 +65,678 @@
 \maketitle
 
 \begin{abstract}
-    The design and validation of atmospheric aerospace vehicles require the continuous evaluation of tightly coupled, multi-physics domains, including structural aeroelasticity, thermal ablation, and active Guidance, Navigation, and Control (GNC). Existing simulation frameworks rely heavily on discrete mesh interpolation and moving-boundary formulations. During highly dynamic events, such as stage separation, these discrete approaches frequently introduce numerical discontinuities, spatial interpolation errors, and filter divergence. This paper introduces PASSES, an end-to-end, high-fidelity flight simulation framework constructed entirely upon fixed-grid mathematical formulations to preserve $C^\infty$ continuity across a global state vector.
-    
-    To eliminate the necessity of front-tracking algorithms, thermal ablation is governed by a two-phase charring ablation model, while variable-stiffness aeroelastic dynamics are resolved via Chebyshev Spectral Collocation. The unified system of ordinary differential equations is integrated using the Method of Lines (MOL) via an RKF45 solver. To ensure navigation resilience during catastrophic multi-body transient shocks, the GNC loop employs an Extended Kalman Filter (EKF) featuring Innovation-Based Adaptive Estimation (IAE). By geometrically detecting separation anomalies in state-space via the squared Mahalanobis distance, the EKF dynamically scales its process noise utilizing a bounded, positive semi-definite trace-ratio calculation, preventing divergence. Terminal recovery is subsequently executed via Aerodynamically-Compensated APN (AC-APN) with gravity compensation.
-    
-    Crucially, preserving global $C^\infty$ continuity yields mathematically stable right-hand side (RHS) matrices, allowing the entire architecture to be containerized and offloaded to CUDA-enabled GPU hardware. This enables the parallelized execution of massive Monte Carlo batches, culminating in the eigenvalue decomposition of bivariate normal spatial covariance matrices to extract highly rigorous Circular Error Probable (CEP) and 95\% containment radii ($R_{95}$). Ultimately, PASSES provides a mathematically elegant, highly scalable blueprint for evaluating stochastic aerospace performance bounds.
+    The design and validation of atmospheric aerospace vehicles requires the simultaneous evaluation of tightly coupled physical domains: structural aeroelasticity, thermal ablation, and active Guidance, Navigation, and Control (GNC). Simulation frameworks that treat these domains with separate solvers and exchange data through mesh interpolation incur spatial interpolation error at every coupling interface, and frameworks that track receding ablation fronts on a deforming mesh incur remeshing cost that scales poorly under Monte Carlo replication. This paper presents PASSES, a flight simulation framework in which every spatial domain is discretized once, on a fixed computational grid, and held fixed for the duration of the trajectory.
+
+    Three formulations make this possible. Structural bending under spatially varying flexural rigidity is discretized by Chebyshev spectral collocation, with free-free boundary conditions imposed by projection onto the null space of the constraint operator rather than by row replacement. Thermal ablation is governed by a two-phase charring model in the style of the CMA framework, in which a Landau coordinate transformation maps the receding physical domain onto a fixed computational domain, so that surface recession appears as a grid-velocity term rather than as a moving boundary. Localized slosh forces are regularized by a quadrature-normalized Gaussian kernel that transfers force exactly under the collocation quadrature rule. The resulting semi-discrete system is a single system of ordinary differential equations in one global state vector.
+
+    For navigation resilience through stage separation, the GNC loop pairs a $\chi^2$ anomaly test on the squared Mahalanobis distance of the innovation with Innovation-Based Adaptive Estimation, using a bounded trace-ratio inflation factor. Terminal guidance uses Aerodynamically-Compensated Augmented Proportional Navigation with a numerically stable time-to-go root and feed-forward gravity compensation. We give the stiffness bound that governs admissible explicit time steps for the spectral operator, and specify the estimator used to extract Circular Error Probable and $95\%$ containment radii from Monte Carlo terminal dispersions, including its validity range and sampling error.
+
+    This manuscript presents the formulation and the verification plan. Numerical verification, validation, and performance results are identified explicitly throughout and are the subject of the companion experimental report.
     \\[2ex]
-    \textbf{Keywords:} Spectral Collocation, Multi-Physics Simulation, Method of Lines, Innovation-Based Adaptive Estimation (IAE), Extended Kalman Filter, Aerodynamically-Compensated APN (AC-APN), Monte Carlo Covariance Matrix, Applied Mathematics.
+    \textbf{Keywords:} Spectral Collocation, Multi-Physics Simulation, Method of Lines, Innovation-Based Adaptive Estimation, Extended Kalman Filter, Proportional Navigation, Monte Carlo Covariance Estimation, Applied Mathematics.
     \\[1ex]
     \textbf{AMS Subject Classification:} 65M70, 93E11, 74F10, 80A22.
 \end{abstract}
 
 \pagebreak
 
+\tableofcontents
+
+\pagebreak
+
+\section*{Nomenclature}
+\addcontentsline{toc}{section}{Nomenclature}
+\label{sec:nomenclature}
+
+\begin{longtable}{@{}ll@{}}
+\toprule
+\textbf{Symbol} & \textbf{Definition} \\
+\midrule
+\endhead
+\multicolumn{2}{@{}l}{\textit{Structural}} \\
+$w(x,t)$ & transverse deflection of the beam axis, m \\
+$EI(x)$ & effective flexural rigidity, N\,m$^2$ \\
+$m(x)$ & mass per unit length, kg/m \\
+$q(x,t)$ & distributed transverse load, N/m \\
+$L$ & vehicle reference length, m \\
+$\xi$ & computational coordinate, $\xi \in [-1,1]$ \\
+$N$ & spectral order (number of collocation intervals) \\
+$\mathbf{D}$ & Chebyshev differentiation matrix on $\xi$, $(N{+}1)\times(N{+}1)$ \\
+$\mathbf{K}, \mathbf{M}$ & assembled stiffness and mass matrices \\
+$\mathbf{B}$ & boundary constraint matrix \\
+$\mathbf{Z}$ & orthonormal basis for $\ker \mathbf{B}$ \\
+$\omega_{\max}$ & largest structural angular frequency, rad/s \\
+$\kappa(\cdot)$ & spectral condition number \\
+\addlinespace
+\multicolumn{2}{@{}l}{\textit{Slosh}} \\
+$x_s^{(k)}$ & axial station of the $k$-th slosh mass, m \\
+$F_{\text{slosh}}^{(k)}$ & lateral force from the $k$-th slosh mass, N \\
+$\delta_\sigma$ & Gaussian regularized Dirac kernel, m$^{-1}$ \\
+$\sigma$ & kernel bandwidth, m \\
+$w_j^{\text{CC}}$ & Clenshaw--Curtis quadrature weight at node $j$ \\
+\addlinespace
+\multicolumn{2}{@{}l}{\textit{Thermal}} \\
+$y$ & depth coordinate measured from the original surface, m \\
+$s(t)$ & surface recession depth, m \\
+$\eta$ & Landau-transformed depth coordinate, $\eta \in [0,1]$ \\
+$T$ & temperature, K \\
+$\rho_v, \rho_c$ & virgin and char densities, kg/m$^3$ \\
+$\dot{m}_g$ & pyrolysis gas mass flux, kg/(m$^2$\,s) \\
+$h_g, \bar{h}$ & pyrolysis gas and solid enthalpies, J/kg \\
+$B'$ & non-dimensional mass blowing rate \\
+$\phi$ & blowing reduction factor \\
+$\mathbf{H}$ & vector of nodal in-depth enthalpies (thermal state) \\
+\addlinespace
+\multicolumn{2}{@{}l}{\textit{Rigid body and GNC}} \\
+$\mathbf{r}_E, \mathbf{v}_E$ & ECEF position and velocity, m, m/s \\
+$\mathbf{q}_{E2B}$ & attitude quaternion, Earth to body \\
+$\bm{\omega}_B$ & body angular rate, rad/s \\
+$m_{\text{bulk}}$ & rigid-body mass, kg \\
+$\bm{\nu}_k$ & measurement innovation \\
+$\mathbf{S}_k$ & theoretical innovation covariance \\
+$\hat{\mathbf{C}}_k$ & sample innovation covariance over window $N_w$ \\
+$d_k^2$ & squared Mahalanobis distance of the innovation \\
+$\alpha_k$ & process noise inflation factor \\
+$\mathbf{Q}, \mathbf{R}$ & process and measurement noise covariances \\
+$V_c, A_c$ & closing velocity and closing acceleration, m/s, m/s$^2$ \\
+$R_{\text{LOS}}$ & line-of-sight range, m \\
+$t_{go}$ & time-to-go, s \\
+\addlinespace
+\multicolumn{2}{@{}l}{\textit{Statistics}} \\
+$\bm{\Sigma}$ & terminal impact covariance, m$^2$ \\
+$\lambda_1, \lambda_2$ & eigenvalues of $\bm{\Sigma}$, $\lambda_1 \ge \lambda_2$ \\
+$R_{95}$ & $95\%$ containment radius, m \\
+$N_{\text{MC}}$ & Monte Carlo sample count \\
+\bottomrule
+\end{longtable}
+
+\pagebreak
+
 \section{Introduction}
 \label{sec:intro}
-The design and validation of atmospheric aerospace vehicles require the continuous, high-fidelity evaluation of tightly coupled, multi-physics domains. During atmospheric maneuvering and terminal descent, a vehicle is subjected to severe aerodynamic loading, thermodynamic heating, and stochastic environmental disturbances. Historically, flight simulation architectures have compartmentalized these domains, treating structural aeroelasticity, thermal ablation, and Guidance, Navigation, and Control (GNC) as isolated discrete solvers. While effective for steady-state analysis, this discrete segregation introduces severe numerical friction during highly dynamic flight events. Traditional approaches heavily rely on moving-boundary formulations and discrete mesh regeneration for structural deformation \cite{shyy1996}. These moving-mesh paradigms inevitably introduce spatial interpolation errors, numerical discontinuities, and substantial computational overhead, fundamentally precluding the rapid execution of large-scale Monte Carlo stochastic batch analysis.
 
-To resolve these computational bottlenecks, this paper introduces the PASSES (Performance Analysis and Stochastic Simulation for Exo-atmospheric and Sub-orbital systems) framework. PASSES reimagines the multi-physics flight environment by completely eliminating moving boundaries and discrete interpolation algorithms. Instead, the framework relies entirely on fixed-domain, mathematically continuous formulations. By utilizing a comprehensive charring ablation formulation \cite{moyer1967}, the complex phase-change physics are resolved seamlessly, eliminating the need to explicitly track the receding surface. Concurrently, the vehicle's variable-stiffness structural bending dynamics are resolved utilizing Chebyshev Spectral Collocation \cite{trefethen2000}. Real-world structural discontinuities are mapped into the engine using analytical geometric transcription and hyperbolic blending, preserving global differentiability. By treating the vehicle as a unified system of ordinary differential equations integrated via the Method of Lines (MOL), PASSES achieves $C^\infty$ spatial continuity across a global state vector, $\mathbf{X}_{global}$, propagated forward in time by an RKF45 solver.
+The design and validation of atmospheric aerospace vehicles requires the simultaneous, high-fidelity evaluation of tightly coupled physical domains. During atmospheric maneuvering and terminal descent, a vehicle is subjected to severe aerodynamic loading, thermodynamic heating, and stochastic environmental disturbance. Historically, flight simulation architectures have compartmentalized these domains, treating structural aeroelasticity, thermal ablation, and Guidance, Navigation, and Control (GNC) as separate solvers exchanging boundary data. This partitioning is effective for steady-state analysis, but it introduces two costs that become dominant in the regimes of interest here.
 
-However, a mathematically rigorous physics engine is insufficient if the discrete GNC logic cannot survive catastrophic transient shocks. During stage separation, instantaneous mass loss and structural ringing routinely cause traditional Extended Kalman Filters (EKF) to diverge due to severe violations of the theoretical measurement covariance boundary. Rather than employing arbitrary blind multipliers, the PASSES GNC architecture implements Innovation-Based Adaptive Estimation (IAE) \cite{mehra1970}. By geometrically evaluating the EKF innovation sequence in state-space via the squared Mahalanobis distance \cite{barshalom2001}, the filter natively detects physical anomalies and dynamically scales the process noise matrix. Once the separation transient dampens, the vehicle executes terminal recovery utilizing Aerodynamically-Compensated APN (AC-APN). To prevent guidance saturation during non-linear atmospheric deceleration, this phase incorporates a quadratic time-to-go ($t_{go}$) prediction derived directly from the EKF, alongside feed-forward gravity compensation, ensuring robust intersection with the targeted coordinates \cite{zarchan2012}.
+The first cost is interpolation error at coupling interfaces. When structural, thermal, and aerodynamic domains are discretized on distinct meshes, every exchange of surface pressure, heat flux, or displacement requires spatial interpolation, and the resulting field is generally no smoother than $C^0$ across element boundaries. Gradients taken of an interpolated field --- and the aerodynamic and thermal closures require several --- amplify this error.
 
-Crucially, because the spectral formulations rely on continuous RHS operators, the PASSES architecture avoids mid-flight matrix inversions. This mathematical elegance enables the entire framework to be deployed efficiently within a containerized environment. Furthermore, this vectorization strategy allows the massive linear algebra formulations required for Monte Carlo batch execution to be offloaded directly to CUDA-enabled hardware, generating statistically rigorous dispersion footprints.
+The second cost is remeshing. Ablative recession and large structural deformation are conventionally handled by moving-boundary formulations with periodic mesh regeneration \cite{shyy1996, crank1984}. Remeshing is expensive, it is difficult to vectorize, and it introduces a projection step between the pre- and post-remesh solution that is a further source of non-smoothness. For a single deterministic trajectory this is tolerable. For the $10^3$--$10^4$ replicate trajectories required to resolve a terminal dispersion footprint, it is not.
+
+This paper presents PASSES (Parameterized AeroStructural State-Estimation Sandbox), a framework in which every spatial domain is discretized once, on a fixed computational grid, and held fixed for the entire trajectory. The framework is built on three formulations that make a fixed grid possible without sacrificing the physics:
+
+\begin{enumerate}
+    \item \textbf{Structural.} Bending under spatially varying flexural rigidity is discretized by Chebyshev spectral collocation \cite{trefethen2000}, with free-free boundary conditions imposed by projection onto the null space of the boundary constraint operator \cite{hsu2018} rather than by row replacement. Projection preserves the symmetry of the reduced operator, which row replacement destroys.
+
+    \item \textbf{Thermal.} Ablation is governed by a two-phase charring model in the style of the CMA framework \cite{moyer1968, chen1999}. A Landau coordinate transformation maps the receding physical domain onto a fixed computational domain, so surface recession enters the energy equation as a grid-velocity advection term rather than as a moving boundary. This is what eliminates front tracking; the front still exists physically, but it is stationary in computational coordinates.
+
+    \item \textbf{Coupling.} Localized slosh forces, which are point loads on a continuous beam, are regularized by a Gaussian kernel normalized against the collocation quadrature rule, so that total force is transferred exactly rather than to within quadrature error.
+\end{enumerate}
+
+The resulting semi-discrete system is a single system of ordinary differential equations in one global state vector, integrated by the Method of Lines. Section~\ref{sec:integration} addresses a consequence of this choice that is frequently left implicit in the spectral literature: the fourth-order collocation operator has an eigenvalue spread that imposes a severe explicit step-size limit, and we state that limit rather than assume it away.
+
+A physics formulation is of limited value if the GNC logic built on it cannot survive the transients the physics produces. During stage separation, instantaneous mass loss and structural ringing drive measurement innovations far outside the covariance predicted by the filter, and a fixed-gain Extended Kalman Filter (EKF) will diverge. PASSES pairs a $\chi^2$ test on the squared Mahalanobis distance of the innovation \cite{barshalom2001} with Innovation-Based Adaptive Estimation \cite{mehra1970, mohamed1999, hide2003}, inflating process noise by a bounded trace ratio while the anomaly persists. Terminal guidance uses Aerodynamically-Compensated Augmented Proportional Navigation with a numerically stable time-to-go root and feed-forward gravity compensation \cite{zarchan2012}.
+
+\subsection{Scope of this manuscript}
+\label{sec:scope}
+
+This manuscript presents the mathematical formulation, the discretization, the stability constraints that follow from it, and the verification and validation plan. It does not present numerical results. Every quantity that requires execution of the implementation --- convergence rates, condition numbers, filter recovery times, dispersion footprints, and GPU throughput --- is marked \PENDING{} in place and is the subject of a companion experimental report. Claims in this paper are therefore restricted to what can be established analytically or by direct reference to prior literature. Readers should treat performance assertions as design targets, not measurements.
+
+A companion manuscript \cite{knox2026hgv} extends the same fixed-grid principle to six-degree-of-freedom hypersonic glide and fractional orbital trajectories, replacing the Euler--Bernoulli beam with a Mindlin--Reissner anisotropic plate and the dense Chebyshev operator with a sparse ultraspherical one.
+
+\section{Related Work}
+\label{sec:related}
+
+The individual components of PASSES are established. The contribution claimed here is their combination under a single fixed-grid, single-state-vector formulation, and the consequences that follow for stochastic batch execution.
+
+\paragraph{Ablation and thermal response.} The CMA framework of Moyer and Rindal \cite{moyer1968} established the two-phase charring formulation with in-depth pyrolysis and surface energy balance that remains the basis of production tools. FIAT \cite{chen1999} provides a fully implicit one-dimensional implementation. Dec and Braun \cite{dec2006} give an approximate sizing formulation for entry system design. These tools solve the thermal problem to a fidelity PASSES does not attempt to exceed; the difference is that they are one-dimensional stand-alone solvers coupled to trajectory codes by file exchange, whereas here the thermal state is a block of the same ODE state vector as the structural and rigid-body states and is advanced by the same integrator.
+
+\paragraph{Spectral methods for structural operators.} Trefethen \cite{trefethen2000} is the standard reference for Chebyshev collocation. The principal difficulty for fourth-order operators is conditioning: the dense collocation representation of $\diff^4/\diff x^4$ has a condition number growing as $\mathcal{O}(N^8)$. Two families of remedy exist. Driscoll and Hale \cite{driscoll2016} resample onto a rectangular grid so that boundary conditions are appended rather than substituted. Olver and Townsend \cite{olver2013} reformulate in an ultraspherical basis in which the differential operator is banded and the conditioning is $\mathcal{O}(1)$. PASSES uses the null-space projection of Hsu et al.\ \cite{hsu2018}, which retains the dense collocation basis but preserves operator symmetry; the companion HGV paper adopts the ultraspherical route instead, for reasons of sparsity in the bivariate case.
+
+\paragraph{Adaptive filtering.} Mehra \cite{mehra1970} established the identification of unknown process and measurement covariances from the innovation sequence, and surveyed the resulting family of approaches in \cite{mehra1972}. Mohamed and Schwarz \cite{mohamed1999} developed the innovation-based variant for INS/GPS integration, and Hide et al.\ \cite{hide2003} characterized its behavior with low-cost inertial sensors. The adaptation used here is a deliberately conservative special case: rather than estimating $\mathbf{Q}$ entrywise, which is prone to indefiniteness, it estimates a single scalar inflation factor.
+
+\paragraph{Trajectory optimization.} Pseudospectral discretization of optimal control \cite{elnagar1995, benson2006, huntington2008} shares the spectral machinery used here for the structural operator. PASSES does not currently solve an optimal control problem in the loop; the companion HGV paper does.
+
+\paragraph{Positioning.} The closest production analogue to the combination presented here is a coupled FIAT/Nastran/POST-class toolchain. Such a toolchain is more mature and more extensively validated in each individual domain. The claim made for PASSES is narrower and specific: because the coupled system is a single ODE with a fixed sparsity pattern and no mid-flight remeshing or matrix refactorization, a replicate batch is a batched tensor operation, which is what makes the Monte Carlo sample sizes in \cref{sec:stochastic} tractable on a single accelerator. Whether that advantage survives contact with the implementation is the question the companion experimental report exists to answer.
 
 \section{Mathematical Foundations: The Unified Physics Engine}
 \label{sec:physics}
 
-\subsection{Aeroelastic Dynamics and Spectral Collocation}
-The structural bending dynamics of the vehicle are governed by an anisotropic flexural formulation. During atmospheric flight, the vehicle experiences highly non-uniform mass distribution $m(x)$ and variable bending stiffness governed by the anisotropic rigidity(?) tensor, yielding an effective stiffness magnitude $EI(x)$, driven by localized aerodynamic heating and stage configuration. The governing partial differential equation (PDE) for the transverse deflection $w(x,t)$ is defined as:
+\subsection{Aeroelastic dynamics and spectral collocation}
+\label{sec:aeroelastic}
+
+The structural bending dynamics are governed by an Euler--Bernoulli beam with spatially varying mass and flexural rigidity. Let $w(x,t)$ denote transverse deflection over the physical domain $x \in [0, L]$. The governing partial differential equation is
 \begin{equation}
-\frac{\partial^2}{\partial x^2} \left( EI(x) \frac{\partial^2 w(x,t)}{\partial x^2} \right) + m(x) \frac{\partial^2 w(x,t)}{\partial t^2} = q(x,t)
+\label{eq:beam}
+\frac{\partial^2}{\partial x^2} \left( EI(x) \frac{\partial^2 w(x,t)}{\partial x^2} \right) + m(x) \frac{\partial^2 w(x,t)}{\partial t^2} = q(x,t).
 \end{equation}
 
-PASSES utilizes Chebyshev Spectral Collocation to approximate the structural state over the fixed domain $x \in [-1, 1]$. To avoid spatial derivative truncation errors, the operator is explicitly expanded using the full product rule derivative matrices:
+\begin{assumption}
+\label{as:beam}
+Deflections are small relative to $L$, so that the linear curvature-displacement relation holds; cross-sections remain plane and normal to the deformed axis, so transverse shear and rotary inertia are neglected; and $EI(x) \in C^2([0,L])$ with $EI(x) > 0$. The last condition is what permits the product-rule expansion below and is the reason the material property fields are constructed by hyperbolic blending rather than by piecewise assignment.
+\end{assumption}
+
+\Cref{as:beam} is a genuine restriction. Euler--Bernoulli theory loses accuracy when the section depth is not small relative to the bending wavelength, which is exactly the regime of the thick hull sections addressed in the companion paper by a Mindlin--Reissner formulation.
+
+The physical domain is mapped to the Chebyshev computational domain $\xi \in [-1,1]$ by the affine transformation
 \begin{equation}
-    \mathbf{K} = \text{diag}(\mathbf{EI})\mathbf{D}^4 + 2\text{diag}(\mathbf{D}\mathbf{EI})\mathbf{D}^3 + \text{diag}(\mathbf{D}^2\mathbf{EI})\mathbf{D}^2
+\label{eq:map}
+x = \frac{L}{2}(\xi + 1), \qquad \frac{\diff}{\diff x} = \frac{2}{L}\frac{\diff}{\diff \xi},
 \end{equation}
-To enforce unconstrained free-free boundary conditions while maintaining stability, the Null Space Approach (NSA) is employed \cite{hsu2018}, projecting the continuous ODE onto boundary constraint null spaces to eliminate $\mathcal{O}(N^8)$ condition number scaling.
+so that a differentiation matrix $\mathbf{D}$ constructed on $\xi$ represents $\diff/\diff x$ as $(2/L)\mathbf{D}$. All operators below are written in computational coordinates with the scaling factor absorbed; the factor $(2/L)^4$ on the fourth-derivative term must be carried explicitly in implementation and is a common source of error.
 
-\subsection{Fluid Slosh Dynamics and Spectral Grid Projection}
-Liquid propellant movement inside structural tanks introduces dynamic mass instability. PASSES models propellant slosh using an equivalent spring-mass-damper system at discrete positions $x_s^{(k)}$.
-
-Because fluid slosh acts as a localized point-mass disturbance on the continuous Euler-Bernoulli beam, directly applying a Dirac delta function triggers high-frequency numerical oscillations (the Gibbs phenomenon) throughout the spatial domain. To preserve global $C^\infty$ convergence, the localized point forces are regularized using a smooth Gaussian spatial distribution kernel:
+Expanding the outer derivative in \cref{eq:beam} by the product rule,
 \begin{equation}
-    \delta_\sigma(\xi - \xi_s^{(k)}) = \frac{1}{\sigma \sqrt{2\pi}} \exp\left( -\frac{(\xi - \xi_s^{(k)})^2}{2\sigma^2} \right)
+\label{eq:expand}
+\frac{\partial^2}{\partial x^2}\left(EI \frac{\partial^2 w}{\partial x^2}\right)
+= EI \frac{\partial^4 w}{\partial x^4}
++ 2 \frac{\partial EI}{\partial x}\frac{\partial^3 w}{\partial x^3}
++ \frac{\partial^2 EI}{\partial x^2}\frac{\partial^2 w}{\partial x^2}.
 \end{equation}
-where the spatial bandwidth parameter $\sigma$ is matched to the local collocation node spacing. The continuous spatial force distribution $q_{slosh}(x, t)$ is therefore modeled as:
+Let $\mathbf{EI} \in \R^{N+1}$ denote the vector of rigidity values sampled at the Chebyshev--Gauss--Lobatto nodes $\xi_j = \cos(j\pi/N)$, $j = 0,\dots,N$. Collocating \cref{eq:expand} at those nodes gives the assembled stiffness operator
 \begin{equation}
-    q_{slosh}(x, t) = \sum_{k=1}^{N_{tank}} F_{slosh}^{(k)}(t) \, \delta_\sigma\left(x - x_s^{(k)}\right)
+\label{eq:stiffness}
+\mathbf{K} = \diag(\mathbf{EI})\,\mathbf{D}^4 + 2\,\diag(\mathbf{D}\,\mathbf{EI})\,\mathbf{D}^3 + \diag(\mathbf{D}^2 \mathbf{EI})\,\mathbf{D}^2,
 \end{equation}
+with mass operator $\mathbf{M} = \diag(\mathbf{m})$. Retaining all three terms of \cref{eq:expand}, rather than the leading term alone, is necessary whenever $EI$ varies appreciably over a bending wavelength, which it does across stage joints and in regions of localized thermal softening.
 
-\subsection{Thermodynamics and Charring Ablation}
-Modern composite thermal protection systems (such as PICA or carbon-phenolic) do not undergo pure melting. Instead, they experience complex thermal degradation (pyrolysis) across an extended internal reactive zone. Treating ablation as a simple phase-change Stefan problem severely underestimates internal pore pressures and fails to capture the reduction in heat transfer caused by boundary layer blowing.
+\begin{remark}
+\Cref{eq:stiffness} is not symmetric, because $\diag(\mathbf{EI})\mathbf{D}^4$ is not. The self-adjointness of the continuous operator is recovered in the weak form; the collocation form used here trades that structure for simplicity of assembly. The null-space projection of \cref{sec:nsa} preserves whatever symmetry the unprojected operator possesses but does not create symmetry that was absent.
+\end{remark}
 
-PASSES upgrades the thermodynamic engine to a two-phase charring ablation model based on the CMA framework \cite{moyer1967}. The thermodynamic equations explicitly incorporate virgin material decomposition rates, pyrolysis gas energy absorption, char porosity, and boundary layer blowing reduction factors. As pyrolysis gases percolate through the porous char toward the outer surface, they absorb thermal energy and are injected into the hypersonic boundary layer, generating a substantial "blowing effect" that reduces convective surface heating.
+\subsection{Free-free boundary conditions by null-space projection}
+\label{sec:nsa}
 
-\subsection{The Global State Vector and Method of Lines (MOL)}
-To simulate the vehicle's trajectory simultaneously with its internal thermo-structural dynamics, the bulk rigid-body kinematics are coupled to the spectral grid. A critical addition is the inclusion of full six-degree-of-freedom (6-DOF) rotational states—attitude quaternions $\mathbf{q}_{E2B}$ and angular body rates $\boldsymbol{\omega}_B$—necessary to accurately model the physical coupling between structural bending slopes $\frac{\partial w}{\partial x}$ and onboard IMU sensor orientations. 
-
-The complete physical framework is defined by the fully coupled state vector:
+An unconstrained vehicle in flight satisfies free-free boundary conditions: zero bending moment and zero shear at both ends,
 \begin{equation}
-\mathbf{X}_{global} = \begin{bmatrix} \mathbf{r}_E \\ \mathbf{v}_E \\ \mathbf{q}_{E2B} \\ \boldsymbol{\omega}_B \\ m_{bulk} \\ \mathbf{w} \\ \mathbf{\dot{w}} \\ \mathbf{H} \end{bmatrix}
+\label{eq:bc}
+\left. EI \frac{\partial^2 w}{\partial x^2} \right|_{x = 0, L} = 0,
+\qquad
+\left. \frac{\partial}{\partial x}\!\left(EI \frac{\partial^2 w}{\partial x^2}\right) \right|_{x = 0, L} = 0 .
 \end{equation}
-This massive, fully coupled ODE system is propagated forward in time continuously utilizing an embedded Runge-Kutta (RKF45) solver.
+Collocating \cref{eq:bc} yields four linear constraints, written $\mathbf{B}\mathbf{w} = \mathbf{0}$ with $\mathbf{B} \in \R^{4 \times (N+1)}$.
 
-\section{Guidance, Navigation, and Control (GNC) Architecture}
+The conventional treatment replaces four rows of $\mathbf{K}$ with the rows of $\mathbf{B}$. This enforces the constraints but destroys any symmetry of $\mathbf{K}$ and produces complex eigenvalues with positive real parts for the free-free case, which manifest as spurious growth in time integration. The null-space approach \cite{hsu2018} instead computes an orthonormal basis $\mathbf{Z} \in \R^{(N+1) \times (N-3)}$ for $\ker \mathbf{B}$ --- in practice from the trailing right singular vectors of $\mathbf{B}$, or from a rank-revealing QR factorization of $\mathbf{B}^{\!\top}$ --- and substitutes $\mathbf{w} = \mathbf{Z}\hat{\mathbf{w}}$. Every admissible $\hat{\mathbf{w}}$ then satisfies the boundary conditions identically, since $\mathbf{B}\mathbf{Z} = \mathbf{0}$ by construction. Left-multiplying by $\mathbf{Z}^{\!\top}$ gives the reduced system
+\begin{equation}
+\label{eq:reduced}
+\underbrace{\mathbf{Z}^{\!\top}\mathbf{M}\mathbf{Z}}_{\hat{\mathbf{M}}} \ddot{\hat{\mathbf{w}}}
++ \underbrace{\mathbf{Z}^{\!\top}\mathbf{K}\mathbf{Z}}_{\hat{\mathbf{K}}} \hat{\mathbf{w}}
+= \mathbf{Z}^{\!\top}\mathbf{f},
+\end{equation}
+of dimension $N-3$. Because $\mathbf{Z}$ has orthonormal columns, $\hat{\mathbf{M}} \succ 0$ whenever $\mathbf{M} \succ 0$, and the reduced problem is a well-posed generalized eigenvalue problem.
+
+\begin{remark}[Conditioning]
+\label{rem:conditioning}
+The dense Chebyshev representation of $\diff^4/\diff x^4$ has $\kappa(\mathbf{D}^4) = \mathcal{O}(N^8)$. Projection onto $\ker \mathbf{B}$ removes the four modes most responsible for the extremal singular values, and Hsu et al.\ \cite{hsu2018} report substantially improved conditioning in the beam problems they examine. We deliberately do not assert a sharp asymptotic rate for $\kappa(\hat{\mathbf{K}})$ here: we have not proved one, and the constant depends on the rigidity profile $EI(x)$. Measuring $\kappa(\hat{\mathbf{K}})$ against $N$ for the representative profiles of this study is verification task V1 in \cref{sec:vandv}. \PENDING{measured $\kappa(\hat{\mathbf{K}})$ versus $N$}
+\end{remark}
+
+\subsection{Fluid slosh and quadrature-consistent force regularization}
+\label{sec:slosh}
+
+Liquid propellant motion is modeled by equivalent spring-mass-damper elements at axial stations $x_s^{(k)}$, $k = 1,\dots,N_{\text{tank}}$, following the standard mechanical-analogue treatment \cite{abramson1966, dodge2000, pei2021}. Each element applies a lateral force $F_{\text{slosh}}^{(k)}(t)$ to the structure at a point.
+
+A point load on a spectral grid is a Dirac delta, whose spectral expansion has coefficients that do not decay, producing Gibbs oscillations across the entire domain. The load is therefore regularized by a Gaussian kernel,
+\begin{equation}
+\label{eq:kernel}
+\delta_\sigma(x - x_s) = \frac{1}{\sigma\sqrt{2\pi}} \exp\left( -\frac{(x - x_s)^2}{2\sigma^2} \right),
+\end{equation}
+giving the distributed load
+\begin{equation}
+\label{eq:sloshforce}
+q_{\text{slosh}}(x,t) = \sum_{k=1}^{N_{\text{tank}}} F_{\text{slosh}}^{(k)}(t)\, \tilde{\delta}_\sigma\!\left(x - x_s^{(k)}\right).
+\end{equation}
+
+Two details determine whether this is admissible, and both are frequently omitted.
+
+\paragraph{Bandwidth.} Chebyshev--Gauss--Lobatto nodes are not uniformly spaced: local spacing is $h(x) \approx \pi\sqrt{1-\xi^2}/N$, which is $\mathcal{O}(N^{-1})$ near the center and $\mathcal{O}(N^{-2})$ near the ends. A single global $\sigma$ is therefore either under-resolved at the center or wastefully wide at the ends. We set $\sigma^{(k)} = \gamma\, h(x_s^{(k)})$ with $\gamma \in [1,2]$, so the kernel is resolved by at least a few nodes wherever the tank happens to sit. Taking $\gamma$ below $1$ reintroduces the oscillations the kernel was meant to suppress; taking it large over-smears the load and artificially stiffens the response.
+
+\paragraph{Exact force transfer.} The Gaussian in \cref{eq:kernel} integrates to unity over $\R$, but not over the truncated domain $[0,L]$, and in any case the discrete system sees not the integral but the quadrature sum. Applying \cref{eq:kernel} directly therefore transfers slightly less than $F_{\text{slosh}}^{(k)}$ to the structure, and the deficit varies with $x_s^{(k)}$ as the tank drains --- a spurious, slowly varying force error. We instead use the discretely normalized kernel
+\begin{equation}
+\label{eq:normkernel}
+\tilde{\delta}_\sigma(x_j - x_s) = \frac{\delta_\sigma(x_j - x_s)}{\displaystyle\sum_{i=0}^{N} w_i^{\text{CC}}\, \delta_\sigma(x_i - x_s)},
+\end{equation}
+where $w_i^{\text{CC}}$ are the Clenshaw--Curtis weights associated with the collocation nodes.
+
+\begin{proposition}[Exact force transfer]
+\label{prop:force}
+With $\tilde{\delta}_\sigma$ defined by \cref{eq:normkernel}, the total transverse force delivered to the discrete structural system equals $\sum_k F_{\text{slosh}}^{(k)}$ exactly, independent of $\sigma$, $N$, and the station $x_s^{(k)}$.
+\end{proposition}
+
+\begin{proof}
+The discrete total force is $\sum_j w_j^{\text{CC}} q_{\text{slosh}}(x_j)$. Substituting \cref{eq:sloshforce} and \cref{eq:normkernel} and exchanging the order of summation, the inner sum $\sum_j w_j^{\text{CC}} \tilde{\delta}_\sigma(x_j - x_s^{(k)})$ equals unity by construction of the denominator, leaving $\sum_k F_{\text{slosh}}^{(k)}$.
+\end{proof}
+
+\begin{remark}
+\Cref{prop:force} guarantees the zeroth moment only. The first moment --- the applied bending moment about the vehicle center of mass --- is transferred to within the quadrature error of the kernel's first moment, which is $\mathcal{O}(\sigma^2)$ for a symmetric kernel in the domain interior but degrades near the endpoints where the kernel is truncated asymmetrically. Tanks located within $\sim 2\sigma$ of a vehicle end should be expected to exhibit a small moment bias. Quantifying it is verification task V2 in \cref{sec:vandv}.
+\end{remark}
+
+\subsection{Charring ablation on a fixed computational domain}
+\label{sec:ablation}
+
+Composite thermal protection materials such as PICA and carbon-phenolic do not melt. They pyrolyze: an in-depth reaction zone of finite thickness decomposes the virgin resin, the resulting gas percolates outward through the porous char, and the char surface recedes by oxidation and mechanical removal. Modeling this as a single-temperature Stefan phase change misrepresents both the in-depth temperature profile and the surface energy balance, because it omits the pyrolysis gas enthalpy and the blowing reduction of convective heating. PASSES therefore uses a two-phase charring formulation in the style of CMA \cite{moyer1968, chen1999}.
+
+\subsubsection{Decomposition kinetics}
+
+The solid is treated as three components --- two resin constituents ($A$, $B$) and a filler ($C$) --- each decomposing by an independent Arrhenius law,
+\begin{equation}
+\label{eq:arrhenius}
+\left.\frac{\partial \rho_i}{\partial t}\right|_{y}
+= -A_i\, \rho_{v,i} \left( \frac{\rho_i - \rho_{c,i}}{\rho_{v,i}} \right)^{\!n_i} \exp\!\left( -\frac{E_i}{\mathcal{R} T} \right),
+\qquad i \in \{A, B, C\},
+\end{equation}
+with the bulk density recovered as $\rho = \Gamma(\rho_A + \rho_B) + (1-\Gamma)\rho_C$ for resin volume fraction $\Gamma$. The instantaneous degree of char is $\beta = (\rho_v - \rho)/(\rho_v - \rho_c)$, and the thermal conductivity, specific heat, and emissivity are interpolated between virgin and char values by $\beta$.
+
+\subsubsection{Landau transformation to a fixed grid}
+
+Let $s(t)$ be the recession depth. The physical thermal domain $y \in [s(t), L_{\text{TPS}}]$ shrinks as the surface recedes. Define
+\begin{equation}
+\label{eq:landau}
+\eta = \frac{y - s(t)}{L_{\text{TPS}} - s(t)} \in [0,1],
+\end{equation}
+which maps the receding domain onto a fixed computational domain for all $t$ with $s(t) < L_{\text{TPS}}$. Under \cref{eq:landau} the time derivative at fixed $\eta$ acquires a grid-velocity term,
+\begin{equation}
+\label{eq:gridvel}
+\left.\frac{\partial}{\partial t}\right|_{y}
+= \left.\frac{\partial}{\partial t}\right|_{\eta}
+- \frac{\dot{s}(1-\eta)}{L_{\text{TPS}} - s}\, \frac{\partial}{\partial \eta}.
+\end{equation}
+This is the precise sense in which PASSES eliminates front tracking. The recession front is not removed from the physics; it is rendered stationary in computational coordinates, so no node is ever created, destroyed, or interpolated. The cost is the advection term in \cref{eq:gridvel}, which is explicit, local, and cheap.
+
+\subsubsection{In-depth energy equation}
+
+Combining conduction, pyrolysis gas convection, decomposition enthalpy, and the grid velocity, the in-depth energy equation in computational coordinates is
+\begin{equation}
+\label{eq:energy}
+\rho c_p \left.\frac{\partial T}{\partial t}\right|_{\eta}
+= \frac{1}{\ell^2}\frac{\partial}{\partial \eta}\!\left( k \frac{\partial T}{\partial \eta} \right)
++ \frac{1}{\ell}\left[ \dot{m}_g c_{p_g} + \rho c_p \dot{s}(1-\eta) \right] \frac{\partial T}{\partial \eta}
++ \left( h_g - \bar{h} \right) \left.\frac{\partial \rho}{\partial t}\right|_{\eta},
+\end{equation}
+where $\ell = L_{\text{TPS}} - s(t)$. The pyrolysis gas flux follows from mass continuity in the same coordinates,
+\begin{equation}
+\label{eq:gasflux}
+\frac{1}{\ell}\frac{\partial \dot{m}_g}{\partial \eta} = -\left.\frac{\partial \rho}{\partial t}\right|_{\eta},
+\end{equation}
+integrated from the back face outward with $\dot{m}_g = 0$ at $\eta = 1$.
+
+\subsubsection{Surface energy balance and blowing reduction}
+
+At $\eta = 0$ the surface balance equates net incoming flux to conduction into the solid:
+\begin{equation}
+\label{eq:sebalance}
+\underbrace{\rho_e u_e C_H (h_r - h_w)\,\phi}_{\text{convective, blowing-reduced}}
++ \underbrace{\alpha_w \dot{q}_{\text{rad,in}}}_{\text{absorbed radiation}}
++ \underbrace{\dot{m}_c h_c + \dot{m}_g h_g - (\dot{m}_c + \dot{m}_g) h_w}_{\text{mass-transfer enthalpy}}
+- \underbrace{\varepsilon \sigma_{\!S} T_w^4}_{\text{re-radiation}}
+= \left. \frac{k}{\ell} \frac{\partial T}{\partial \eta} \right|_{\eta = 0},
+\end{equation}
+with char mass flux $\dot{m}_c = \rho_c \dot{s}$. The injection of pyrolysis gas and char into the boundary layer thickens it and reduces convective heating. This is captured by the standard blowing correction
+\begin{equation}
+\label{eq:blowing}
+\phi = \frac{\ln(1 + 2\lambda B')}{2\lambda B'},
+\qquad
+B' = \frac{\dot{m}_c + \dot{m}_g}{\rho_e u_e C_H},
+\end{equation}
+with $\lambda \approx 0.5$ for laminar and $\lambda \approx 0.4$ for turbulent boundary layers. Note that $\phi \to 1$ as $B' \to 0$, so \cref{eq:blowing} degrades gracefully to the non-ablating limit; as with \cref{eq:tgo} below, the expression should be evaluated by its series expansion for small $B'$ to avoid cancellation.
+
+\begin{remark}
+\Cref{eq:sebalance} presumes a surface thermochemistry table supplying $\dot{s}$ as a function of $(T_w, p_w, B')$, generated offline by equilibrium minimization. PASSES treats this table as an input. It is the one element of the thermal model that is not evaluated from closed form at runtime, and it is interpolated --- a departure from the $C^\infty$ claim made for the rest of the framework, which we note rather than obscure. Table interpolation is performed with a $C^2$ tensor-product spline so that the discontinuity is in the third derivative rather than the first.
+\end{remark}
+
+\subsection{The global state vector and Method of Lines}
+\label{sec:mol}
+
+The bulk rigid-body kinematics are coupled to the spectral grids in a single state vector. Six-degree-of-freedom rotational states are retained because the coupling between structural bending slope $\partial w/\partial x$ and inertial measurement unit orientation is a first-order effect on the navigation solution and cannot be recovered from translational states alone. The complete state is
+\begin{equation}
+\label{eq:state}
+\mathbf{X}_{\text{global}} = \begin{bmatrix} \mathbf{r}_E \\ \mathbf{v}_E \\ \mathbf{q}_{E2B} \\ \bm{\omega}_B \\ m_{\text{bulk}} \\ \hat{\mathbf{w}} \\ \dot{\hat{\mathbf{w}}} \\ \mathbf{H} \end{bmatrix}
+\in \R^{n}, \qquad
+n = 3 + 3 + 4 + 3 + 1 + 2(N - 3) + N_T,
+\end{equation}
+where $\hat{\mathbf{w}}$ is the null-space-reduced structural coordinate of \cref{eq:reduced}, and $\mathbf{H} \in \R^{N_T}$ is the vector of nodal in-depth enthalpies on the thermal grid, from which $T$ is recovered by inverting the caloric equation of state. Enthalpy rather than temperature is carried as the state variable because it remains continuous across the pyrolysis zone where $c_p$ varies sharply.
+
+\subsubsection{Quaternion norm drift}
+
+The attitude quaternion evolves by
+\begin{equation}
+\label{eq:quat}
+\dot{\mathbf{q}}_{E2B} = \tfrac{1}{2}\,\bm{\Omega}(\bm{\omega}_B)\,\mathbf{q}_{E2B},
+\qquad
+\bm{\Omega}(\bm{\omega}) = \begin{bmatrix} 0 & -\bm{\omega}^{\!\top} \\ \bm{\omega} & -[\bm{\omega}\times] \end{bmatrix}.
+\end{equation}
+The unit-norm constraint $\|\mathbf{q}\| = 1$ is an invariant of the exact flow of \cref{eq:quat} but is not preserved by a general Runge--Kutta method, which drifts off the constraint manifold at the order of the local truncation error and accumulates over a long trajectory. Rather than renormalizing after each step --- which is cheap but silently perturbs the embedded error estimate the adaptive controller relies on --- PASSES applies Baumgarte stabilization inside the right-hand side,
+\begin{equation}
+\label{eq:baumgarte}
+\dot{\mathbf{q}}_{E2B} = \tfrac{1}{2}\bm{\Omega}(\bm{\omega}_B)\mathbf{q}_{E2B} + k_q\left(1 - \|\mathbf{q}_{E2B}\|^2\right)\mathbf{q}_{E2B},
+\end{equation}
+with $k_q > 0$ chosen so that $1/k_q$ is short relative to the trajectory but long relative to the step size. This renders the unit sphere attracting rather than merely invariant, and keeps the correction visible to the error controller.
+
+\subsection{Temporal integration and the explicit stability constraint}
+\label{sec:integration}
+
+The semi-discrete system is advanced by an embedded Runge--Kutta--Fehlberg (RKF45) pair with adaptive step control. This choice interacts badly with the spectral structural operator, and the interaction must be stated rather than assumed away.
+
+\begin{proposition}[Explicit step-size limit]
+\label{prop:stiff}
+Let $\hat{\mathbf{K}}, \hat{\mathbf{M}}$ be as in \cref{eq:reduced} with $\hat{\mathbf{M}} \succ 0$, and let $\lambda_{\max}$ be the largest generalized eigenvalue of $(\hat{\mathbf{K}}, \hat{\mathbf{M}})$. Written in first-order form, the undamped structural block has purely imaginary eigenvalues $\pm i\,\omega_{\max}$ with $\omega_{\max} = \sqrt{\lambda_{\max}}$. Any explicit Runge--Kutta method with a bounded stability region requires
+\begin{equation}
+\label{eq:cfl}
+\Delta t \;\le\; \frac{C_{\text{RK}}}{\omega_{\max}},
+\end{equation}
+where $C_{\text{RK}}$ is the imaginary-axis stability limit of the method ($C_{\text{RK}} \approx 3.0$ for the fifth-order RKF member). Since $\lambda_{\max}$ inherits the $\mathcal{O}(N^8)$ growth of the fourth-derivative operator, $\omega_{\max} = \mathcal{O}(N^4)$ and hence $\Delta t = \mathcal{O}(N^{-4})$.
+\end{proposition}
+
+\begin{proof}
+Immediate from the generalized eigendecomposition of the second-order system and the definition of the linear stability region; the growth rate of $\lambda_{\max}$ follows from that of the collocation representation of $\diff^4/\diff x^4$.
+\end{proof}
+
+\begin{remark}[Consequence]
+\label{rem:consequence}
+\Cref{prop:stiff} is severe. At $N = 32$, $N^4 \approx 10^6$: an adaptive explicit integrator will select steps governed by structural modes far above the bandwidth of any physically meaningful excitation, and the trajectory cost becomes dominated by resolving modes that carry no energy. The framework does not escape this by virtue of being continuous, and any claim of an unbroken single-integrator trajectory must confront it.
+\end{remark}
+
+Two mitigations are available, and PASSES is designed to accept either.
+
+\paragraph{Modal truncation.} Solve the generalized eigenproblem for $(\hat{\mathbf{K}}, \hat{\mathbf{M}})$ once per stage configuration and retain the lowest $n_m$ modes, with $n_m$ chosen so that $\omega_{n_m}$ exceeds the highest excitation frequency of interest by a stated margin. This caps $\omega_{\max}$ at a physically motivated value and restores a workable $\Delta t$. It is the default. The cost is a re-solve at each configuration change, and the approximation error is quantified by the retained-mode mass participation ratio.
+
+\paragraph{IMEX splitting.} Treat the linear structural block implicitly and the aerodynamic, thermal, and rigid-body couplings explicitly. Since $\hat{\mathbf{K}}$ is constant between configuration changes, its factorization is reused across all steps and across all Monte Carlo replicates, which preserves the batching argument of \cref{sec:architecture}. This removes the constraint of \cref{eq:cfl} entirely at the cost of one triangular solve per stage.
+
+\begin{remark}
+The thermal block \cref{eq:energy} is a parabolic operator and carries its own explicit constraint $\Delta t = \mathcal{O}(\Delta \eta^2)$, which for the thermal grid resolutions of interest is typically less restrictive than \cref{eq:cfl} but is not negligible. The same IMEX treatment applies.
+\end{remark}
+
+Establishing which mitigation is preferable, and at what $n_m$, is verification task V3 in \cref{sec:vandv}. \PENDING{measured $\Delta t$ and wall-clock comparison across integration strategies}
+
+\section{Guidance, Navigation, and Control Architecture}
 \label{sec:gnc}
 
-\subsection{Multi-Body Separation Transients and Innovation-Based Adaptive Estimation (IAE)}
-During stage separation, instantaneous structural ringing and plume impingement generate intense, transient boundary conditions on the vehicle. This shock routinely causes measurement innovations ($\boldsymbol{\nu}_k = \mathbf{z}_k - \mathbf{h}(\hat{\mathbf{x}}_{k|k-1})$) to wildly exceed the theoretical covariance boundary $\mathbf{S}_k$. 
+\subsection{Anomaly detection by Mahalanobis distance}
+\label{sec:mahalanobis}
 
-To prevent filter divergence, PASSES implements Innovation-Based Adaptive Estimation (IAE) \cite{mehra1970, mohamed1999}. The framework dynamically scales the process noise matrix using an unconditionally stable trace-ratio calculation:
+Let the EKF innovation and its theoretical covariance be
 \begin{equation}
-    \alpha_k = \max \left(1, \frac{\max\left(0, \, \text{tr}(\hat{\mathbf{C}}_k - \mathbf{R}_k)\right)}{\text{tr}(\mathbf{H}_k \mathbf{P}_{k|k-1}\mathbf{H}_k^T) + \epsilon} \right)
+\label{eq:innov}
+\bm{\nu}_k = \mathbf{z}_k - \mathbf{h}(\hat{\mathbf{x}}_{k|k-1}),
+\qquad
+\mathbf{S}_k = \mathbf{H}_k \mathbf{P}_{k|k-1} \mathbf{H}_k^{\!\top} + \mathbf{R}_k .
 \end{equation}
-where $\epsilon > 0$ is a small regularizing constant. This ensures strict positive semi-definiteness on the innovation variance estimator, preventing the non-positive definite matrix subtractions that typically blind the filter during massive anomaly spikes. The process noise is then dynamically inflated: $\mathbf{Q}_{k}^* = \alpha_k \mathbf{Q}_{nominal}$.
-
-\subsection{Terminal Closed-Loop Guidance via Aerodynamically-Compensated APN}
-PASSES implements Aerodynamically-Compensated APN utilizing a Quadratic Time-to-Go prediction derived directly from the stabilized EKF closing acceleration estimate ($\hat{A}_c = \dot{\hat{V}}_c$):
+Under the nominal hypothesis --- correct model, correct noise statistics, valid linearization --- the normalized innovation squared
 \begin{equation}
-    t_{go} = \frac{-\hat{V}_c + \sqrt{\hat{V}_c^2 + 2 \hat{A}_c \Vert{}\mathbf{r}_{LOS}\Vert{}}}{\hat{A}_c}
+\label{eq:nis}
+d_k^2 = \bm{\nu}_k^{\!\top} \mathbf{S}_k^{-1} \bm{\nu}_k
 \end{equation}
-The commanded lateral acceleration ($\mathbf{a}_n$) is formulated orthogonally to the relative velocity vector, incorporating both the aerodynamically-scaled navigation gain and feed-forward gravity compensation.
+is distributed as $\chi^2$ with $m = \dim(\mathbf{z}_k)$ degrees of freedom \cite{barshalom2001}. An anomaly is declared when
+\begin{equation}
+\label{eq:gate}
+d_k^2 > \chi^2_{m,\,1-p},
+\end{equation}
+with $p$ the false-alarm probability, taken as $p = 10^{-3}$ so that nominal flight does not trigger adaptation. \Cref{eq:gate} is the geometric detector referred to throughout: it is a statement about the position of the innovation relative to the covariance ellipsoid the filter believes it should occupy, and it requires no model of the separation event itself.
 
-\section{Computational Architecture and Hardware Optimization}
+\begin{remark}
+\Cref{eq:nis} inherits the validity of the EKF linearization. During the most violent part of a separation transient the linearization is itself suspect, so $d_k^2$ should be read as a detector of \emph{model inadequacy} generally, not specifically of separation. This is adequate for the present purpose --- the response, process noise inflation, is the appropriate response to model inadequacy from any cause --- but it means the detector cannot be used to \emph{identify} the event.
+\end{remark}
+
+\subsection{Innovation-Based Adaptive Estimation}
+\label{sec:iae}
+
+On detection, the filter inflates its process noise. The sample innovation covariance over a sliding window of length $N_w$ is
+\begin{equation}
+\label{eq:samplecov}
+\hat{\mathbf{C}}_k = \frac{1}{N_w} \sum_{j = k - N_w + 1}^{k} \bm{\nu}_j \bm{\nu}_j^{\!\top},
+\end{equation}
+and the inflation factor is
+\begin{equation}
+\label{eq:alpha}
+\alpha_k = \min\!\left( \alpha_{\max},\;
+\max\!\left(1, \; \frac{\max\!\left(0, \; \tr(\hat{\mathbf{C}}_k - \mathbf{R}_k)\right)}{\tr\!\left(\mathbf{H}_k \mathbf{P}_{k|k-1}\mathbf{H}_k^{\!\top}\right) + \epsilon} \right) \right),
+\qquad
+\mathbf{Q}_k^* = \alpha_k \mathbf{Q}_{\text{nom}},
+\end{equation}
+with $\epsilon > 0$ a fixed regularizer and $\alpha_{\max}$ a finite cap.
+
+The window length $N_w$ is a genuine design parameter, not an implementation detail: it sets the trade between the variance of $\hat{\mathbf{C}}_k$ (which falls as $N_w^{-1}$) and the lag before the adaptation responds (which grows as $N_w$). We take $N_w$ corresponding to $0.5$--$2$ s of measurement history, short relative to the recovery time of the transient and long enough that $\hat{\mathbf{C}}_k$ is not dominated by a single sample.
+
+\begin{proposition}[Well-posedness of the inflation]
+\label{prop:psd}
+For any $\mathbf{Q}_{\text{nom}} \succeq 0$ and any realization of the innovation sequence, the inflated process noise satisfies $\mathbf{Q}_{\text{nom}} \preceq \mathbf{Q}_k^* \preceq \alpha_{\max}\mathbf{Q}_{\text{nom}}$, and in particular $\mathbf{Q}_k^* \succeq 0$.
+\end{proposition}
+
+\begin{proof}
+By \cref{eq:alpha}, $\alpha_k \in [1, \alpha_{\max}]$: the denominator is strictly positive by the $\epsilon$ regularizer, the numerator is non-negative by the inner $\max$, and the outer $\max$ and $\min$ bound the result. For $\alpha \ge 1$ and $\mathbf{Q}_{\text{nom}} \succeq 0$, $\alpha\mathbf{Q}_{\text{nom}} - \mathbf{Q}_{\text{nom}} = (\alpha-1)\mathbf{Q}_{\text{nom}} \succeq 0$, and similarly for the upper bound. Positive semidefiniteness is preserved under multiplication by a non-negative scalar.
+\end{proof}
+
+\begin{remark}[What the clamps actually do]
+\label{rem:clamps}
+It is worth being precise, because this is easy to overstate. Positive semidefiniteness of $\mathbf{Q}_k^*$ is \emph{not} a consequence of the inner $\max(0,\cdot)$: it follows trivially from scaling a PSD matrix by a non-negative scalar, as in \cref{prop:psd}. A clamp on the scalar trace $\tr(\hat{\mathbf{C}}_k - \mathbf{R}_k)$ implies nothing about the definiteness of the matrix $\hat{\mathbf{C}}_k - \mathbf{R}_k$, which may well be indefinite. The inner $\max$ serves a different and more mundane purpose: it prevents a sample-covariance deficit --- which occurs routinely when $N_w$ is small and the innovations happen to be quiet --- from driving $\alpha_k$ negative before the outer $\max$ sees it.
+
+The structural reason this adaptation is well behaved is that it estimates a single scalar rather than a full matrix. Entrywise estimators of $\mathbf{Q}$ in the style of \cite{mehra1970} can and do return indefinite matrices under short windows, and require projection back onto the PSD cone. Scalar inflation is strictly weaker --- it cannot redistribute uncertainty between states, only scale it --- and that weakness is what buys unconditional well-posedness. The $\alpha_{\max}$ cap is likewise not decorative: without it, a persistent modeling error drives $\alpha_k$ upward without bound, and the filter asymptotically ignores its dynamic model entirely.
+\end{remark}
+
+Characterizing recovery time and the sensitivity of the terminal solution to $(N_w, \alpha_{\max}, p)$ is validation task V5 in \cref{sec:vandv}. \PENDING{filter recovery time and parameter sensitivity}
+
+\subsection{Terminal guidance: Aerodynamically-Compensated APN}
+\label{sec:apn}
+
+Let $R_{\text{LOS}} = \|\mathbf{r}_{\text{LOS}}\|$ be the range to the target, $V_c = -\dot{R}_{\text{LOS}} > 0$ the closing velocity, and $A_c = \dot{V}_c$ the closing acceleration, all supplied by the EKF. Under constant $A_c$, the range satisfies $R(t) = R_{\text{LOS}} - V_c t - \tfrac{1}{2}A_c t^2$, and the time-to-go is the smallest positive root,
+\begin{equation}
+\label{eq:tgo_naive}
+t_{go} = \frac{-\hat{V}_c + \sqrt{\hat{V}_c^2 + 2\hat{A}_c R_{\text{LOS}}}}{\hat{A}_c}.
+\end{equation}
+
+\Cref{eq:tgo_naive} is algebraically correct and numerically unusable. As $\hat{A}_c \to 0$ --- the near-constant-closing-rate condition that holds over most of terminal flight --- both numerator and denominator vanish, and the numerator suffers catastrophic cancellation between two nearly equal quantities before being divided by a small number. PASSES evaluates the mathematically equivalent conjugate form
+\begin{equation}
+\label{eq:tgo}
+\boxed{\;
+t_{go} = \frac{2 R_{\text{LOS}}}{\hat{V}_c + \sqrt{\hat{V}_c^2 + 2\hat{A}_c R_{\text{LOS}}}}
+\;}
+\end{equation}
+
+\begin{proposition}[Stability of the time-to-go root]
+\label{prop:tgo}
+For $\hat{V}_c > 0$ and discriminant $\mathcal{D} = \hat{V}_c^2 + 2\hat{A}_c R_{\text{LOS}} \ge 0$, \cref{eq:tgo} and \cref{eq:tgo_naive} agree exactly in exact arithmetic; \cref{eq:tgo} is continuous at $\hat{A}_c = 0$ with $t_{go} \to R_{\text{LOS}}/\hat{V}_c$, involves no cancellation between like-signed quantities, and its denominator is bounded below by $\hat{V}_c > 0$.
+\end{proposition}
+
+\begin{proof}
+Multiply numerator and denominator of \cref{eq:tgo_naive} by $\hat{V}_c + \sqrt{\mathcal{D}}$. The numerator becomes $\mathcal{D} - \hat{V}_c^2 = 2\hat{A}_c R_{\text{LOS}}$, and the factor $\hat{A}_c$ cancels against the denominator, giving \cref{eq:tgo}. Both summands in the denominator are non-negative and the first is strictly positive, so no cancellation occurs and the denominator is bounded below by $\hat{V}_c$. Continuity at $\hat{A}_c = 0$ follows by direct substitution.
+\end{proof}
+
+\begin{remark}[Non-intercept guard]
+\label{rem:guard}
+When $\hat{A}_c < 0$ --- decelerating closure, the normal condition under atmospheric drag --- the discriminant $\mathcal{D}$ can become negative, meaning the constant-acceleration extrapolation predicts that the vehicle never reaches the target. This is a physically meaningful condition, not a numerical failure, and it must not be allowed to propagate as a NaN. PASSES clamps to the linear estimate,
+\[
+t_{go} = \begin{cases}
+2 R_{\text{LOS}} \big/ \big(\hat{V}_c + \sqrt{\mathcal{D}}\big), & \mathcal{D} \ge 0, \\[4pt]
+R_{\text{LOS}} / \hat{V}_c, & \mathcal{D} < 0,
+\end{cases}
+\]
+and raises a guidance-feasibility flag. In batch execution the flag is recorded per replicate, since a systematic pattern of infeasibility across the ensemble indicates an energy-management problem upstream rather than a guidance problem.
+\end{remark}
+
+The commanded lateral acceleration is formed orthogonally to the relative velocity vector, with navigation gain scaled by dynamic pressure and feed-forward gravity compensation,
+\begin{equation}
+\label{eq:apn}
+\mathbf{a}_n = N' \left( \dot{\bm{\lambda}} \times \mathbf{v}_{\text{rel}} \right) + \frac{N'}{2} \mathbf{a}_T - \mathbf{g}_{\perp},
+\end{equation}
+where $\dot{\bm{\lambda}}$ is the line-of-sight rate, $\mathbf{a}_T$ the estimated target acceleration, and $\mathbf{g}_\perp$ the component of gravity normal to $\mathbf{v}_{\text{rel}}$. The gravity term is feed-forward rather than corrective: without it the guidance law expends line-of-sight rate correcting a bias it could have anticipated, which shows up as a systematic downrange offset in the dispersion footprint.
+
+\section{Computational Architecture}
 \label{sec:architecture}
 
-\subsection{Containerized Environment via GitOps}
-To guarantee numerical reproducibility, the PASSES framework is fully containerized. Deployment is managed via a Git-tracked Docker Compose stack and the VS Code DevContainer specification. By establishing the build context atop an \texttt{nvidia/cuda:12.x-devel} base image, the environment ensures deterministic compilation of the underlying C++ linear algebra backends.
+\subsection{Reproducibility}
+\label{sec:repro}
 
-\subsection{CUDA Memory Architecture and Parallelization}
-The mathematical structure of PASSES allows for massive hardware optimization. Because the canonical Chebyshev differentiation matrices $\mathbf{D}$ remain globally constant, they are bound directly into the localized shared memory of the GPU's streaming multiprocessors. Conversely, the physical mass $\mathbf{M}(t)$ and stiffness $\mathbf{K}(t)$ matrices are updated dynamically via parallel CUDA assembly kernels to reflect non-linear material degradation under aerodynamic heating and fuel depletion without relying on single-thread CPU bottlenecks. 
+The framework is containerized. Deployment is managed by a Git-tracked Docker Compose stack and a VS Code DevContainer specification, with the build context established on an \texttt{nvidia/cuda:12.x-devel} base image so that the compilation of the underlying linear algebra backends is deterministic. Container digests, not tags, are pinned, so that a rebuild at a later date reproduces the same toolchain.
 
-During Monte Carlo execution, each distinct GPU thread calculates an independent trajectory block simultaneously, enabling the eigenvalue decomposition of bivariate normal spatial covariance matrices to extract highly rigorous Circular Error Probable (CEP) and 95\% containment radii ($R_{95}$).
+\subsection{Memory architecture and parallelization}
+\label{sec:cuda}
+
+The mathematical structure admits a specific and unusually clean parallelization, which is the substantive computational claim of this paper.
+
+The canonical Chebyshev differentiation matrices $\mathbf{D}$ depend only on $N$. They are identical across every Monte Carlo replicate and constant for the entire trajectory, so they are staged once into shared memory per streaming multiprocessor and read by every thread in the block. The mass and stiffness operators $\mathbf{M}(t)$, $\mathbf{K}(t)$ vary with fuel depletion and thermal softening and are reassembled by parallel kernels from \cref{eq:stiffness}, but their sparsity pattern is fixed, so no symbolic analysis is repeated.
+
+The consequence for batch execution is the following. Because the coupled system is one ODE with a fixed dimension and fixed sparsity, a batch of $N_{\text{MC}}$ replicates differing only in their sampled parameters and initial conditions is a rank-3 tensor operation: replicate index, state index, stage index. No replicate requires a remesh, and under the IMEX strategy of \cref{sec:integration} the factorization of $\hat{\mathbf{K}}$ is shared across the entire batch. This is what a moving-mesh formulation cannot offer, since there each replicate's mesh diverges from every other's after the first remesh event and the batch decoheres.
+
+\begin{remark}
+Replicates that adapt their step sizes independently will diverge in step count, causing warp divergence within a block. The mitigation is to integrate the batch on a common outer time grid with per-replicate substepping, at the cost of some wasted work on replicates that could have taken longer steps. The efficiency of this trade is an empirical question. \PENDING{measured warp divergence and achieved occupancy}
+\end{remark}
+
+\section{Stochastic Characterization of Terminal Dispersion}
+\label{sec:stochastic}
+
+Given $N_{\text{MC}}$ terminal impact points $\{(x_i, y_i)\}_{i=1}^{N_{\text{MC}}}$ in a local tangent plane, let $\hat{\bm{\mu}}$ and $\bm{\Sigma}$ be the sample mean and sample covariance, and let $\bm{\Sigma} = \mathbf{U}\bm{\Lambda}\mathbf{U}^{\!\top}$ be its eigendecomposition with $\lambda_1 \ge \lambda_2 > 0$ and $\sigma_i = \sqrt{\lambda_i}$. The eigenvectors give the principal axes of the dispersion ellipse and the eigenvalues its squared semi-axis scale.
+
+\subsection{Containment radius}
+
+Under a bivariate normal model, the locus of constant Mahalanobis radius $c$ encloses probability $1 - \exp(-c^2/2)$. The $95\%$ containment ellipse therefore corresponds to $c^2 = \chi^2_{2,\,0.95} = 5.991$, giving semi-axes
+\begin{equation}
+\label{eq:r95}
+a_{95} = 2.4477\,\sigma_1, \qquad b_{95} = 2.4477\,\sigma_2 ,
+\end{equation}
+and, when a single scalar radius is required, $R_{95} = a_{95}$ as the conservative circumscribing choice. Reporting $R_{95}$ as a scalar discards the anisotropy, which for a lifting reentry is typically substantial; the eigenvalue pair should be reported alongside it.
+
+\subsection{Circular Error Probable}
+
+CEP is the radius of the circle containing $50\%$ of impacts. For the isotropic case $\sigma_1 = \sigma_2 = \sigma$ it is exactly
+\begin{equation}
+\label{eq:cep_iso}
+\text{CEP} = \sigma\sqrt{2\ln 2} \approx 1.1774\,\sigma .
+\end{equation}
+For the anisotropic case no closed form exists, and PASSES uses the standard linear approximation
+\begin{equation}
+\label{eq:cep_aniso}
+\text{CEP} \approx 0.5887\,(\sigma_1 + \sigma_2),
+\end{equation}
+which agrees with the exact value to better than $1\%$ provided
+\begin{equation}
+\label{eq:cep_valid}
+0.25 \;\le\; \sigma_2/\sigma_1 \;\le\; 1 .
+\end{equation}
+
+\begin{remark}[Validity]
+\label{rem:cepvalid}
+\Cref{eq:cep_valid} is a real restriction and is routinely violated by lifting reentry footprints, which are strongly elongated downrange. PASSES evaluates the ratio $\sigma_2/\sigma_1$ for every batch and, when \cref{eq:cep_valid} fails, falls back to the direct order statistic --- the median of $\|\mathbf{p}_i - \hat{\bm{\mu}}\|$ over the sample --- rather than reporting a CEP the approximation does not support. Reporting \cref{eq:cep_aniso} outside its validity range is a common and quiet source of error in dispersion analyses.
+\end{remark}
+
+\subsection{Sampling error}
+
+$\bm{\Sigma}$ is itself an estimate. For a bivariate normal sample, the relative standard error of each $\sigma_i$ is approximately $1/\sqrt{2N_{\text{MC}}}$, which propagates directly to CEP and $R_{95}$. At $N_{\text{MC}} = 10^4$ this is $0.7\%$; at $N_{\text{MC}} = 10^3$ it is $2.2\%$. Any dispersion figure reported without an accompanying sample size, or quoted to more significant figures than this bound supports, is not meaningful. All reported dispersion metrics carry bootstrap confidence intervals.
+
+\begin{remark}
+The bivariate normal assumption underlying \cref{eq:r95} and \cref{eq:cep_aniso} should be tested, not assumed. Nonlinear guidance and hard constraint boundaries produce skewed and occasionally bimodal footprints, for which an ellipse is a poor summary. PASSES applies a Henze--Zirkler test for bivariate normality to each batch and reports the result alongside the dispersion metrics.
+\end{remark}
+
+\section{Verification and Validation Plan}
+\label{sec:vandv}
+
+No numerical results are presented in this manuscript. This section states what will be measured, against what reference, and what would constitute failure, so that the plan is falsifiable in advance rather than reported selectively afterward.
+
+\begin{center}
+\begin{longtable}{@{}llp{5.6cm}p{3.4cm}@{}}
+\toprule
+\textbf{ID} & \textbf{Target} & \textbf{Method and reference} & \textbf{Failure criterion} \\
+\midrule
+\endhead
+V1 & Structural operator & $\kappa(\hat{\mathbf{K}})$ versus $N$ for uniform and stepped $EI$ profiles; free-free natural frequencies against the analytic uniform-beam solution & relative frequency error $> 10^{-6}$ at $N=32$ for the uniform case \\
+\addlinespace
+V2 & Slosh regularization & Total force and first moment transferred versus $\sigma$, $N$, and station $x_s$; \cref{prop:force} & force error above machine precision; moment error not $\mathcal{O}(\sigma^2)$ in the interior \\
+\addlinespace
+V3 & Time integration & Achieved $\Delta t$ and wall-clock for explicit, modally truncated, and IMEX strategies; \cref{prop:stiff} & explicit $\Delta t$ not scaling as $N^{-4}$ \\
+\addlinespace
+V4 & Ablation & Method of manufactured solutions on \cref{eq:energy}--\cref{eq:gasflux}; in-depth temperature and recession against a FIAT \cite{chen1999} reference case & recession disagreement $> 5\%$ on the reference case \\
+\addlinespace
+V5 & Adaptive filter & Recovery time after an injected separation transient; sensitivity to $(N_w, \alpha_{\max}, p)$; false-alarm rate against the design $p = 10^{-3}$ & divergence on any replicate; measured false-alarm rate above $2p$ \\
+\addlinespace
+V6 & Guidance & \cref{eq:tgo} against \cref{eq:tgo_naive} in double and single precision as $\hat{A}_c \to 0$; \cref{prop:tgo} & \cref{eq:tgo} losing more than 1 significant digit where \cref{eq:tgo_naive} loses many \\
+\addlinespace
+V7 & Dispersion & Convergence of CEP and $R_{95}$ with $N_{\text{MC}}$; bootstrap intervals; Henze--Zirkler normality & CEP not converging at the $1/\sqrt{2N_{\text{MC}}}$ rate \\
+\addlinespace
+V8 & Throughput & Replicates per second versus $N_{\text{MC}}$ and $N$; achieved occupancy; CPU baseline comparison & sublinear scaling in $N_{\text{MC}}$ below device saturation \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\PENDING{all of \cref{sec:vandv} --- to be reported in the companion experimental manuscript}
+
+\section{Limitations}
+\label{sec:limitations}
+
+We state the boundaries of the formulation explicitly.
+
+\begin{enumerate}
+    \item \textbf{No results.} This manuscript is a formulation. The framework's claimed advantages in batch throughput and numerical smoothness are arguments from structure, not measurements, and should be read as such until \cref{sec:vandv} is executed.
+
+    \item \textbf{Euler--Bernoulli kinematics.} \Cref{as:beam} excludes transverse shear and rotary inertia, which are not negligible for thick sections or high-frequency modes. The companion paper \cite{knox2026hgv} addresses this with a Mindlin--Reissner formulation; this paper does not.
+
+    \item \textbf{Linear structural response.} \Cref{eq:beam} is linear in $w$. Geometric nonlinearity under large deflection, and material nonlinearity under thermal softening beyond the linear-elastic range, are outside scope.
+
+    \item \textbf{One-dimensional thermal response.} \Cref{eq:energy} resolves depth only. Lateral conduction, which matters near sharp leading edges and material joints, is neglected.
+
+    \item \textbf{Interpolated surface thermochemistry.} As noted in \cref{sec:ablation}, the $B'$ table is interpolated. The framework is not $C^\infty$ through this path, and the claim of global smoothness should be understood to exclude it.
+
+    \item \textbf{Aerodynamic closure.} Loads derive from engineering-level correlations, not from a flow solver. In regimes where those correlations are poor --- separated flow, shock-boundary-layer interaction, base flow --- the structural and thermal responses inherit that error regardless of how accurately they are integrated. Numerical smoothness is not physical accuracy, and the two should not be conflated.
+
+    \item \textbf{Linearization-dependent detection.} As noted in \cref{sec:mahalanobis}, $d_k^2$ is only as valid as the EKF linearization it is computed from.
+
+    \item \textbf{Gaussian input model.} The dispersion analysis of \cref{sec:stochastic} presumes the sampled input uncertainties are correctly specified. Terminal dispersion is generally more sensitive to the input distributions than to the fidelity of the propagator, and no amount of numerical rigor downstream compensates for a misspecified input covariance.
+\end{enumerate}
 
 \section{Conclusion}
 \label{sec:conclusion}
-This paper presented PASSES, a unified, GPU-accelerated spectral framework engineered to eliminate the numerical friction traditionally associated with tightly coupled, multi-physics aerospace simulation. By anchoring the formulation upon continuous tensor mappings, the Null Space Approach (NSA), and the CMA charring ablation model, non-physical boundary discontinuities were circumvented entirely. Augmented by mathematically robust Innovation-Based Adaptive Estimation (IAE), the framework ensures absolute navigation filter resilience against catastrophic transient shocks. Ultimately, the utilization of dynamically assembled CUDA kernels provides an unprecedented baseline for high-fidelity stochastic aerospace trajectory generation.
 
-% \section*{Acknowledgments}
+This paper presented PASSES, a flight simulation framework in which structural, thermal, and rigid-body domains are discretized once on fixed computational grids and advanced as a single system of ordinary differential equations. Three formulations make the fixed grid possible: null-space projection for free-free spectral boundary conditions, a Landau transformation that renders the ablation front stationary in computational coordinates, and a quadrature-normalized kernel that transfers localized slosh forces exactly.
 
+We have been explicit about what the formulation costs. \Cref{prop:stiff} establishes that the spectral structural operator imposes an $\mathcal{O}(N^{-4})$ explicit step-size limit that continuity does not remove, and we give two mitigations rather than assume the problem away. \Cref{rem:clamps} corrects a tempting but incorrect reading of why the adaptive filter's inflation factor is well posed. \Cref{prop:tgo} replaces the standard time-to-go root with an algebraically equivalent form that does not lose precision in the regime where terminal guidance actually operates. \Cref{rem:cepvalid} bounds the validity of the CEP approximation and specifies the fallback outside it.
+
+The framework's central computational claim --- that a fixed sparsity pattern with no mid-flight remeshing renders a Monte Carlo batch a single batched tensor operation --- follows from the structure of the formulation. Whether it delivers the throughput that motivates it is an empirical question, and \cref{sec:vandv} states in advance how it will be answered.
+
+\section*{Code and Data Availability}
+\addcontentsline{toc}{section}{Code and Data Availability}
+
+The PASSES implementation, container specifications, and the scripts that generate every figure in the companion experimental manuscript will be released under the MIT license at \url{https://github.com/ethank5149/PASSES}. \PENDING{confirm repository URL and archive a tagged release with a DOI (Zenodo) at submission}
+
+\section*{Acknowledgments}
+\addcontentsline{toc}{section}{Acknowledgments}
+
+\PENDING{acknowledgments, if any}
 
 \pagebreak
 
 \printbibliography
+\addcontentsline{toc}{section}{References}
 
 \pagebreak
 
 \begin{appendices}
 
-\section{Expanded Mathematical Derivations}
-\label{app:math}
+\section{Chebyshev Differentiation Matrices}
+\label{app:cheb}
 
-\subsection{Null Space Approach (NSA) Boundary Conditions}
-To enforce the unconstrained (free-free) boundary conditions without destroying operator self-adjointness and causing $\mathcal{O}(N^8)$ condition number scaling, PASSES employs the Null Space Approach (NSA) \cite{hsu2018}. Under this formulation, the spatial differentiation operator is projected directly into the null space of the boundary constraint matrix $\mathbf{B}\mathbf{w} = \mathbf{0}$. This projection yields well-conditioned system matrices ($\kappa(\mathbf{K}) \approx \mathcal{O}(N^4)$) that maintain strict spectral symmetry and purely real eigenvalues during temporal integration.
+On the Chebyshev--Gauss--Lobatto nodes $\xi_j = \cos(j\pi/N)$, $j = 0,\dots,N$, the entries of the first-order differentiation matrix are
+\begin{equation}
+\label{eq:dmatrix}
+D_{ij} = \frac{c_i}{c_j}\frac{(-1)^{i+j}}{\xi_i - \xi_j}\ (i \ne j),
+\qquad
+D_{jj} = -\frac{\xi_j}{2(1 - \xi_j^2)}\ (1 \le j \le N-1),
+\end{equation}
+with $D_{00} = (2N^2+1)/6$, $D_{NN} = -(2N^2+1)/6$, and $c_0 = c_N = 2$, $c_j = 1$ otherwise \cite{trefethen2000}.
 
-\subsection{EKF Jacobians and Linearization}
-The state transition matrix $\boldsymbol{\Phi}_k$ and observation matrix $\mathbf{H}_k$ are derived by linearizing the continuous plant $\dot{\mathbf{x}} = \mathbf{f}(\mathbf{x}, \mathbf{u})$ via a first-order Taylor expansion of the matrix exponential. 
+Higher derivatives are formed as matrix powers, $\mathbf{D}^{(k)} = \mathbf{D}^k$. This is convenient but not benign: rounding error in $\mathbf{D}$ is amplified by roughly $\kappa(\mathbf{D})$ at each multiplication, and by $k = 4$ the accumulated error is appreciable at large $N$. Two standard remedies apply. The diagonal entries should be computed by the negative-sum trick, $D_{jj} = -\sum_{i \ne j} D_{ji}$, which enforces the exact annihilation of constants and materially improves accuracy. Where $N$ is large enough that this is insufficient, the fourth-derivative matrix should be constructed directly from the recurrence rather than by repeated multiplication. The choice of $N$ at which the direct construction becomes necessary is part of verification task V1.
+
+\section{EKF Jacobians and Linearization}
+\label{app:ekf}
+
+The discrete state transition matrix is obtained by linearizing the continuous plant $\dot{\mathbf{x}} = \mathbf{f}(\mathbf{x}, \mathbf{u})$ about the current estimate and propagating over the measurement interval,
+\begin{equation}
+\label{eq:jacobian}
+\mathbf{F}_k = \left. \frac{\partial \mathbf{f}}{\partial \mathbf{x}} \right|_{\hat{\mathbf{x}}_{k|k},\, \mathbf{u}_k},
+\qquad
+\bm{\Phi}_k = \exp\left( \mathbf{F}_k \Delta t \right) \approx \mathbf{I} + \mathbf{F}_k \Delta t + \tfrac{1}{2}\mathbf{F}_k^2 \Delta t^2 ,
+\end{equation}
+with the observation Jacobian $\mathbf{H}_k = \partial \mathbf{h}/\partial \mathbf{x}$ evaluated at the prior. The second-order truncation in \cref{eq:jacobian} is retained rather than the first-order form because $\mathbf{F}_k \Delta t$ is not uniformly small during high-rate maneuvers.
+
+The discrete process noise is obtained by the Van Loan method rather than by the common approximation $\mathbf{Q}_k \approx \mathbf{Q}\Delta t$, which is inconsistent with the second-order $\bm{\Phi}_k$ above and biases the covariance low at large $\Delta t$.
+
+\begin{remark}
+The structural states enter $\mathbf{H}_k$ through the bending slope at the IMU station: a strapdown unit rigidly mounted to a flexing airframe measures the local rotation rate, which includes $\partial^2 w / \partial x \partial t$ evaluated at the mounting station. Omitting this term is the standard practice of treating the airframe as rigid for navigation purposes, and it is precisely the coupling that motivates carrying the 6-DOF rotational states in \cref{eq:state}.
+\end{remark}
 
 \end{appendices}
 

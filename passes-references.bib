@@ -1,178 +1,287 @@
+% =====================================================================
+%  PASSES — bibliography
+%  All entries verified against publisher records. DOIs included where
+%  they exist. See CITATION-AUDIT.md for the verification log.
+% =====================================================================
+
+% --- Moving boundaries / Stefan problems ------------------------------
+
 @book{crank1984,
-  author = {Crank, John},
-  title = {Free and Moving Boundary Problems},
-  publisher = {Clarendon Press},
-  year = {1984}
+  author    = {Crank, John},
+  title     = {Free and Moving Boundary Problems},
+  publisher = {Oxford University Press},
+  address   = {Oxford},
+  year      = {1984}
 }
 
 @book{shyy1996,
-  author = {Shyy, Wei and Udaykumar, H. S. and Rao, Madhukar M. and Smith, Richard W.},
-  title = {Computational Fluid Dynamics with Moving Boundaries},
+  author    = {Shyy, Wei and Udaykumar, H. S. and Rao, Madhukar M. and Smith, Richard W.},
+  title     = {Computational Fluid Dynamics with Moving Boundaries},
   publisher = {Taylor \& Francis},
-  year = {1996}
-}
-
-@book{trefethen2000,
-  author = {Trefethen, Lloyd N.},
-  title = {Spectral Methods in MATLAB},
-  publisher = {SIAM},
-  year = {2000}
+  address   = {Washington, DC},
+  series    = {Series in Computational and Physical Processes in Mechanics and Thermal Sciences},
+  year      = {1996}
 }
 
 @article{voller1981,
-  author = {Voller, V. R. and Cross, M.},
-  title = {Accurate solutions of moving boundary problems using the enthalpy method},
+  author  = {Voller, V. R. and Cross, M.},
+  title   = {Accurate solutions of moving boundary problems using the enthalpy method},
   journal = {International Journal of Heat and Mass Transfer},
-  year = {1981},
-  volume = {24},
-  number = {3},
-  pages = {545-556}
+  year    = {1981},
+  volume  = {24},
+  number  = {3},
+  pages   = {545--556},
+  doi     = {10.1016/0017-9310(81)90062-4}
 }
 
-@article{mehra1970,
-  author = {Mehra, R. K.},
-  title = {Approaches to adaptive filtering},
-  journal = {IEEE Transactions on Automatic Control},
-  year = {1970},
-  volume = {15},
-  number = {2},
-  pages = {175-184}
-}
+% --- Spectral methods --------------------------------------------------
 
-@book{barshalom2001,
-  author = {Bar-Shalom, Yaakov and Li, Xiao-Rong and Kirubarajan, Thiagalingam},
-  title = {Estimation with Applications to Tracking and Navigation},
-  publisher = {Wiley},
-  year = {2001}
-}
-
-@book{zarchan2012,
-  author = {Zarchan, Paul},
-  title = {Tactical and Strategic Missile Guidance},
-  publisher = {AIAA},
-  year = {2012},
-  edition = {6th}
+@book{trefethen2000,
+  author    = {Trefethen, Lloyd N.},
+  title     = {Spectral Methods in {MATLAB}},
+  publisher = {Society for Industrial and Applied Mathematics},
+  address   = {Philadelphia, PA},
+  series    = {Software, Environments, and Tools},
+  year      = {2000},
+  doi       = {10.1137/1.9780898719598}
 }
 
 @article{driscoll2016,
-  author = {Driscoll, T. A. and Hale, N.},
-  title = {Rectangular spectral collocation},
+  author  = {Driscoll, Tobin A. and Hale, Nicholas},
+  title   = {Rectangular spectral collocation},
   journal = {IMA Journal of Numerical Analysis},
-  year = {2016},
-  volume = {36},
-  number = {1},
-  pages = {108-132}
+  year    = {2016},
+  volume  = {36},
+  number  = {1},
+  pages   = {108--132},
+  doi     = {10.1093/imanum/dru062}
 }
 
 @article{olver2013,
-  author = {Olver, S. and Townsend, A.},
-  title = {A fast and well-conditioned spectral method},
+  author  = {Olver, Sheehan and Townsend, Alex},
+  title   = {A fast and well-conditioned spectral method},
   journal = {SIAM Review},
-  year = {2013},
-  volume = {55},
-  number = {3},
-  pages = {462-489}
+  year    = {2013},
+  volume  = {55},
+  number  = {3},
+  pages   = {462--489},
+  doi     = {10.1137/120865458}
 }
 
+% CORRECTED: previously cited as J. Comput. Phys. 365:257--270 (2018),
+% which does not exist. The paper is in Shock and Vibration; author
+% initials also corrected (C. P. Hsu, C. F. Hung, J. Y. Liao).
 @article{hsu2018,
-  author = {Hsu, J. and Hung, T. and Liao, C.},
-  title = {Null space approach for spectral methods},
-  journal = {Journal of Computational Physics},
-  year = {2018},
-  volume = {365},
-  pages = {257-270}
+  author  = {Hsu, C. P. and Hung, C. F. and Liao, J. Y.},
+  title   = {A {Chebyshev} spectral method with null space approach for
+             boundary-value problems of {Euler}--{Bernoulli} beam},
+  journal = {Shock and Vibration},
+  year    = {2018},
+  volume  = {2018},
+  pages   = {2487697},
+  doi     = {10.1155/2018/2487697}
 }
 
-@techreport{moyer1967,
-  author = {Moyer, C. B. and Rindal, R. A.},
-  title = {An analysis of the coupled chemically reacting boundary layer and charring ablator},
-  institution = {NASA},
-  year = {1967},
-  type = {NASA CR-1061}
+% --- Charring ablation / thermal protection ----------------------------
+
+% CORRECTED: NASA CR-1061 is dated June 1968, not 1967, and is Part II of
+% a four-part series. Key retained as `moyer1967` would be misleading;
+% use `moyer1968`.
+@techreport{moyer1968,
+  author      = {Moyer, Carl B. and Rindal, Roald A.},
+  title       = {An Analysis of the Coupled Chemically Reacting Boundary Layer
+                 and Charring Ablator. {Part II}: Finite Difference Solution
+                 for the In-Depth Response of Charring Materials Considering
+                 Surface Chemical and Energy Balances},
+  institution = {National Aeronautics and Space Administration},
+  type        = {NASA Contractor Report},
+  number      = {CR-1061},
+  address     = {Washington, DC},
+  year        = {1968},
+  note        = {Aerotherm Corporation, Palo Alto, CA}
 }
 
 @article{chen1999,
-  author = {Chen, Y. K. and Milos, F. S.},
-  title = {Ablation and thermal response program for spacecraft heatshields},
+  author  = {Chen, Y.-K. and Milos, Frank S.},
+  title   = {Ablation and thermal response program for spacecraft heatshield analysis},
   journal = {Journal of Spacecraft and Rockets},
-  year = {1999},
-  volume = {36},
-  number = {3},
-  pages = {475-483}
+  year    = {1999},
+  volume  = {36},
+  number  = {3},
+  pages   = {475--483},
+  doi     = {10.2514/2.3469}
 }
 
-@article{dec2006,
-  author = {Dec, J. A. and Braun, R. D.},
-  title = {An approximate solution for multi-dimensional charring material thermal response},
-  journal = {AIAA Paper},
-  year = {2006},
-  volume = {2006},
-  pages = {1-14}
+% CORRECTED: the title previously given ("An approximate solution for
+% multi-dimensional charring material thermal response") does not match
+% any Dec & Braun 2006 paper. The 2006 AIAA paper is the TPS sizing tool.
+@inproceedings{dec2006,
+  author    = {Dec, John A. and Braun, Robert D.},
+  title     = {An approximate ablative thermal protection system sizing tool
+               for entry system design},
+  booktitle = {44th AIAA Aerospace Sciences Meeting and Exhibit},
+  address   = {Reno, NV},
+  year      = {2006},
+  note      = {AIAA Paper 2006-780},
+  doi       = {10.2514/6.2006-780}
 }
+
+% --- Propellant slosh --------------------------------------------------
 
 @book{abramson1966,
-  author = {Abramson, H. N.},
-  title = {The dynamic behavior of liquids in moving containers},
-  publisher = {NASA},
-  year = {1966},
-  series = {NASA SP-106}
+  editor    = {Abramson, H. Norman},
+  title     = {The Dynamic Behavior of Liquids in Moving Containers, with
+               Applications to Space Vehicle Technology},
+  publisher = {National Aeronautics and Space Administration},
+  address   = {Washington, DC},
+  series    = {NASA SP-106},
+  year      = {1966}
 }
 
 @book{dodge2000,
-  author = {Dodge, F. T.},
-  title = {The new ``Dynamic Behavior of Liquids in Moving Containers''},
+  author    = {Dodge, Franklin T.},
+  title     = {The New ``Dynamic Behavior of Liquids in Moving Containers''},
   publisher = {Southwest Research Institute},
-  year = {2000}
+  address   = {San Antonio, TX},
+  year      = {2000}
 }
 
-@article{pei2011,
-  author = {Pei, J.},
-  title = {Slosh dynamics in aerospace applications},
-  journal = {Progress in Aerospace Sciences},
-  year = {2011}
+% REPLACED: the previous entry (Pei, "Slosh dynamics in aerospace
+% applications", Prog. Aerosp. Sci., 2011) could not be located in any
+% index and appears not to exist. Substituted with a verified Pei paper
+% on the same topic.
+@article{pei2021,
+  author  = {Pei, Jing},
+  title   = {Analytical investigation of propellant slosh stability boundary
+             on a space vehicle},
+  journal = {Journal of Spacecraft and Rockets},
+  year    = {2021},
+  volume  = {58},
+  number  = {5},
+  pages   = {1514--1521},
+  doi     = {10.2514/1.A35024}
+}
+
+% --- Estimation and adaptive filtering ---------------------------------
+
+% CORRECTED: the previous entry `mehra1970` paired the TITLE of Mehra's
+% 1972 paper with the VOLUME/PAGES of his 1970 paper. These are two
+% distinct works; both are given below. The IAE lineage traces to the
+% 1970 variance-identification paper.
+@article{mehra1970,
+  author  = {Mehra, Raman K.},
+  title   = {On the identification of variances and adaptive {Kalman} filtering},
+  journal = {IEEE Transactions on Automatic Control},
+  year    = {1970},
+  volume  = {15},
+  number  = {2},
+  pages   = {175--184},
+  doi     = {10.1109/TAC.1970.1099422}
+}
+
+@article{mehra1972,
+  author  = {Mehra, Raman K.},
+  title   = {Approaches to adaptive filtering},
+  journal = {IEEE Transactions on Automatic Control},
+  year    = {1972},
+  volume  = {17},
+  number  = {5},
+  pages   = {693--698},
+  doi     = {10.1109/TAC.1972.1100100}
 }
 
 @article{mohamed1999,
-  author = {Mohamed, A. H. and Schwarz, K. P.},
-  title = {Adaptive Kalman filtering for INS/GPS},
+  author  = {Mohamed, A. H. and Schwarz, K. P.},
+  title   = {Adaptive {Kalman} filtering for {INS}/{GPS}},
   journal = {Journal of Geodesy},
-  year = {1999},
-  volume = {73},
-  pages = {193-203}
+  year    = {1999},
+  volume  = {73},
+  number  = {4},
+  pages   = {193--203},
+  doi     = {10.1007/s001900050236}
 }
 
 @article{hide2003,
-  author = {Hide, C. and Moore, T. and Smith, M.},
-  title = {Adaptive Kalman filtering for low-cost INS/GPS},
-  journal = {Journal of Navigation},
-  year = {2003},
-  volume = {56},
-  pages = {143-152}
+  author  = {Hide, Chris and Moore, Terry and Smith, Martin},
+  title   = {Adaptive {Kalman} filtering for low-cost {INS}/{GPS}},
+  journal = {The Journal of Navigation},
+  year    = {2003},
+  volume  = {56},
+  number  = {1},
+  pages   = {143--152},
+  doi     = {10.1017/S0373463302002151}
+}
+
+@book{barshalom2001,
+  author    = {Bar-Shalom, Yaakov and Li, X.-Rong and Kirubarajan, Thiagalingam},
+  title     = {Estimation with Applications to Tracking and Navigation:
+               Theory, Algorithms and Software},
+  publisher = {John Wiley \& Sons},
+  address   = {New York},
+  year      = {2001},
+  doi       = {10.1002/0471221279}
+}
+
+% --- Guidance and trajectory optimization ------------------------------
+
+@book{zarchan2012,
+  author    = {Zarchan, Paul},
+  title     = {Tactical and Strategic Missile Guidance},
+  edition   = {6},
+  publisher = {American Institute of Aeronautics and Astronautics},
+  address   = {Reston, VA},
+  series    = {Progress in Astronautics and Aeronautics},
+  volume    = {239},
+  year      = {2012},
+  isbn      = {978-1-60086-894-8},
+  doi       = {10.2514/4.868948}
 }
 
 @article{elnagar1995,
-  author = {Elnagar, G. and Kazemi, M. A. and Razzaghi, M.},
-  title = {The pseudospectral Legendre method for discretizing optimal control problems},
+  author  = {Elnagar, Gamal and Kazemi, Mohammad A. and Razzaghi, Mohsen},
+  title   = {The pseudospectral {Legendre} method for discretizing optimal
+             control problems},
   journal = {IEEE Transactions on Automatic Control},
-  year = {1995},
-  volume = {40},
-  number = {10},
-  pages = {1793-1796}
+  year    = {1995},
+  volume  = {40},
+  number  = {10},
+  pages   = {1793--1796},
+  doi     = {10.1109/9.467672}
 }
 
 @article{benson2006,
-  author = {Benson, D. A. and Huntington, G. T. and Thorvaldsen, T. P. and Rao, A. V.},
-  title = {Direct trajectory optimization and costate estimation via an orthogonal collocation method},
+  author  = {Benson, David A. and Huntington, Geoffrey T. and
+             Thorvaldsen, Tom P. and Rao, Anil V.},
+  title   = {Direct trajectory optimization and costate estimation via an
+             orthogonal collocation method},
   journal = {Journal of Guidance, Control, and Dynamics},
-  year = {2006},
-  volume = {29},
-  number = {6},
-  pages = {1435-1440}
+  year    = {2006},
+  volume  = {29},
+  number  = {6},
+  pages   = {1435--1440},
+  doi     = {10.2514/1.20478}
 }
 
+% CORRECTED: title was given as "Optimal nonlinear trajectory generation",
+% which is not a Huntington & Rao paper. Volume/pages were also absent.
 @article{huntington2008,
-  author = {Huntington, G. T. and Rao, A. V.},
-  title = {Optimal nonlinear trajectory generation},
+  author  = {Huntington, Geoffrey T. and Rao, Anil V.},
+  title   = {Optimal reconfiguration of spacecraft formations using the
+             {Gauss} pseudospectral method},
   journal = {Journal of Guidance, Control, and Dynamics},
-  year = {2008}
+  year    = {2008},
+  volume  = {31},
+  number  = {3},
+  pages   = {689--698},
+  doi     = {10.2514/1.31083}
+}
+
+% --- Companion paper ---------------------------------------------------
+
+@misc{knox2026hgv,
+  author = {Knox, Ethan},
+  title  = {{PASSES-HGV}: Expanding the Continuous Spectral Framework to
+            6-{DOF} Hypersonic Glide and Fractional Orbital Trajectories},
+  year   = {2026},
+  note   = {Companion manuscript. TODO: insert arXiv identifier once posted.}
 }
