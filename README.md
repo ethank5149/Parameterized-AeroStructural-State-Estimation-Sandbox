@@ -1,90 +1,217 @@
-![Paper Status](https://img.shields.io/badge/Paper-Drafting-blue?style=for-the-badge)
-![Implementation](https://img.shields.io/badge/Code-Upcoming-lightgrey?style=for-the-badge)
-![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+![Status](https://img.shields.io/badge/status-formulation%20complete-blue?style=flat-square)
+![Implementation](https://img.shields.io/badge/implementation-not%20started-lightgrey?style=flat-square)
+![Verification](https://img.shields.io/badge/verification-0%2F16%20tasks-red?style=flat-square)
+![Papers](https://img.shields.io/badge/papers-2%20preprints-informational?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
-# PASSES: Parameterized AeroStructural State-Estimation Sandbox
+# PASSES — Parameterized AeroStructural State-Estimation Sandbox
 
-A unified, GPU-accelerated spectral framework for coupled aeroelastic, thermodynamic, and stochastic GNC flight simulation. PASSES is designed to analyze multi-body continuum mechanics, non-linear filter convergence, and optimal guidance laws for civilian launch vehicles, **Hypersonic Glide Vehicles (HGV)**, and **Fractional Orbital Bombardment Systems (FOBS)** through a global $C^\infty$ continuous state vector.
+A fixed-grid spectral formulation for coupled aeroelastic, thermal, and stochastic GNC flight simulation.
 
-## Project Overview
-
-PASSES is an integrated computational suite developed to model the full atmospheric, orbital, and atmospheric entry life cycle of multi-stage vehicles. To eliminate numerical friction and interpolation errors common in moving-mesh simulations, the framework unifies distinct domains of aerospace mathematics into a singular, fixed-grid software sandbox:
-
-1. **6-DOF Multi-Physics (Mindlin-Reissner Spectral Plates):** Modeling of non-linear structural flexing via bivariate Chebyshev grids. It accounts for transverse shear deformation and anisotropic flexural rigidity, tracking kinematics in 6-DOF using quaternions.
-2. **High-Fidelity Hypersonic Aerothermodynamics:** Analytical closure of real-gas thermochemistry using **Fay-Riddell** (convective heating with surface catalysis) and **Tauber-Sutton** (volumetric radiative heating) formulations.
-3. **Successive Convexification (SOCP) Guidance:** Autonomous trajectory optimization using Second-Order Cone Programming to enforce hard thermal ($\dot{q}_{max}$) and structural ($q_{max}$) constraints during aggressive maneuvering.
-4. **Ionization-Aware GNC:** Modeling of **Plasma Sheath Blackout** via the Saha equation, coupled to an adaptive EKF that dynamically gates GNSS measurements during high-velocity atmospheric entry.
-5. **Orbital Mechanics & "Physics Idle":** Integration of $J_2$-perturbed Keplerian orbital coast phases with a continuous transition from atmospheric flight to exo-atmospheric orbital mechanics within a single, unbroken integration run.
+**This repository currently contains two research manuscripts and their bibliographies. It does not yet contain an implementation.** The papers present a mathematical formulation and a falsifiable verification plan; every quantity requiring code to produce is marked `[PENDING]` in red in the compiled PDFs. Please read the [status table](#status) before drawing conclusions about what works.
 
 ---
 
-## Architectural Breakdown & Core Mathematics
+## The papers
 
-### 1. Mindlin-Reissner Spectral Plate Dynamics
-For lifting bodies and waveriders, PASSES utilizes **Mindlin-Reissner Anisotropic Plate Theory** to capture transverse shear deformations and torsional flutter. The structural state vector $\mathbf{U}$ expands to include transverse deflection ($w$) and independent normal rotations ($\phi_x, \phi_y$). Using **Kronecker tensor products ($\otimes$)**, the framework constructs global block-sparse differentiation matrices:
+| | Manuscript | Source | PDF |
+|---|---|---|---|
+| **I** | PASSES: A Unified, GPU-Accelerated Spectral Framework for Coupled Aeroelastic, Thermodynamic, and Stochastic GNC Flight Simulation | [`passes-updated.tex`](passes-updated.tex) | [`passes-updated.pdf`](passes-updated.pdf) |
+| **II** | PASSES-HGV: Extending a Fixed-Grid Spectral Framework to 6-DOF Hypersonic Glide and Fractional Orbital Trajectories | [`passes-hgv-updated.tex`](passes-hgv-updated.tex) | [`passes-hgv-updated.pdf`](passes-hgv-updated.pdf) |
 
-$$\mathbf{K} = \begin{bmatrix} \mathbf{K}_{ww} & \mathbf{K}_{w\phi_x} & \mathbf{K}_{w\phi_y} \\ \mathbf{K}_{\phi_x w} & \mathbf{K}_{\phi_x \phi_x} & \mathbf{K}_{\phi_x \phi_y} \\ \mathbf{K}_{\phi_y w} & \mathbf{K}_{\phi_y \phi_x} & \mathbf{K}_{\phi_y \phi_y} \end{bmatrix}$$
+Paper II depends on Paper I for the fixed-grid rationale, the Landau transformation used for ablation, the adaptive filtering architecture, and the Monte Carlo dispersion estimators. Read them in order.
 
-### 2. Fay-Riddell & Tauber-Sutton Heating
-Aerodynamic and thermal loads incorporate real-gas effects and radiative transfer:
-*   **Convective Flux:** $\dot{q}_{s, conv} \propto (h_{0e} - h_w) [ 1 + (Le^\beta - 1)\frac{h_D}{h_{0e}} ]$ (Fay-Riddell with surface catalysis)
-*   **Radiative Flux:** $\dot{q}_{s, rad} \propto V_\infty^n R_{eff}^a$ (Tauber-Sutton, scaling up to $V^{10}$)
-
-These high-fidelity correlations ensure that molecular dissociation and volumetric heating are evaluated dynamically across the bivariate spectral grid.
-
-### 3. Successive Convexification (SOCP) Guidance
-To guarantee constraint satisfaction, the guidance suite utilizes **Successive Convexification**. The non-linear OCP is linearized and solved as a series of **Second-Order Cone Programs (SOCP)**, allowing the vehicle to ride the edge of the thermal boundary:
-
-$$\min_{\mathbf{u}} J \quad \text{s.t.} \quad \mathbf{x}_{i+1} = \mathbf{A}_i \mathbf{x}_i + \mathbf{B}_i \mathbf{u}_i + \mathbf{z}_i, \quad g(\mathbf{x}, \mathbf{u}) \le 0$$
-
-### 4. Plasma Blackout & Ionization-Aware EKF
-PASSES models the plasma sheath electron density ($n_e$) and critical frequency ($\omega_p$). The **Ionization-Aware EKF** dynamically zeroes out the measurement Jacobian $\mathbf{H}_k$ for external GNSS sensors when $\omega_p \ge \omega_{GNSS}$:
-
-$$\omega_p = \sqrt{\frac{n_e e^2}{m_e \epsilon_0}}, \quad \mathbf{K}_k = \mathbf{P}_k^- \mathbf{H}_k^T (\mathbf{H}_k \mathbf{P}_k^- \mathbf{H}_k^T + \mathbf{R}_k)^{-1}$$
+Every bibliography entry in both papers has been verified against publisher records. The audit — including nine entries that were wrong or unverifiable in earlier drafts — is in [`CITATION-AUDIT.md`](CITATION-AUDIT.md).
 
 ---
 
-## Geometric Transcription (CAD to $C^\infty$)
-PASSES includes a pre-processing pipeline that transcribes discrete CAD meshes (STL/OBJ) into continuous analytical domains.
-* **Chebyshev Projection:** Discrete geometric slices are projected onto truncated Chebyshev polynomials to filter out $C^0$ faceting.
-* **Hyperbolic Blending:** Multi-material interfaces (e.g., carbon-to-titanium joints) are smoothed via hyperbolic tangent functions to maintain differentiability at structural boundaries.
+## The idea in one section
 
-### 5. Batched-Tensor CUDA Monte Carlo Validation
-To measure end-to-end performance under stochastic disturbances, PASSES leverages a **Batched-Tensor CUDA Architecture**. This allows the parallel execution of 10,000+ trajectories as a singular rank-3 tensor operation, culminating in the extraction of the terminal covariance matrix $\boldsymbol{\Sigma}_{impact}$ and Circular Error Probable (CEP).
+Coupled multi-physics flight simulation conventionally partitions the problem: a structural solver, a thermal solver, and a trajectory propagator, each on its own mesh, exchanging boundary data. This costs you twice.
+
+**Interpolation error at every interface.** Surface pressure, heat flux, and displacement must be interpolated between meshes. The interpolated field is generally no smoother than $C^0$ across element boundaries, and the aerothermal closures take several derivatives of it.
+
+**Remeshing.** Ablative recession and large deformation are handled by moving-boundary formulations with periodic mesh regeneration. That is expensive, hard to vectorize, and introduces a projection step between pre- and post-remesh states. Tolerable for one deterministic trajectory; prohibitive for the $10^3$–$10^4$ replicates needed to resolve a dispersion footprint.
+
+PASSES discretizes every spatial domain **once**, on a fixed grid, and holds it fixed for the entire trajectory. Three formulations make that possible:
+
+- **Structural.** Free-free boundary conditions are imposed by projecting onto the null space of the constraint operator rather than by replacing rows. Row replacement destroys operator symmetry and produces spurious growing modes; projection does not.
+- **Thermal.** A Landau coordinate transformation maps the receding physical domain onto a fixed computational domain. The ablation front is not eliminated from the physics — it is rendered *stationary in computational coordinates*, so no node is ever created, destroyed, or interpolated. The cost is one explicit advection term.
+- **Coupling.** Localized slosh forces are regularized by a Gaussian kernel normalized against the collocation quadrature rule, so total force transfers exactly rather than to within quadrature error.
+
+The result is one system of ODEs with fixed dimension and fixed sparsity. **That is the whole computational argument:** a Monte Carlo batch becomes a rank-3 tensor operation (replicate × state × stage) with no per-replicate remesh, so the batch never decoheres. A moving-mesh formulation cannot offer this, because each replicate's mesh diverges from every other's after its first remesh event.
 
 ---
 
-## Proposed Directory Structure
+## Status
+
+Distinguishing what is derived from what is measured, because the distinction matters.
+
+| Component | Formulated | Implemented | Verified |
+|---|:---:|:---:|:---:|
+| Chebyshev collocation, variable-$EI$ beam | ✅ | ❌ | ❌ |
+| Null-space free-free boundary projection | ✅ | ❌ | ❌ |
+| Quadrature-normalized slosh regularization | ✅ | ❌ | ❌ |
+| Two-phase charring ablation (CMA-style) | ✅ | ❌ | ❌ |
+| Landau transformation to fixed thermal grid | ✅ | ❌ | ❌ |
+| Mahalanobis $\chi^2$ anomaly detection | ✅ | ❌ | ❌ |
+| Innovation-Based Adaptive Estimation | ✅ | ❌ | ❌ |
+| AC-APN terminal guidance | ✅ | ❌ | ❌ |
+| CEP / $R_{95}$ dispersion estimators | ✅ | ❌ | ❌ |
+| Ultraspherical spectral discretization | ✅ | ❌ | ❌ |
+| Mindlin–Reissner anisotropic plates | ✅ | ❌ | ❌ |
+| Fay–Riddell / Lees / Tauber–Sutton heating | ✅ | ❌ | ❌ |
+| Successive convexification guidance | ✅ | ❌ | ❌ |
+| Plasma blackout gating | ✅ | ❌ | ❌ |
+| $J_2$-perturbed orbital propagation | ✅ | ❌ | ❌ |
+| CUDA batched Monte Carlo | ✅ | ❌ | ❌ |
+
+**Verification tasks: 0 of 16 complete.** V1–V8 are tabulated in §8 of Paper I and §8 of Paper II, each with a stated reference and an explicit failure criterion. They were written before any results exist, so the plan is falsifiable in advance rather than reportable selectively afterward.
+
+---
+
+## Technical summary
+
+What follows condenses the papers. Where the two disagree with each other, the papers say so explicitly and explain why.
+
+### Structural discretization
+
+Paper I discretizes the variable-rigidity Euler–Bernoulli beam by dense Chebyshev collocation, retaining the full product-rule expansion:
+
+$$\mathbf{K} = \mathrm{diag}(\mathbf{EI})\,\mathbf{D}^4 + 2\,\mathrm{diag}(\mathbf{D}\mathbf{EI})\,\mathbf{D}^3 + \mathrm{diag}(\mathbf{D}^2\mathbf{EI})\,\mathbf{D}^2$$
+
+Dropping the second and third terms is only valid where $EI$ is near-constant over a bending wavelength, which fails across stage joints and in regions of thermal softening.
+
+Paper II replaces this. Dense collocation conditions as $\mathcal{O}(N^{2k})$ — that is $\mathcal{O}(N^8)$ for fourth-order bending — which is manageable in 1D but not for a bivariate tensor-product operator. Paper II uses the **ultraspherical spectral method**, where differentiation is banded and conditioning is $\mathcal{O}(1)$, with the bivariate system assembled as a Kronecker-structured generalized Sylvester equation.
+
+Paper II also replaces Euler–Bernoulli kinematics with **Mindlin–Reissner** three-field plates $(w, \phi_x, \phi_y)$. Transverse shear is not a correction for thick hull sections — it is the dominant mechanism of the torsional modes that set flutter margins. This requires three independent free-edge conditions ($M_x = M_{xy} = Q_x = 0$) rather than the classical Kirchhoff effective-shear pair, which over-constrains the perimeter.
+
+### The stiffness constraint
+
+This is stated rather than assumed away, because it is the sharpest limit on the architecture. For the spectral structural operator, $\lambda_{\max}$ inherits the $\mathcal{O}(N^8)$ growth of the fourth-derivative operator, so $\omega_{\max} = \mathcal{O}(N^4)$, and any explicit Runge–Kutta method requires
+
+$$\Delta t \le C_{\mathrm{RK}} / \omega_{\max} = \mathcal{O}(N^{-4})$$
+
+At $N = 32$ that factor is $\sim 10^6$. Continuity does not rescue you from this. Paper I gives two mitigations — modal truncation and IMEX splitting, the latter preserving the batching argument because the factorization is shared across all replicates — and V3 measures which is preferable.
+
+### Aerothermodynamics
+
+Stagnation convective heating follows **Fay–Riddell**, with the Lewis exponent stated ($\beta = 0.52$ equilibrium, $0.63$ frozen/catalytic) and the stagnation velocity gradient supplied by the modified Newtonian estimate. **Tauber–Sutton** gives the radiative component, and **Lees** the distribution away from stagnation.
+
+Note the trade the papers make explicit: recession increases $R_\mathrm{eff}$, which *reduces* convective heating as $R_\mathrm{eff}^{-1/2}$ but *increases* radiative heating. A framework modeling only convection will systematically favor over-blunted geometries.
+
+Ablation is split by material class rather than forced into one model — charring pyrolysis for phenolic acreage, single-temperature oxidative recession for non-pyrolyzing refractory leading edges (C/C, ZrB₂–SiC). Applying either model to the other material class is wrong in a specific, stated way.
+
+### Navigation and guidance
+
+Anomaly detection gates on the normalized innovation squared, $d_k^2 = \bm{\nu}_k^\top \mathbf{S}_k^{-1} \bm{\nu}_k \sim \chi^2_m$, against a design false-alarm rate. On detection, IAE inflates process noise by a **bounded** scalar trace ratio $\alpha_k \in [1, \alpha_{\max}]$.
+
+Paper I is explicit that positive-semidefiniteness of $\mathbf{Q}^*_k$ follows trivially from scaling a PSD matrix by a non-negative scalar — *not* from the trace clamp, which says nothing about matrix definiteness. What makes the scheme unconditionally well-posed is that it estimates a **scalar** rather than a matrix; entrywise estimators of $\mathbf{Q}$ routinely return indefinite matrices under short windows.
+
+Terminal guidance uses the numerically stable time-to-go root:
+
+$$t_{go} = \frac{2 R_\mathrm{LOS}}{\hat V_c + \sqrt{\hat V_c^2 + 2 \hat A_c R_\mathrm{LOS}}}$$
+
+This is algebraically identical to the textbook quadratic form but does not lose precision as $\hat A_c \to 0$ — which is where terminal guidance spends most of its time. The textbook form evaluates $0/0$ by catastrophic cancellation there. A guard handles the negative-discriminant case (decelerating closure predicts no intercept), which is physically meaningful and must not propagate as NaN.
+
+Paper II's SCvx layer uses **free** virtual controls under an exact $\ell_1$ penalty. Sign-constraining them makes the subproblem infeasible in exactly the cases they exist to rescue. The $\ell_1$ norm is chosen because it is *exact* — above a finite penalty weight the virtual controls reach zero exactly, where a quadratic penalty only drives them to zero as $w_\nu \to \infty$.
+
+For plasma blackout, the unaided covariance grows as
+
+$$\mathbf{P}_{rr}(t) \sim \tfrac{1}{3} q_a t^3 + \tfrac{1}{4}\sigma_{b_a}^2 t^4 + \tfrac{1}{36} g^2 \sigma_{b_g}^2 t^6$$
+
+in the velocity-random-walk, accelerometer-bias, and gyro-bias-through-gravity channels. The $t^6$ term dominates past a few tens of seconds. Quadratic is the growth of position *error* from an accelerometer bias, not of the *covariance* — a guidance layer sizing its pull-up trigger on a quadratic model will under-predict badly at the durations that matter.
+
+### Dispersion statistics
+
+Terminal footprints are characterized by the eigendecomposition of the sample impact covariance. $R_{95}$ uses $\chi^2_{2,0.95} = 5.991$, giving semi-axes $2.4477\,\sigma_i$. CEP uses the linear approximation $0.5887(\sigma_1 + \sigma_2)$ — **but only where $0.25 \le \sigma_2/\sigma_1 \le 1$**, which lifting reentry footprints routinely violate. Outside that range the framework falls back to the direct order statistic rather than reporting a CEP the approximation does not support.
+
+Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ — 0.7% at $N_\mathrm{MC} = 10^4$. Any dispersion figure quoted without a sample size, or to more significant figures than that bound supports, is not meaningful.
+
+---
+
+## Repository layout
 
 ```text
-├── PASSES/
-│   ├── src/
-│   │   ├── physics_engine/    # Multi-body dynamics, J2 gravity, slosh pendulums, ablation PDEs
-│   │   ├── sensor_models/     # IMU synthesis, white noise injection, random-walk bias drift
-│   │   ├── gnc_core/          # Adaptive EKF, measurement Jacobians, TVC notch filters
-│   │   ├── guidance_laws/     # Proportional Navigation (PN) loops, optimal control solvers
-│   │   └── analytical_tools/  # Monte Carlo batch runners, bivariate normal CEP processors
-│   ├── data/
-│   │   └── parameters/        # TEXTBOOK CONSTANTS ONLY (Normalized civilian rocket profiles)
-│   ├── tests/                 # Unit tests for RKF45 integration stability and filter convergence
-│   └── README.md              # Documentation
+├── passes-updated.tex          # Paper I  — source
+├── passes-updated.pdf          # Paper I  — compiled
+├── passes-references.bib       # Paper I  — verified bibliography
+├── passes-hgv-updated.tex      # Paper II — source
+├── passes-hgv-updated.pdf      # Paper II — compiled
+├── passes-hgv-references.bib   # Paper II — verified bibliography
+├── CITATION-AUDIT.md           # verification log for every reference
+├── Makefile / .latexmkrc       # build configuration
+└── passes.tex, passes-hgv.tex  # superseded earlier drafts (see note)
 ```
 
-## Running the Simulation Sandbox
+`passes.tex`, `passes-hgv.tex`, and `references.bib` are earlier drafts retained for history. They contain the citation errors documented in the audit and should not be built or cited.
 
-### Prerequisites
-* Python 3.10+ or C++17 Compiler
-* NumPy, SciPy, Matplotlib
+Implementation directories do not exist yet. The layout will be proposed alongside the first code, not before it.
 
-### Planned Execution
-To execute the holistically coupled flight profile, initialize the terminal guidance loop, and output the statistical CEP matrix, run:
+## Building the papers
+
+Requires a TeX Live distribution with `latexmk` and `biber`.
+
 ```bash
-python src/main.py --config config/profile.json --monte-carlo --runs 100
+latexmk -pdf passes-updated.tex
+latexmk -pdf passes-hgv-updated.tex
+```
+
+Output lands in `build/` and is copied to the repository root. Both compile with zero LaTeX warnings and zero biber warnings; if yours do not, something is wrong with the toolchain rather than the sources.
+
+```bash
+latexmk -C          # clean
 ```
 
 ---
 
-## Compliance and Academic Disclaimers
-* **Fundamental Research Exemption:** This software suite is built strictly for academic, public-domain research purposes under the **Fundamental Research Exception (22 CFR 125.4)**. 
-* **Data Sanitization:** Absolutely zero proprietary, classified, or export-controlled (ITAR/EAR) military hardware specifications are contained within this repository.
-* **Intended Use:** This framework is designed to evaluate the mathematical coupling of structural mechanics and statistical estimation theory.
+## Roadmap
+
+Ordered by dependency, not ambition.
+
+1. **Structural kernel** — Chebyshev operators, null-space projection, free-free eigenvalue solve. Unblocks **V1** (conditioning vs. $N$) and **V3** (integrator strategy comparison).
+2. **Guidance numerics** — self-contained and quick. Unblocks **V6** (the $t_{go}$ precision comparison in single and double precision).
+3. **Slosh regularization** — unblocks **V2** (exact force transfer; $\mathcal{O}(\sigma^2)$ moment error in the interior).
+4. **Thermal solver** — Arrhenius kinetics, Landau transform, surface energy balance. Unblocks **V4** (method of manufactured solutions, then a FIAT comparison case).
+5. **Filter** — unblocks **V5** (recovery time, parameter sensitivity, false-alarm rate against design $p$).
+6. **Batch layer** — unblocks **V7** (dispersion convergence) and **V8** (throughput scaling).
+
+Items 1 and 2 are independent and are the natural starting points.
+
+---
+
+## Citing this work
+
+Both manuscripts are unpublished preprints. Update these entries once arXiv identifiers are assigned.
+
+```bibtex
+@misc{knox2026passes,
+  author = {Knox, Ethan},
+  title  = {{PASSES}: A Unified, {GPU}-Accelerated Spectral Framework for Coupled
+            Aeroelastic, Thermodynamic, and Stochastic {GNC} Flight Simulation},
+  year   = {2026},
+  note   = {Preprint}
+}
+
+@misc{knox2026hgv,
+  author = {Knox, Ethan},
+  title  = {{PASSES-HGV}: Extending a Fixed-Grid Spectral Framework to 6-{DOF}
+            Hypersonic Glide and Fractional Orbital Trajectories},
+  year   = {2026},
+  note   = {Preprint}
+}
+```
+
+---
+
+## Scope and compliance
+
+This repository contains mathematical formulation only: published governing equations, engineering-level correlations drawn from the open literature (Fay–Riddell, Lees, Tauber–Sutton, Sutton–Graves, CMA), and standard estimation and optimal control methods. Every source is cited and independently verifiable — see [`CITATION-AUDIT.md`](CITATION-AUDIT.md).
+
+It contains **no** proprietary, classified, or export-controlled data: no vehicle geometries, no material property databases, no performance specifications, no validated aerodynamic tables, and no parameters traceable to any specific fielded system. The intended use is study of the numerical coupling between continuum mechanics and statistical estimation theory.
+
+Under ITAR, information already published and generally accessible to the public is not "technical data" (22 CFR §120.34, public domain). Note that the separate *fundamental research* provision is defined with reference to accredited U.S. institutions of higher learning and does not straightforwardly cover independent researchers — the two are frequently conflated and are not the same exemption. **This is a description of intent, not legal advice.** If you are extending this work with real vehicle data or fielded-system parameters, get an actual export-control determination first.
+
+## License
+
+MIT. *(A `LICENSE` file has not yet been added to this repository — the badge is currently a statement of intent.)*
