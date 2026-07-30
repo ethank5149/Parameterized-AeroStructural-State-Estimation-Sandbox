@@ -1,0 +1,163 @@
+\documentclass[11pt,a4paper]{article}
+
+% --- Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath, amsfonts, amssymb, amsthm}
+\usepackage{bm} % Bold math
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{authblk} % For authors and affiliations
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{cleveref} % Smart referencing
+\usepackage[title,titletoc]{appendix}
+\usepackage[backend=biber, style=numeric]{biblatex}
+\addbibresource{passes-hgv-references.bib}
+
+% --- Theorem Environments ---
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{assumption}[theorem]{Assumption}
+
+\numberwithin{equation}{section}
+
+% --- Custom Commands ---
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\prob}{\mathbb{P}}
+\newcommand{\diff}{\mathrm{d}}
+
+% --- Metadata ---
+\title{PASSES-HGV: Expanding the Continuous Spectral Framework to 6-DOF Hypersonic Glide and Fractional Orbital Trajectories}
+
+\author[1]{Ethan Knox\thanks{Email: \texttt{ethank5149@gmail.com}}}
+\affil[1]{Independent Researcher, Champaign, IL, USA}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This paper presents PASSES-HGV, an open-source, continuous mathematical framework that expands the original fixed-grid spectral formulation into a full 6-Degree-of-Freedom (6-DOF) hypersonic glide and Fractional Orbital Bombardment System (FOBS) architecture. By replacing traditional discrete finite element methods and dense Chebyshev derivative operators with an Ultraspherical Spectral Method over a bivariate tensor-product space, the framework maintains $C^\infty$ continuity and $O(1)$ operator conditioning across complex waverider geometries. Anisotropic flexural rigidity and localized torsional flutter are governed continuously using Mindlin-Reissner plate mechanics, while a coupled aerothermodynamic model links oblique shock-expansion theory, real-gas convective heating, and a Stefan moving-boundary ablation PDE directly to the structural state vector. To ensure autonomous trajectory optimization, an embedded Successive Convexification (SCvx) algorithm utilizes exact virtual control penalties to navigate thermal and skip-out constraints. Finally, the integration architecture handles a continuous physics "idle" during the Karman line transition, propagating a $J_2$-perturbed Keplerian orbital coast before re-engaging quaternion kinematics for the terminal hypersonic reentry phase—all within a single, unbroken, GPU-accelerated numerical integration run.
+\end{abstract}
+
+\pagebreak
+
+\section{Introduction}
+\label{sec:intro}
+The modeling and simulation of Hypersonic Glide Vehicles (HGVs) and Fractional Orbital Bombardment Systems (FOBS) present a highly coupled, multi-physics challenge that fundamentally strains traditional computational aerospace methods. Legacy trajectory and aeroelastic analysis often relies on discrete Finite Element Methods (FEM) and rigidly decoupled aerodynamic look-up tables. While effective for localized, static structural validation, these discrete methodologies introduce discontinuous boundary conditions, require mid-flight matrix inversions, and mandate prohibitively long computational wall-times. 
+
+This manuscript introduces PASSES-HGV, a comprehensive expansion of the original spectral multi-physics framework. By elevating the core fixed-grid architecture to a full 6-Degree-of-Freedom (6-DOF) kinematic environment, this framework establishes a continuous mathematical pipeline capable of seamlessly simulating lifting-body aerodynamics and exo-atmospheric orbital mechanics. To circumvent the severe $O(N^4)$ matrix ill-conditioning inherent to dense Chebyshev collocation \cite{olver2013}, the HGV structural and thermodynamic domains are mapped using an Ultraspherical Spectral Method. The complex, direction-dependent torsional and transverse bending modes are governed continuously by the anisotropic structural rigidity(?) tensor, ensuring an exact, $C^\infty$ differentiable representation of anisotropic flexural rigidity across the planform.
+
+Furthermore, this framework integrates a fully autonomous hypersonic aerothermodynamic model. By coupling oblique shock-expansion approximations, Sutton-Graves heating, and Stefan moving-boundary pyrolytic recession directly to the structural state vector, the right-hand side operators remain perfectly continuous and suitable for massive GPU acceleration. Navigational control is achieved via an embedded Successive Convexification algorithm \cite{mao2016}, allowing the vehicle to actively manage kinetic energy while autonomously respecting thermal limits. Ultimately, PASSES-HGV demonstrates the capability to execute an unbroken numerical integration spanning from atmospheric boost, through a $J_2$-perturbed fractional orbit, and into the extreme aerothermal regime of hypersonic reentry.
+
+\section{The Expanded Global State Vector}
+\label{sec:global_state_vector}
+
+\subsection{The 6-DOF Attitude State}
+To prevent singularity issues (gimbal lock) when the HGV executes aggressive, near-vertical dive maneuvers or exo-atmospheric tumbles, we parameterize the vehicle's attitude using a unit quaternion $\mathbf{q} = [q_0, q_1, q_2, q_3]^T$. The time evolution of the attitude is coupled to the body-frame angular velocity $\boldsymbol{\omega}_B$ via the quaternion kinematic differential equation, which is integrated concurrently with the structural state $\mathbf{w}$ within the RKF45 solver.
+
+\subsection{Local Incidence Angle Mapping}
+Because the waverider has complex curvature and continuous aeroelastic deformation, the global angle of attack $\alpha$ is insufficient. The local incidence angle is thus the dot product of the normalized body-frame velocity vector and the deformed surface normal:
+$$\sin(\delta_c(\xi, \eta)) = \mathbf{n}(\xi, \eta, t) \cdot \frac{\mathbf{v}_B}{\vert{}\mathbf{v}_B\vert{}}$$
+
+\subsection{Constructing the RHS Forcing Vector}
+Relying exclusively on modified Newtonian pressure is physically insufficient for slender waveriders at moderate angles of attack, as it ignores leeward suction and viscous interaction. Therefore, PASSES-HGV augments the Newtonian formulation with local oblique shock-expansion theory. For the windward nodes, local pressure coefficients are continuously scaled by the freestream dynamic pressure to populate the quasi-static RHS forcing vector:
+$$\mathbf{Q}_{aero} = q_{dyn} \mathbf{C}_p$$
+This couples the rigid-body 6-DOF kinematics, the freestream environment, and the flexible structural dynamics into one continuous mathematical pipeline.
+
+\section{High-Fidelity Hypersonic Aerothermodynamics}
+\label{sec:hypersonic_aerothermodynamics}
+
+\subsection{Real-Gas Convective Heating: The Fay-Riddell Formulation}
+We anchor the continuous thermal model using the Fay-Riddell formulation for the stagnation point convective heat flux \cite{fay1958}. This accounts for boundary layer equilibrium chemistry and surface catalytic recombination:
+$$\dot{q}_{s, conv} = 0.763 \text{Pr}^{-0.6} (\rho_e \mu_e)^{0.4} (\rho_w \mu_w)^{0.1} \sqrt{\left(\frac{du_e}{dx}\right)_s} (h_{0e} - h_w) \left[ 1 + (Le^\beta - 1)\frac{h_D}{h_{0e}} \right]$$
+
+\subsection{The Continuous 2D Total Heat Flux Tensor}
+The total stagnation heating $\dot{q}_s$ is mapped across the entire bivariate grid using the incidence angle $\delta_c(\xi, \eta)$. For the windward nodes ($\delta_c > 0$), a continuous modified Lees' distribution \cite{lees1956} governs the local heat flux:
+$$\dot{q}_{total}(\xi, \eta) = \dot{q}_s \sin(\delta_c(\xi, \eta)) \left( \frac{R_{eff}}{x(\xi)} \right)^{0.5}$$
+
+\subsection{Moving-Boundary Stefan Energy Balance and Pyrolytic Ablation}
+While surface heat fluxes define the incoming thermal load, evaluating structural survivability requires explicitly tracking the geometric surface recession ($\dot{s}$). We introduce a moving-boundary Stefan partial differential equation to govern this thermochemical mass loss. The energy balance equation directly couples the incident heating, radiative cooling, and internal conduction to the material's ablation enthalpy ($\Delta H_{abl}$):
+$$\rho_m \Delta H_{abl} \dot{s}(x,y,t) = \dot{q}_{total}(x,y,t) - \epsilon \sigma T_{wall}^4 - k_{mat} \left.\frac{\partial T}{\partial n}\right\vert_{wall}$$
+This continuous recession rate dynamically alters the local effective nose radius $R_{eff}$ and updates the deformed surface normal vectors $\mathbf{n}(\xi, \eta, t)$.
+
+\section{Structural Generality: Mindlin-Reissner Anisotropic Plate Theory}
+\label{sec:structural_generality}
+Transitioning to a hypersonic lifting body means the vehicle is no longer governed by simple 1D beam mechanics. Furthermore, classical Kirchhoff-Love thin-plate theory ignores transverse shear deformations, which become the dominant mode of aeroelastic flutter in the thicker sections of the hull. We elevate the structural framework to a generalized Mindlin-Reissner anisotropic plate formulation \cite{mindlin1951}.
+
+\subsection{The Expanded 3-DOF Structural State}
+The continuous structural state at any spatial coordinate expands into a $3 \times 1$ vector:
+$$\mathbf{u}(\xi, \eta, t) = \begin{bmatrix} w \\ \phi_x \\ \phi_y \end{bmatrix}$$
+Because the rotations are no longer locked to the gradient of the surface, the localized transverse shear strains are defined continuously across the domain as:
+$$\gamma_{xz} = \phi_x + \frac{\partial w}{\partial x}, \quad \gamma_{yz} = \phi_y + \frac{\partial w}{\partial y}$$
+
+\subsection{Ultraspherical Block-Kronecker Stiffness Matrix}
+Dense Chebyshev differentiation matrices exhibit condition numbers scaling as $O(N^4)$, causing catastrophic precision loss for fourth-order bending operators. PASSES-HGV remediates this by implementing the Ultraspherical Spectral Method \cite{olver2013}, converting the differential operators into sparse, banded matrices and preserving $O(1)$ operator conditioning.
+
+By formulating the Mindlin-Reissner governing equations as a system of coupled, block-sparse Kronecker operators \cite{chen2020}, the structural domain bypasses the discontinuous assembly steps of traditional FEM, enabling highly parallelized GPU evaluations.
+
+\section{Boundary Conditions}
+\label{sec:boundary_conditions}
+
+\subsection{Anisotropic Rigidity Tensor}
+The hypersonic glide vehicle relies on a blended aerodynamic shell whose resistance to bending and torsion is governed by the spatially continuous anisotropic flexural rigidity tensor, $\mathbf{D}(\xi, \eta)$.
+
+\subsection{Mindlin-Reissner Free-Free Boundary Conditions}
+Applying classical Kirchhoff effective shear boundary conditions to a Mindlin-Reissner state space over-constrains the plate perimeter and induces artificial boundary-layer shear locking. Therefore, the free-free constraints are strictly formulated using three independent boundary equations for the three independent fields.
+
+Along a free longitudinal edge, the zero bending moment constraint is mapped by the anisotropic structural rigidity(?) tensor:
+$$M_x = \mathbf{D}_{11} \frac{\partial \phi_x}{\partial x} + \mathbf{D}_{12} \frac{\partial \phi_y}{\partial y} = 0$$
+
+The zero twisting moment constraint requires:
+$$M_{xy} = \mathbf{D}_{66} \left( \frac{\partial \phi_x}{\partial y} + \frac{\partial \phi_y}{\partial x} \right) = 0$$
+
+And the zero transverse shear force is evaluated independently of the geometric slope:
+$$Q_x = \kappa^2 G_{xz} h \left( \phi_x + \frac{\partial w}{\partial x} \right) = 0$$
+
+\section{GNC: Autonomous Successive Convexification}
+\label{sec:gnc}
+
+\subsection{Linearization, Virtual Controls, and SOCP}
+To navigate the thermodynamic constraints, we reformulate trajectory generation as a constrained Optimal Control Problem using Successive Convexification (SCvx) \cite{mao2016}. The algorithm linearizes the non-linear dynamics around a known reference trajectory using a first-order Taylor expansion. However, linearizing non-convex dynamics frequently induces artificial infeasibility. To guarantee deterministic solver convergence, we introduce non-negative virtual control vectors $\mathbf{v}_i \in \mathbb{R}^{n_x}$ into the discretized constraints:
+$$\mathbf{x}_{i+1} = \mathbf{A}_i \mathbf{x}_i + \mathbf{B}_i \mathbf{u}_i + \mathbf{z}_i + \mathbf{v}_i$$
+
+To ensure these virtual controls are not physically commanded, an exact penalty term $w_{virt} \sum_{i=1}^{N-1} \Vert{}\mathbf{v}_i\Vert{}_1$ is added to the objective cost function. Furthermore, a dynamic trust-region bounds the step size based on the ratio of actual non-linear cost reduction to predicted convex cost reduction:
+$$\rho_k = \frac{J(\mathbf{x}^{(k)}) - J(\mathbf{x}^{(k+1)})}{\Delta L^{(k)}}$$
+
+\subsection{Plasma Sheath Ionization and Dynamic EKF Gating}
+During atmospheric entry, the plasma sheath reflects electromagnetic signals, severing external navigation updates. To maintain state estimation during RF blackout, the framework utilizes an ionization-aware Extended Kalman Filter (EKF) \cite{groves2013}. 
+
+When the evaluated plasma frequency exceeds the transmission frequency ($\omega_p \ge \omega_{GNSS}$), the EKF autonomously zeroes the corresponding rows in the observation matrix ($\mathbf{H}_k \to \mathbf{0}$). During this blackout, the state covariance $\mathbf{P}(t)$ balloons quadratically due to unobservable IMU biases. This expanding error footprint is actively evaluated by the SCvx algorithm, autonomously triggering pull-up maneuvers to extinguish the plasma sheath and force a GNSS re-acquisition window.
+
+\section{Orbital Mechanics and FOBS}
+\label{sec:orbital_mechanics_fobs}
+
+\subsection{$J_2$ Perturbed Orbital Mechanics}
+During a fractional orbit, a spherical gravity model is insufficient. We must update the kinematics to include the $J_2$ geopotential harmonic to account for Earth oblateness \cite{vallado2013}. In the Earth-Centered Inertial (ECI) Cartesian frame, the gravitational acceleration vector $\mathbf{g}(\mathbf{r})$ becomes:
+$$\mathbf{g}(\mathbf{r}) = -\frac{\mu}{\vert{}\mathbf{r}\vert{}^3} \mathbf{r} + \mathbf{g}_{J_2}(\mathbf{r})$$
+This physically rigorous addition evaluates the secular trajectory variations, preventing catastrophic crossrange errors during reentry.
+
+\section{Conclusion}
+\label{sec:conclusion}
+By anchoring the formulation upon Ultraspherical continuous operators and Mindlin-Reissner mechanics, PASSES-HGV delivers an unprecedented, highly robust mathematical architecture for next-generation multi-physics hypersonic simulation and defense engineering.
+
+% \section*{Acknowledgments}
+
+\pagebreak
+
+\printbibliography
+
+\end{document}
