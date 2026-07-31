@@ -2,17 +2,17 @@
 
 - **Failure criterion (stated in advance, Paper I §8):** explicit Δt not scaling as N⁻⁴
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 09:51 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-07-31 10:19 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Explicit RK45: achieved step vs the Prop. 2 bound
 
 | N | ω_max (rad/s) | Δt bound (C=3.0/ω_max) | achieved mean Δt | achieved Δt·ω_max | wall (ms) |
 |---|---|---|---|---|---|
-| 12 | 7.735e+02 | 3.879e-03 | 9.259e-04 | 0.72 | 1.5 |
-| 16 | 2.392e+03 | 1.254e-03 | 9.259e-04 | 2.21 | 1.5 |
-| 20 | 5.686e+03 | 5.276e-04 | 3.049e-04 | 1.73 | 4.5 |
-| 24 | 1.154e+04 | 2.600e-04 | 1.333e-04 | 1.54 | 10.5 |
-| 28 | 2.102e+04 | 1.427e-04 | 6.623e-05 | 1.39 | 20.5 |
+| 12 | 7.735e+02 | 3.879e-03 | 9.259e-04 | 0.72 | 1.6 |
+| 16 | 2.392e+03 | 1.254e-03 | 9.259e-04 | 2.21 | 1.4 |
+| 20 | 5.686e+03 | 5.276e-04 | 3.049e-04 | 1.73 | 4.4 |
+| 24 | 1.154e+04 | 2.600e-04 | 1.333e-04 | 1.54 | 10.2 |
+| 28 | 2.102e+04 | 1.427e-04 | 6.623e-05 | 1.39 | 20.2 |
 | 32 | 3.541e+04 | 8.472e-05 | 3.655e-05 | 1.29 | 38.2 |
 
 ## Acceptance
@@ -23,8 +23,8 @@ Fitted log–log slope of achieved Δt versus N: **-3.57** (criterion: within [-
 
 | strategy | Δt | steps | max rel error vs exact modal | wall (ms) |
 |---|---|---|---|---|
-| explicit RK45 (adaptive) | 3.655e-05 | 1368 | 1.52e-06 | 37.3 |
-| IMEX Newmark (Δt = 0.0001) | 1.000e-04 | 500 | 1.79e-04 | 4.7 |
+| explicit RK45 (adaptive) | 3.655e-05 | 1368 | 1.52e-06 | 37.9 |
+| IMEX Newmark (Δt = 0.0001) | 1.000e-04 | 500 | 1.79e-04 | 4.8 |
 | modal truncation (n_m = 10, exact) | 1.000e-04 | 500 | 3.18e-15 | 5.1 |
 
 ## Reading
