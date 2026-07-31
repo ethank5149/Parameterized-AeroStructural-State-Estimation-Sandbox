@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper I §8):** CEP not converging at the 1/sqrt(2 N_MC) rate
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 11:16 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-07-31 19:12 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Full-batch summary (N_MC = 32,000, generic entry model)
 

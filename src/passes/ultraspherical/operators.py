@@ -35,6 +35,7 @@ __all__ = [
     "chebyshev_values",
     "conversion_chain",
     "conversion_operator",
+    "derivative_in_basis",
     "diff_operator",
     "evaluation_row",
     "jacobi_operator",
@@ -133,6 +134,43 @@ def conversion_chain(n: int, lam_from: int, lam_to: int) -> _Sparse:
     for lam in range(lam_from, lam_to):
         op = conversion_operator(n, lam) @ op
     return scipy.sparse.csr_matrix(op)
+
+
+def derivative_in_basis(n: int, derivative: int, basis: int, scale: float = 1.0) -> _Sparse:
+    """:math:`d^j/dx^j` mapping Chebyshev coefficients into the
+    :math:`C^{(\\lambda)}` basis, i.e.
+    :math:`\\mathcal{S}_{\\lambda-1}\\cdots\\mathcal{S}_j\\,\\mathcal{D}_j`
+    (:math:`j = 0` gives the pure conversion chain).
+
+    This is the per-direction building block of the tensor-product
+    assembly of Paper II, Eq. (5.19): every term of a bivariate operator
+    is a Kronecker product of two such factors, so all terms land in one
+    common output basis :math:`C^{(\\lambda)} \\otimes C^{(\\lambda)}`.
+
+    Parameters
+    ----------
+    n:
+        Coefficient-space dimension.
+    derivative:
+        Derivative order :math:`j`, :math:`0 \\le j \\le \\lambda`.
+    basis:
+        Target ultraspherical index :math:`\\lambda \\ge 1`.
+    scale:
+        Physical scaling applied as ``scale ** derivative`` — the
+        :math:`(2/L)^j` factor of the affine map.
+    """
+    _validate_size(n)
+    if basis < 1:
+        raise ValueError(f"target basis must be >= 1, got {basis}")
+    if not 0 <= derivative <= basis:
+        raise ValueError(
+            f"derivative must satisfy 0 <= j <= basis = {basis}, got {derivative}"
+        )
+    factor = float(scale) ** derivative
+    if derivative == 0:
+        return scipy.sparse.csr_matrix(factor * conversion_chain(n, 0, basis))
+    op = conversion_chain(n, derivative, basis) @ diff_operator(n, derivative)
+    return scipy.sparse.csr_matrix(factor * op)
 
 
 def jacobi_operator(n: int, lam: int) -> _Sparse:
