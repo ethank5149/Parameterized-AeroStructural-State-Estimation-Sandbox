@@ -1,6 +1,6 @@
 ![Status](https://img.shields.io/badge/status-formulation%20complete-blue?style=flat-square)
-![Implementation](https://img.shields.io/badge/implementation-not%20started-lightgrey?style=flat-square)
-![Verification](https://img.shields.io/badge/verification-0%2F16%20tasks-red?style=flat-square)
+![Implementation](https://img.shields.io/badge/implementation-roadmap%201%E2%80%932%20complete-yellow?style=flat-square)
+![Verification](https://img.shields.io/badge/verification-3%2F16%20tasks-orange?style=flat-square)
 ![Papers](https://img.shields.io/badge/papers-2%20preprints-informational?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
@@ -8,7 +8,7 @@
 
 A fixed-grid spectral formulation for coupled aeroelastic, thermal, and stochastic GNC flight simulation.
 
-**This repository currently contains two research manuscripts and their bibliographies. It does not yet contain an implementation.** The papers present a mathematical formulation and a falsifiable verification plan; every quantity requiring code to produce is marked `[PENDING]` in red in the compiled PDFs. Please read the [status table](#status) before drawing conclusions about what works.
+**This repository contains two research manuscripts, their bibliographies, and the first slice of implementation: the structural kernel and the guidance numerics (roadmap items 1 and 2), with verification tasks V1, V3, and V6 executed and passing.** The papers present a mathematical formulation and a falsifiable verification plan; quantities still requiring code to produce are marked `[PENDING]` in red in the compiled PDFs. Measured results for the executed tasks live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
 
 ---
 
@@ -49,14 +49,15 @@ Distinguishing what is derived from what is measured, because the distinction ma
 
 | Component | Formulated | Implemented | Verified |
 |---|:---:|:---:|:---:|
-| Chebyshev collocation, variable-$EI$ beam | ✅ | ❌ | ❌ |
-| Null-space free-free boundary projection | ✅ | ❌ | ❌ |
+| Chebyshev collocation, variable-$EI$ beam | ✅ | ✅ | ✅ V1 |
+| Null-space free-free boundary projection | ✅ | ✅ | ✅ V1 |
+| Temporal integration strategies (explicit / modal / IMEX) | ✅ | ✅ | ✅ V3 |
 | Quadrature-normalized slosh regularization | ✅ | ❌ | ❌ |
 | Two-phase charring ablation (CMA-style) | ✅ | ❌ | ❌ |
 | Landau transformation to fixed thermal grid | ✅ | ❌ | ❌ |
 | Mahalanobis $\chi^2$ anomaly detection | ✅ | ❌ | ❌ |
 | Innovation-Based Adaptive Estimation | ✅ | ❌ | ❌ |
-| AC-APN terminal guidance | ✅ | ❌ | ❌ |
+| AC-APN terminal guidance | ✅ | ✅ | ✅ V6 † |
 | CEP / $R_{95}$ dispersion estimators | ✅ | ❌ | ❌ |
 | Ultraspherical spectral discretization | ✅ | ❌ | ❌ |
 | Mindlin–Reissner anisotropic plates | ✅ | ❌ | ❌ |
@@ -66,7 +67,12 @@ Distinguishing what is derived from what is measured, because the distinction ma
 | $J_2$-perturbed orbital propagation | ✅ | ❌ | ❌ |
 | CUDA batched Monte Carlo | ✅ | ❌ | ❌ |
 
-**Verification tasks: 0 of 16 complete.** V1–V8 are tabulated in §8 of Paper I and §8 of Paper II, each with a stated reference and an explicit failure criterion. They were written before any results exist, so the plan is falsifiable in advance rather than reportable selectively afterward.
+† V6 verifies the $t_{go}$ precision claim and the non-intercept guard; the command law (Eq. 4.18) is implemented and unit-tested but has no closed-loop verification task until the batch layer exists.
+
+**Verification tasks: 3 of 16 complete** (V1, V3, V6 of Paper I — reports with measured numbers in [`results/`](results/)). V1–V8 are tabulated in §8 of Paper I and §8 of Paper II, each with a stated reference and an explicit failure criterion. They were written before any results existed, so the plan is falsifiable in advance rather than reportable selectively afterward. Two measured findings worth flagging against the papers' expectations:
+
+- **Conditioning (V1).** The raw $\kappa_2(\hat{\mathbf{K}})$ is pinned at $\sim 1/\varepsilon$ at every $N$, because the free-free operator retains its two *physical* rigid-body null directions. The informative measurand is the elastic condition number $\sigma_1/\sigma_{n-2}$, whose fitted slope is $\approx N^{8.0}$ for both uniform and stepped profiles — the projection removes the constraint-violating extremal modes (and passes the $10^{-6}$ frequency criterion at $N=32$ with $10^{-9}$ to spare) but does not flatten the asymptotic growth rate, which Remark 3 of Paper I deliberately declined to predict.
+- **Rigid-mode floor.** The two rigid eigenvalues compute to $\sim 10^{-15}$ relative to $\lambda_{\max}$, occasionally negative. Any long-horizon integration of the *unmodified* reduced operator therefore drifts at rate $\sqrt{|\lambda_{\text{rigid}}|}$ regardless of integrator; modal truncation or rigid-mode deflation handles it, and the V3 comparison accounts for it explicitly.
 
 ---
 
@@ -140,13 +146,22 @@ Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ 
 ├── passes-hgv-updated.pdf      # Paper II — compiled
 ├── passes-hgv-references.bib   # Paper II — verified bibliography
 ├── CITATION-AUDIT.md           # verification log for every reference
-├── Makefile / .latexmkrc       # build configuration
+├── Makefile / .latexmkrc       # papers + code targets
+├── pyproject.toml              # package metadata, ruff + mypy strict config
+├── src/passes/                 # implementation (roadmap items 1–2)
+│   ├── spectral/               #   CGL nodes, direct-recurrence D^(k),
+│   │                           #   Clenshaw–Curtis, barycentric interpolation
+│   ├── structures/             #   profiles, product-rule K assembly,
+│   │                           #   null-space projection, modal solve,
+│   │                           #   Newmark IMEX + exact modal propagator
+│   ├── guidance/               #   stable t_go with guard, AC-APN law
+│   └── verification/           #   executable V1, V3, V6 runners
+├── tests/                      # 130 pytest cases
+├── results/                    # V1/V3/V6 reports and CSV data
 └── passes.tex, passes-hgv.tex  # superseded earlier drafts (see note)
 ```
 
 `passes.tex`, `passes-hgv.tex`, and `references.bib` are earlier drafts retained for history. They contain the citation errors documented in the audit and should not be built or cited.
-
-Implementation directories do not exist yet. The layout will be proposed alongside the first code, not before it.
 
 ## Building the papers
 
@@ -163,20 +178,31 @@ Output lands in `build/` and is copied to the repository root. Both compile with
 latexmk -C          # clean
 ```
 
+## Running the code
+
+Requires Python ≥ 3.10 with NumPy ≥ 1.26 and SciPy ≥ 1.11. From the repository root:
+
+```bash
+pip install -e .[dev]           # editable install with dev tooling
+make test                       # 130 pytest cases
+make verify                     # execute V1, V3, V6; reports land in results/
+make check                      # ruff + mypy --strict + tests + verification
+```
+
+The verification runners are the authoritative record: each writes a markdown report stating the acceptance criterion from §8 of Paper I, the measured values, and a PASS/FAIL verdict, plus CSV files with the raw numbers. Sample results are committed under [`results/`](results/); regenerate them locally with `make verify`.
+
 ---
 
 ## Roadmap
 
 Ordered by dependency, not ambition.
 
-1. **Structural kernel** — Chebyshev operators, null-space projection, free-free eigenvalue solve. Unblocks **V1** (conditioning vs. $N$) and **V3** (integrator strategy comparison).
-2. **Guidance numerics** — self-contained and quick. Unblocks **V6** (the $t_{go}$ precision comparison in single and double precision).
-3. **Slosh regularization** — unblocks **V2** (exact force transfer; $\mathcal{O}(\sigma^2)$ moment error in the interior).
+1. ~~**Structural kernel** — Chebyshev operators, null-space projection, free-free eigenvalue solve.~~ **Done.** V1 (conditioning vs. $N$, frequencies vs. analytic) and V3 (integrator strategy comparison) executed and passing.
+2. ~~**Guidance numerics** — self-contained and quick.~~ **Done.** V6 (the $t_{go}$ precision comparison in single and double precision) executed and passing; the conjugate form holds the precision floor across the full $\hat A_c$ sweep while the textbook form degrades to under one significant digit.
+3. **Slosh regularization** — unblocks **V2** (exact force transfer; $\mathcal{O}(\sigma^2)$ moment error in the interior). The Clenshaw–Curtis weights it normalizes against are already in `passes.spectral`.
 4. **Thermal solver** — Arrhenius kinetics, Landau transform, surface energy balance. Unblocks **V4** (method of manufactured solutions, then a FIAT comparison case).
 5. **Filter** — unblocks **V5** (recovery time, parameter sensitivity, false-alarm rate against design $p$).
-6. **Batch layer** — unblocks **V7** (dispersion convergence) and **V8** (throughput scaling).
-
-Items 1 and 2 are independent and are the natural starting points.
+6. **Batch layer** — unblocks **V7** (dispersion convergence) and **V8** (throughput scaling). The Newmark and modal propagators already accept batched state columns against a shared factorization, which is the contract this layer builds on.
 
 ---
 

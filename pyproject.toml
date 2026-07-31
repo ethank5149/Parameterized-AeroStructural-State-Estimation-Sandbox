@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "passes"
+version = "0.1.0"
+description = "PASSES — Parameterized AeroStructural State-Estimation Sandbox: fixed-grid spectral structural kernel and guidance numerics"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Ethan Knox", email = "ethank5149@gmail.com" }]
+keywords = [
+    "spectral-methods",
+    "chebyshev",
+    "aeroelasticity",
+    "structural-dynamics",
+    "guidance",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/passes"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    "error",
+    # scipy.linalg.eig on some LAPACK builds emits benign runtime warnings for
+    # near-defective pencils; the modal layer checks results explicitly instead.
+    "default::scipy.linalg.LinAlgWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "RET", "SIM", "NPY", "RUF"]
+ignore = [
+    "E741",   # ambiguous variable names — mathematical notation (l, I) mirrors the papers
+    "RUF001", # typographic dashes/minus signs in report strings are deliberate
+    "RUF002", # same, in docstrings quoting the papers
+    "RUF003", # same, in comments
+]
+
+[tool.mypy]
+# numpy >= 2.3 ships stubs using PEP 695 `type` statements, which mypy
+# only parses when targeting >= 3.12; runtime code remains 3.10-compatible.
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src/passes"]
+
+[[tool.mypy.overrides]]
+module = "scipy.*"
+ignore_missing_imports = true
