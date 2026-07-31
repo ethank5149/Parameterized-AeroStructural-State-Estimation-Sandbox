@@ -1,0 +1,4 @@
+channel,expected_exponent,measured_slope,max_rel_disagreement
+velocity_random_walk,3,3.000000000000001,5.6165235964628165e-15
+accel_bias,4,4.00000000000001,2.937873881226703e-13
+gyro_bias,6,5.999999999999999,1.5244547148508224e-15

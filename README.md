@@ -1,6 +1,6 @@
 ![Status](https://img.shields.io/badge/status-formulation%20complete-blue?style=flat-square)
-![Implementation](https://img.shields.io/badge/implementation-roadmap%201%E2%80%9310%20of%2013-brightgreen?style=flat-square)
-![Verification](https://img.shields.io/badge/verification-11%2F16%20tasks%20%2B%202%20partial-yellowgreen?style=flat-square)
+![Implementation](https://img.shields.io/badge/implementation-roadmap%201%E2%80%9312%20of%2013-brightgreen?style=flat-square)
+![Verification](https://img.shields.io/badge/verification-14%2F16%20tasks%20%2B%202%20partial-brightgreen?style=flat-square)
 ![Papers](https://img.shields.io/badge/papers-2%20preprints-informational?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
@@ -8,7 +8,7 @@
 
 A fixed-grid spectral formulation for coupled aeroelastic, thermal, and stochastic GNC flight simulation.
 
-**This repository contains two research manuscripts, their bibliographies, and a working implementation of the first ten roadmap items — all six of Paper I (structural kernel, guidance numerics, slosh regularization, charring ablation, adaptive filter, CUDA batch layer) plus Paper II's ultraspherical spectral core, aerothermal correlations, Mindlin–Reissner plate kernel, and 6-DOF state with blended aerodynamics. Eleven of the sixteen verification tasks are executed and passing; two more (I-V4, II-V8) pass the legs executable from this repository, with their remaining legs blocked on external reference data.** The papers present a mathematical formulation and a falsifiable verification plan; quantities still requiring code to produce are marked `[PENDING]` in red in the compiled PDFs. Measured results for the executed tasks live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
+**This repository contains two research manuscripts, their bibliographies, and a working implementation of twelve of the thirteen roadmap items — all six of Paper I, plus Paper II's ultraspherical core, aerothermal correlations, Mindlin–Reissner plate kernel, 6-DOF state with blended aerodynamics, $J_2$ coast propagation, and SCvx guidance with blackout gating. Fourteen of the sixteen verification tasks are executed and passing; the remaining two (I-V4, II-V8) pass every leg executable from this repository, with their comparison legs blocked on external reference data.** The papers present a mathematical formulation and a falsifiable verification plan; quantities still requiring code to produce are marked `[PENDING]` in red in the compiled PDFs. Measured results for the executed tasks live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
 
 ---
 
@@ -64,9 +64,9 @@ Distinguishing what is derived from what is measured, because the distinction ma
 | Fay–Riddell / Lees / Tauber–Sutton heating | ✅ | ✅ | ◐ II-V8 ‖ |
 | 6-DOF quaternion state, deformed-surface incidence | ✅ | ✅ | ✅ II-V4 |
 | Blended Newtonian / Prandtl–Meyer closure | ✅ | ✅ | ✅ II-V4 |
-| Successive convexification guidance | ✅ | ❌ | ❌ |
-| Plasma blackout gating | ✅ | ❌ | ❌ |
-| $J_2$-perturbed orbital propagation | ✅ | ❌ | ❌ |
+| Successive convexification guidance | ✅ | ✅ | ✅ II-V7 |
+| Plasma blackout gating | ✅ | ✅ | ✅ II-V6 |
+| $J_2$-perturbed orbital propagation | ✅ | ✅ | ✅ II-V5 |
 | CUDA batched Monte Carlo | ✅ | ✅ | ✅ V8 ¶ |
 
 † V6 verifies the $t_{go}$ precision claim and the non-intercept guard; the command law (Eq. 4.18) is implemented and unit-tested but has no closed-loop verification task until the batch layer exists.
@@ -79,7 +79,7 @@ Distinguishing what is derived from what is measured, because the distinction ma
 
 ‖ II-V8 is **partially complete**: the implementation leg passes (exact scaling structure, Lees continuity, the opposite-sign blunting trade), but the stated 5% criterion is against published Fay–Riddell reference conditions, which require transcribed equilibrium-air properties this repository does not carry; the FIAT recession leg shares I-V4's pending status.
 
-**Verification tasks: 11 of 16 complete, plus 2 partial** (Paper I V1, V2, V3, V5, V6, V7, V8 and Paper II II-V1, II-V2, II-V3, II-V4 complete; I-V4 and II-V8 partial — reports with measured numbers in [`results/`](results/)). V1–V8 are tabulated in §8 of Paper I and §8 of Paper II, each with a stated reference and an explicit failure criterion; Paper II's tasks carry the **II-** prefix throughout this repository to keep the two numbering schemes distinct. They were written before any results existed, so the plan is falsifiable in advance rather than reportable selectively afterward. Measured findings worth flagging against the papers' expectations:
+**Verification tasks: 14 of 16 complete, plus 2 partial** (Paper I V1, V2, V3, V5, V6, V7, V8 and Paper II II-V1 through II-V7 complete; I-V4 and II-V8 partial — reports with measured numbers in [`results/`](results/)). V1–V8 are tabulated in §8 of Paper I and §8 of Paper II, each with a stated reference and an explicit failure criterion; Paper II's tasks carry the **II-** prefix throughout this repository to keep the two numbering schemes distinct. They were written before any results existed, so the plan is falsifiable in advance rather than reportable selectively afterward. Measured findings worth flagging against the papers' expectations:
 
 - **Conditioning (V1).** The raw $\kappa_2(\hat{\mathbf{K}})$ is pinned at $\sim 1/\varepsilon$ at every $N$, because the free-free operator retains its two *physical* rigid-body null directions. The informative measurand is the elastic condition number $\sigma_1/\sigma_{n-2}$, whose fitted slope is $\approx N^{8.0}$ for both uniform and stepped profiles — the projection removes the constraint-violating extremal modes (and passes the $10^{-6}$ frequency criterion at $N=32$ with $10^{-9}$ to spare) but does not flatten the asymptotic growth rate, which Remark 3 of Paper I deliberately declined to predict.
 - **Rigid-mode floor.** The two rigid eigenvalues compute to $\sim 10^{-15}$ relative to $\lambda_{\max}$, occasionally negative. Any long-horizon integration of the *unmodified* reduced operator therefore drifts at rate $\sqrt{|\lambda_{\text{rigid}}|}$ regardless of integrator; modal truncation or rigid-mode deflation handles it, and the V3 comparison accounts for it explicitly.
@@ -95,6 +95,10 @@ Distinguishing what is derived from what is measured, because the distinction ma
 - **Free-free plates converge algebraically, and that is physical (II-V3).** The simply-supported spectrum converges exponentially; the free-free spectrum does not, because free-edge plates carry weak corner singularities. This is a property of the problem, not the discretization — which is exactly why the verdict rests on the exact reference and the free-free comparison against circulated values carries no verdict.
 - **No shear locking across three decades (II-V2).** The fundamental frequency parameter falls from 11.71 at $h/L = 0.2$ (genuine thick-section shear softening) to a plateau of 13.307, and at $h/L = 10^{-3}$ differs from that plateau by $+0.018\%$ — against a 1% criterion. Paper II's Remark claims high-order spectral discretizations are "markedly less susceptible" to locking but explicitly declines to claim immunity; this measures it. The cost that *is* paid as sections thin is conditioning: the shear-to-bending stiffness ratio grows as $h^{-2}$, and the rigid-body modes separate from the elastic spectrum by correspondingly fewer decades.
 - **The blend is load-neutral (II-V4).** Trim incidence moves by $0.027°$ across the full blend-width sweep — from the unblended $C^0$ closure out to a $2.3°$ half-width — against a $0.1°$ criterion, and the offset grows monotonically and vanishes as $\delta_{\mathrm{blend}} \to 0$. The seam the blend exists to fix is confirmed first: the unblended closure is continuous to $10^{-16}$ but its slope jumps, the Newtonian branch having zero slope at $\delta_c = 0$ where the expansion branch does not.
+- **Freezing the structural block wins, and by how much (II-V5).** Carrying a 100 rad/s structural mode through a 300 s coast costs **15× more right-hand-side evaluations** than freezing it once its modal energy has decayed to $10^{-6}$ of initial — with both strategies holding energy to better than $10^{-8}$. Paper II's Remark 5 declined to call the trade in advance; the measurement calls it for freezing, and notes the saving *grows* with coast duration because the ring-down time is fixed while the coast is not. The switch is defensible only because the freeze condition is checked rather than assumed.
+- **A quadratic blackout model under-predicts by 13× (II-V6).** All three covariance channels reproduce their $t^3$, $t^4$ and $t^6$ exponents to better than $10^{-6}$, measured from a Lyapunov propagation that carries the biases and tilt as *states* and so shares no code with the closed form. The operational consequence the paper's Remark asserts is now quantified: at two minutes of blackout the gyro channel carries 88% of the variance and a $t^2$ model under-predicts position uncertainty **13-fold**. A pull-up trigger sized on the quadratic model fires far too late.
+- **Chattering is structural, not a tuning problem (II-V6).** A bare threshold on $\omega_p \ge \omega_{\mathrm{GNSS}}$ produces 966 transitions on a signal that merely hovers at the boundary. No choice of threshold fixes that — only hysteresis does, and a 10% reacquisition margin reduces it to the single legitimate latch. The gate is therefore hysteretic by construction.
+- **The $\ell_1$ penalty is exact; $\ell_2$ is not (II-V7).** On the *same* linearized subproblem, the $\ell_1$ penalty drives $\|\bm{\nu}\|_1$ to **exactly 0.0** at every weight from $w_\nu = 3$ upward — a finite threshold, visible between 1 and 3 — while a quadratic penalty gives 92 → 12 → 1.3 over three decades of weight and then *grows again* as the solver loses the ill-conditioned problem. Both halves are the paper's argument: $\ell_2$ approaches zero only asymptotically, and the weight that makes it small is the weight that wrecks conditioning.
 - **Blunting is a genuine trade (II-V8).** With convective heating falling as $R_{\mathrm{eff}}^{-1/2}$ through the modified-Newtonian velocity gradient and radiative rising as $R_{\mathrm{eff}}^{+1}$, the total heating has an *interior* optimum on the demonstration corridor. A convection-only framework drives the radius to the edge of the sweep — the over-blunting bias Paper II predicts. The Lewis-exponent choice moves the Fay–Riddell bracket by 1.07% between equilibrium and frozen/catalytic, confirming the paper's "several percent" statement for these conditions. The Tauber–Sutton velocity function is a **required input with mandatory provenance**, not a bundled constant: the implementation refuses to construct without a provenance string and refuses to extrapolate outside the supplied table.
 
 ---
@@ -199,8 +203,10 @@ Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ 
 │   │                           #   local incidence  [Paper II]
 │   ├── aerodynamics/           #   Rayleigh–Pitot, Prandtl–Meyer, C² blend,
 │   │                           #   panel loads and trim  [Paper II]
+│   ├── orbital/                #   J₂ gravity, coast propagation, regime
+│   │                           #   transition, strategy comparison  [Paper II]
 │   └── verification/           #   executable V1–V8 and II-V1…II-V8 + MMS
-├── tests/                      # 355 pytest cases
+├── tests/                      # 405 pytest cases
 ├── results/                    # verification reports and CSV data
 └── passes.tex, passes-hgv.tex  # superseded earlier drafts (see note)
 ```
@@ -229,7 +235,7 @@ Requires Python ≥ 3.10 with NumPy ≥ 1.26 and SciPy ≥ 1.11. From the reposi
 ```bash
 pip install -e .[dev]           # editable install with dev tooling
 pip install -e .[cuda]          # optional: CuPy backend for the GPU batch layer
-make test                       # 355 pytest cases (GPU tests skip without CUDA)
+make test                       # 405 pytest cases (GPU tests skip without CUDA)
 make verify                     # execute V1–V8 and II-V1…II-V8; reports in results/
 make check                      # ruff + mypy --strict + tests + verification
 ```
@@ -255,9 +261,9 @@ Paper I's roadmap is complete. The extension below covers Paper II's formulation
 8. ~~**Aerothermal correlations**~~ **Done.** II-V8's implementation leg executed and passing: exact $R_{\mathrm{eff}}^{-1/2}$ scaling through the modified-Newtonian gradient, quantified Lewis-exponent sensitivity, Lees continuity at the stagnation-region boundary to $5\times 10^{-10}$, and the interior blunting optimum demonstrated. The published-reference-case comparison awaits transcribed reference data, as with I-V4's FIAT leg.
 9. ~~**Mindlin–Reissner plate kernel**~~ **Done.** II-V1 (block leg), II-V2 and II-V3 executed and passing: the assembled block operator is $\mathcal{O}(1)$-conditioned under two-sided equilibration, no shear locking across three decades of $h/L$, MMS exact to $7\times 10^{-13}$, and frequencies matching the closed-form Mindlin simply-supported solution to $3.7\times 10^{-10}$.
 10. ~~**6-DOF state and aerodynamic blending**~~ **Done.** II-V4 executed and passing: trim incidence shifts by $0.027°$ across the blend-width sweep against a $0.1°$ criterion, with the $C^0$-but-not-$C^1$ seam measured directly and the $C^2$ smoothstep shown to close it.
-11. **Orbital coast** *(next up)* — $J_2$-perturbed propagation and the regime transition within a single integration. Unblocks **II-V5** (coast step size, energy conservation).
-12. **SCvx and blackout gating** — successive convexification with free virtual controls under the exact $\ell_1$ penalty, plasma-frequency blackout gate, unaided covariance growth model. Unblocks **II-V6** (covariance growth exponents, trigger behavior) and **II-V7** (exact virtual-control zeroing at finite $w_\nu$).
-13. **Coupled flight integration and external reference data** — assembles the kernels into the single-trajectory simulator; closes the pending legs of **I-V4** and **II-V8** once FIAT/reference-case data are transcribed, and the occupancy instrumentation of **I-V8**.
+11. ~~**Orbital coast**~~ **Done.** II-V5 executed and passing: secular energy drift $1.7\times 10^{-14}$ per orbit against a $10^{-8}$ criterion, nodal regression matching the analytic first-order rate to 0.2%, and the frozen-structure strategy costing 15× fewer right-hand-side evaluations than carrying the block through coast.
+12. ~~**SCvx and blackout gating**~~ **Done.** II-V6 and II-V7 executed and passing: all three covariance channels reproduce their $t^3/t^4/t^6$ exponents to 1e-6, the hysteretic gate eliminates boundary chattering, and the $\ell_1$ penalty drives the virtual controls to *exactly* zero at $w_\nu = 3$ where an $\ell_2$ penalty on the same subproblem never reaches zero at any weight.
+13. **Coupled flight integration and external reference data** *(all that remains)* — assembles the kernels into the single-trajectory simulator; closes the pending legs of **I-V4** and **II-V8** once FIAT/reference-case data are transcribed, and the occupancy instrumentation of **I-V8**.
 
 ---
 

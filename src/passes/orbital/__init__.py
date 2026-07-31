@@ -1,0 +1,43 @@
+"""Orbital mechanics and the coast phase (Paper II, §7)."""
+
+from __future__ import annotations
+
+from passes.orbital.coast import (
+    CoastResult,
+    RegimeTransition,
+    StrategyComparison,
+    compare_coast_strategies,
+    orbital_elements,
+    propagate_coast,
+    regime_transition_profile,
+    secular_rates,
+)
+from passes.orbital.gravity import (
+    EARTH,
+    GravityModel,
+    gravitational_acceleration,
+    gravitational_potential,
+    j2_acceleration,
+    specific_angular_momentum_z,
+    specific_energy,
+    two_body_acceleration,
+)
+
+__all__ = [
+    "EARTH",
+    "CoastResult",
+    "GravityModel",
+    "RegimeTransition",
+    "StrategyComparison",
+    "compare_coast_strategies",
+    "gravitational_acceleration",
+    "gravitational_potential",
+    "j2_acceleration",
+    "orbital_elements",
+    "propagate_coast",
+    "regime_transition_profile",
+    "secular_rates",
+    "specific_angular_momentum_z",
+    "specific_energy",
+    "two_body_acceleration",
+]

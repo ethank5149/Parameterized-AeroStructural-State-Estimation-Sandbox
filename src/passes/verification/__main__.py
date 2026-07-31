@@ -8,7 +8,9 @@ from pathlib import Path
 
 from passes.verification.p2v1_ultraspherical import run_p2v1
 from passes.verification.p2v4_blending import run_p2v4
+from passes.verification.p2v5_coast import run_p2v5
 from passes.verification.p2v8_aerothermal import run_p2v8
+from passes.verification.p2v67_gnc import run_p2v67
 from passes.verification.p2v123_plates import run_p2v123
 from passes.verification.v1_structural import run_v1
 from passes.verification.v2_slosh import run_v2
@@ -38,6 +40,8 @@ def main() -> int:
         (run_p2v1, "p2v1-ultraspherical"),
         (run_p2v123, "p2v123-plates"),
         (run_p2v4, "p2v4-blending"),
+        (run_p2v5, "p2v5-coast"),
+        (run_p2v67, "p2v67-gnc"),
         (run_p2v8, "p2v8-aerothermal"),
     ):
         report = runner(args.output)
