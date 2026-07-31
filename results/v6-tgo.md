@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper I §8):** the conjugate form (Eq. 4.16) losing more than 1 significant digit where the textbook form (Eq. 4.15) loses many
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 10:20 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-07-31 10:44 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Operating point
 

@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper I §8):** force error above machine precision; moment error not O(σ²) in the interior
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 10:19 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-07-31 10:43 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Total force transfer, 7 stations per row (relative error vs Σ|F|)
 

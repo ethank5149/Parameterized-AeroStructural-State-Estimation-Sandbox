@@ -10,11 +10,14 @@ from passes.verification.v1_structural import run_v1
 from passes.verification.v2_slosh import run_v2
 from passes.verification.v3_integrators import run_v3
 from passes.verification.v4_thermal import run_v4
+from passes.verification.v5_filter import run_v5
 from passes.verification.v6_tgo import run_v6
+from passes.verification.v7_dispersion import run_v7
+from passes.verification.v8_throughput import run_v8
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run verification tasks V1–V4, V6")
+    parser = argparse.ArgumentParser(description="Run verification tasks V1–V8")
     parser.add_argument("--output", type=Path, default=Path("results"))
     args = parser.parse_args()
 
@@ -24,7 +27,10 @@ def main() -> int:
         (run_v2, "v2-slosh"),
         (run_v3, "v3-integrators"),
         (run_v4, "v4-thermal"),
+        (run_v5, "v5-filter"),
         (run_v6, "v6-tgo"),
+        (run_v7, "v7-dispersion"),
+        (run_v8, "v8-throughput"),
     ):
         report = runner(args.output)
         path = report.write(args.output, stem)

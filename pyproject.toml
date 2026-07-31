@@ -35,6 +35,10 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+# GPU batch backend; pick the wheel matching the local CUDA major version.
+cuda = [
+    "cupy-cuda13x>=13.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/passes"]
@@ -74,3 +78,8 @@ files = ["src/passes"]
 [[tool.mypy.overrides]]
 module = "scipy.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "cupy.*"
+ignore_missing_imports = true
+follow_imports = "skip"

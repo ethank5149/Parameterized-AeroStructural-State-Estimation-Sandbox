@@ -1,6 +1,6 @@
 ![Status](https://img.shields.io/badge/status-formulation%20complete-blue?style=flat-square)
-![Implementation](https://img.shields.io/badge/implementation-roadmap%201%E2%80%934%20complete-yellow?style=flat-square)
-![Verification](https://img.shields.io/badge/verification-4%2F16%20tasks%20%2B%20V4%20partial-orange?style=flat-square)
+![Implementation](https://img.shields.io/badge/implementation-roadmap%201%E2%80%936%20complete-brightgreen?style=flat-square)
+![Verification](https://img.shields.io/badge/verification-7%2F16%20tasks%20%2B%20V4%20partial-yellow?style=flat-square)
 ![Papers](https://img.shields.io/badge/papers-2%20preprints-informational?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
@@ -8,7 +8,7 @@
 
 A fixed-grid spectral formulation for coupled aeroelastic, thermal, and stochastic GNC flight simulation.
 
-**This repository contains two research manuscripts, their bibliographies, and the implementation of roadmap items 1–4: the structural kernel, guidance numerics, slosh regularization, and the charring-ablation thermal solver. Verification tasks V1, V2, V3, and V6 are executed and passing; V4's method-of-manufactured-solutions leg passes, with its FIAT comparison pending external reference data.** The papers present a mathematical formulation and a falsifiable verification plan; quantities still requiring code to produce are marked `[PENDING]` in red in the compiled PDFs. Measured results for the executed tasks live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
+**This repository contains two research manuscripts, their bibliographies, and the implementation of all six Paper-I roadmap items: structural kernel, guidance numerics, slosh regularization, charring-ablation thermal solver, adaptive filter, and the batched Monte Carlo layer with a CUDA backend. Seven of Paper I's eight verification tasks (V1–V3, V5–V8) are executed and passing; V4's manufactured-solutions leg passes with its FIAT comparison pending external reference data.** The papers present a mathematical formulation and a falsifiable verification plan; quantities still requiring code to produce are marked `[PENDING]` in red in the compiled PDFs. Measured results for the executed tasks live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
 
 ---
 
@@ -55,28 +55,32 @@ Distinguishing what is derived from what is measured, because the distinction ma
 | Quadrature-normalized slosh regularization | ✅ | ✅ | ✅ V2 |
 | Two-phase charring ablation (CMA-style) | ✅ | ✅ | ◐ V4 ‡ |
 | Landau transformation to fixed thermal grid | ✅ | ✅ | ◐ V4 ‡ |
-| Mahalanobis $\chi^2$ anomaly detection | ✅ | ❌ | ❌ |
-| Innovation-Based Adaptive Estimation | ✅ | ❌ | ❌ |
+| Mahalanobis $\chi^2$ anomaly detection | ✅ | ✅ | ✅ V5 |
+| Innovation-Based Adaptive Estimation | ✅ | ✅ | ✅ V5 |
 | AC-APN terminal guidance | ✅ | ✅ | ✅ V6 † |
-| CEP / $R_{95}$ dispersion estimators | ✅ | ❌ | ❌ |
+| CEP / $R_{95}$ dispersion estimators | ✅ | ✅ | ✅ V7 |
 | Ultraspherical spectral discretization | ✅ | ❌ | ❌ |
 | Mindlin–Reissner anisotropic plates | ✅ | ❌ | ❌ |
 | Fay–Riddell / Lees / Tauber–Sutton heating | ✅ | ❌ | ❌ |
 | Successive convexification guidance | ✅ | ❌ | ❌ |
 | Plasma blackout gating | ✅ | ❌ | ❌ |
 | $J_2$-perturbed orbital propagation | ✅ | ❌ | ❌ |
-| CUDA batched Monte Carlo | ✅ | ❌ | ❌ |
+| CUDA batched Monte Carlo | ✅ | ✅ | ✅ V8 ¶ |
 
 † V6 verifies the $t_{go}$ precision claim and the non-intercept guard; the command law (Eq. 4.18) is implemented and unit-tested but has no closed-loop verification task until the batch layer exists.
 
 ‡ V4 is **partially complete**: the method-of-manufactured-solutions leg passes (spectral convergence of the coupled energy/kinetics/gas-flux system on the Landau grid, error contracting $5\times 10^{8}$-fold from $N_T=6$ to $20$), but the stated failure criterion — recession within 5% of a FIAT reference case — requires the external FIAT code or its published reference data, neither of which is in this repository. It is not counted as finished.
 
-**Verification tasks: 4 of 16 complete, plus V4 partial** (V1, V2, V3, V6 of Paper I complete — reports with measured numbers in [`results/`](results/)). V1–V8 are tabulated in §8 of Paper I and §8 of Paper II, each with a stated reference and an explicit failure criterion. They were written before any results existed, so the plan is falsifiable in advance rather than reportable selectively afterward. Measured findings worth flagging against the papers' expectations:
+¶ V8's failure criterion (sublinear throughput scaling below device saturation) is evaluated on real CUDA hardware (RTX 3090, CuPy backend) and passes; the *achieved-occupancy* and warp-divergence counters listed in the task's method await Nsight profiler integration and are reported as pending instrumentation.
+
+**Verification tasks: 7 of 16 complete, plus V4 partial** (V1, V2, V3, V5, V6, V7, V8 of Paper I complete — reports with measured numbers in [`results/`](results/)). V1–V8 are tabulated in §8 of Paper I and §8 of Paper II, each with a stated reference and an explicit failure criterion. They were written before any results existed, so the plan is falsifiable in advance rather than reportable selectively afterward. Measured findings worth flagging against the papers' expectations:
 
 - **Conditioning (V1).** The raw $\kappa_2(\hat{\mathbf{K}})$ is pinned at $\sim 1/\varepsilon$ at every $N$, because the free-free operator retains its two *physical* rigid-body null directions. The informative measurand is the elastic condition number $\sigma_1/\sigma_{n-2}$, whose fitted slope is $\approx N^{8.0}$ for both uniform and stepped profiles — the projection removes the constraint-violating extremal modes (and passes the $10^{-6}$ frequency criterion at $N=32$ with $10^{-9}$ to spare) but does not flatten the asymptotic growth rate, which Remark 3 of Paper I deliberately declined to predict.
 - **Rigid-mode floor.** The two rigid eigenvalues compute to $\sim 10^{-15}$ relative to $\lambda_{\max}$, occasionally negative. Any long-horizon integration of the *unmodified* reduced operator therefore drifts at rate $\sqrt{|\lambda_{\text{rigid}}|}$ regardless of integrator; modal truncation or rigid-mode deflation handles it, and the V3 comparison accounts for it explicitly.
 - **Slosh moment error (V2).** The interior first-moment error for a *resolved* kernel sits near the rounding floor — far below the $\mathcal{O}(\sigma^2)$ allowance of the remark after Prop. 1 — because Clenshaw–Curtis integrates a resolved Gaussian's first moment spectrally. The $\mathcal{O}(\sigma^2)$-scale bias appears exactly where the paper localizes it: stations within $\sim 2\sigma$ of an endpoint (measured $2.2\times 10^{-3}$ relative at $x_s/\sigma = 2$, growing monotonically as the station approaches the end). Force transfer is exact everywhere, worst case $1.5\times 10^{-16}$ relative.
 - **Density-rate convention (V4).** Eqs. (3.17)–(3.18) as printed source the gas continuity and pyrolysis enthalpy with $\partial\rho/\partial t|_\eta$ — the full computational-frame rate including grid advection — where the CMA lineage uses the material-frame Arrhenius rate alone; the two differ at $\mathcal{O}(\dot s\,\rho_\eta/\ell)$. The solver implements the paper's letter by default and exposes the choice as an explicit option (`density_rate_convention`) rather than deciding silently; the MMS verifies the default.
+- **Filter calibration and recovery (V5).** The χ² gate fires at $9.8\times 10^{-4}$ against the design $p = 10^{-3}$ over $5\times 10^5$ nominal gate evaluations, and no replicate diverges in any of 27 $(N_w, \alpha_{\max}, p)$ configurations — the structural claim of Remark 8 that scalar inflation cannot destabilize the filter. IAE recovers from a 30 m/s separation transient in a median 1.30 s versus 2.15 s for the fixed-Q filter on identical measurements.
+- **Batch scaling (V8).** GPU throughput ramps with log–log slope 1.00 in $N_{\mathrm{MC}}$ below saturation and peaks at ~85k replicates/s on the entry workload — 5× the vectorized CPU batch and ~380× a per-replicate Python loop (the decohered execution model a moving-mesh formulation forces). The batched IMEX Newmark structural block sustains millions of replicate-steps/s through one shared LU factorization, which is the §5.2 batching argument made measurable.
 
 ---
 
@@ -152,7 +156,7 @@ Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ 
 ├── CITATION-AUDIT.md           # verification log for every reference
 ├── Makefile / .latexmkrc       # papers + code targets
 ├── pyproject.toml              # package metadata, ruff + mypy strict config
-├── src/passes/                 # implementation (roadmap items 1–4)
+├── src/passes/                 # implementation (roadmap items 1–6)
 │   ├── spectral/               #   CGL nodes, direct-recurrence D^(k),
 │   │                           #   Clenshaw–Curtis, barycentric interpolation
 │   ├── structures/             #   profiles, product-rule K assembly,
@@ -164,8 +168,12 @@ Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ 
 │   │                           #   in-depth energy + gas-flux solver,
 │   │                           #   surface energy balance + blowing
 │   ├── guidance/               #   stable t_go with guard, AC-APN law
-│   └── verification/           #   executable V1–V4, V6 runners + MMS
-├── tests/                      # 189 pytest cases
+│   ├── estimation/             #   batched χ²-gated IAE Kalman filter
+│   ├── batch/                  #   NumPy/CuPy backends, Philox sampling,
+│   │                           #   rank-3 batched RK4, dispersion stats
+│   │                           #   (R95, CEP + fallback, bootstrap, HZ)
+│   └── verification/           #   executable V1–V8 runners + MMS
+├── tests/                      # 228 pytest cases
 ├── results/                    # verification reports and CSV data
 └── passes.tex, passes-hgv.tex  # superseded earlier drafts (see note)
 ```
@@ -193,8 +201,9 @@ Requires Python ≥ 3.10 with NumPy ≥ 1.26 and SciPy ≥ 1.11. From the reposi
 
 ```bash
 pip install -e .[dev]           # editable install with dev tooling
-make test                       # 189 pytest cases
-make verify                     # execute V1–V4, V6; reports land in results/
+pip install -e .[cuda]          # optional: CuPy backend for the GPU batch layer
+make test                       # 228 pytest cases (GPU tests skip without CUDA)
+make verify                     # execute V1–V8; reports land in results/
 make check                      # ruff + mypy --strict + tests + verification
 ```
 
@@ -210,8 +219,10 @@ Ordered by dependency, not ambition.
 2. ~~**Guidance numerics** — self-contained and quick.~~ **Done.** V6 (the $t_{go}$ precision comparison in single and double precision) executed and passing; the conjugate form holds the precision floor across the full $\hat A_c$ sweep while the textbook form degrades to under one significant digit.
 3. ~~**Slosh regularization**~~ **Done.** V2 executed and passing: force transfer exact to $1.5\times 10^{-16}$ across $N$, $\gamma$, and station; interior moment error within (in fact far below) the $\mathcal{O}(\sigma^2)$ bound; the endpoint bias measured and localized to $x_s \lesssim 2\sigma$ as the paper predicts.
 4. ~~**Thermal solver** — Arrhenius kinetics, Landau transform, surface energy balance.~~ **Done.** V4's MMS leg executed and passing (spectral convergence to the $10^{-15}$ time-integration floor); kinetics verified against closed-form isothermal solutions; gas-flux operator exact on polynomials; SEB solved by bracketed Brent with the log1p blowing correction. The FIAT comparison leg remains **pending** external reference data — the comparison harness is ready for a tabulated $(t, s, T)$ reference.
-5. **Filter** — unblocks **V5** (recovery time, parameter sensitivity, false-alarm rate against design $p$).
-6. **Batch layer** — unblocks **V7** (dispersion convergence) and **V8** (throughput scaling). The Newmark and modal propagators already accept batched state columns against a shared factorization, which is the contract this layer builds on.
+5. ~~**Filter**~~ **Done.** V5 executed and passing: false-alarm rate $9.8\times 10^{-4}$ against design $p = 10^{-3}$, zero divergence across all 27 sensitivity configurations, and IAE recovery measurably faster than the fixed-Q baseline on identical data.
+6. ~~**Batch layer**~~ **Done.** V7 and V8 executed and passing: CEP sampling error converges at the $1/\sqrt{2N_{\mathrm{MC}}}$ rate (fitted slope −0.63), the $R_{95}$ ellipse empirically contains 95.0% of impacts, the elongated-footprint CEP fallback engages exactly at the validity boundary, and the CUDA batch scales linearly below saturation on real hardware. Occupancy counters await profiler instrumentation.
+
+With Paper I's roadmap complete, remaining work is Paper II's scope — ultraspherical discretization, Mindlin–Reissner plates, hypersonic heating correlations, SCvx guidance, blackout gating, $J_2$ propagation — plus the V4 FIAT reference comparison and the coupled flight integration that assembles these kernels into the single-trajectory simulator.
 
 ---
 
