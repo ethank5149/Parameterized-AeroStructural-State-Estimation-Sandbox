@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from passes.verification.p2v1_ultraspherical import run_p2v1
+from passes.verification.p2v8_aerothermal import run_p2v8
 from passes.verification.v1_structural import run_v1
 from passes.verification.v2_slosh import run_v2
 from passes.verification.v3_integrators import run_v3
@@ -31,6 +33,8 @@ def main() -> int:
         (run_v6, "v6-tgo"),
         (run_v7, "v7-dispersion"),
         (run_v8, "v8-throughput"),
+        (run_p2v1, "p2v1-ultraspherical"),
+        (run_p2v8, "p2v8-aerothermal"),
     ):
         report = runner(args.output)
         path = report.write(args.output, stem)

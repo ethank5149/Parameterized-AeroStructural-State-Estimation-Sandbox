@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper I §8):** relative frequency error > 1e-06 at N = 32 for the uniform case
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 10:43 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-07-31 11:15 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Conditioning of the reduced stiffness operator
 

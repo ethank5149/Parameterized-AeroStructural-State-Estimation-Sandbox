@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper I §8):** divergence on any replicate; measured false-alarm rate above 2p (design p = 1e-3)
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 10:44 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-07-31 11:15 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Scenario
 

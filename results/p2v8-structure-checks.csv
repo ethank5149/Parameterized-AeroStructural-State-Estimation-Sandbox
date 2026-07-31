@@ -1,0 +1,6 @@
+check,measured,expected,pass
+q_conv ratio for R_eff 0.25 vs 1.0 (expect 4^{1/2} = 2),2.0,2.0,True
+enthalpy-potential linearity ratio,0.5,0.5,True
+frozen/catalytic vs equilibrium bracket shift (expect ~1%),0.010716461440026137,0.011,True
+Lees jump across x = R_eff (expect 0),5.000000081142172e-10,0.0,True
+recession at radiative-equilibrium wall (expect 0),0.0,0.0,True

@@ -2,17 +2,17 @@
 
 - **Failure criterion (stated in advance, Paper I §8):** sublinear scaling in N_MC below device saturation
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 10:44 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-07-31 11:16 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Throughput vs N_MC (400 RK4 steps of the entry RHS per replicate)
 
 | N_MC | CPU batch (rep/s) | GPU batch (rep/s) |
 |---|---|---|
-| 256 | 10,110 | 1,513 |
-| 1,024 | 15,279 | 6,083 |
-| 4,096 | 17,283 | 24,509 |
-| 16,384 | 17,730 | 71,383 |
-| 65,536 | 15,248 | 84,538 |
+| 256 | 10,192 | 1,514 |
+| 1,024 | 15,287 | 6,012 |
+| 4,096 | 17,387 | 24,207 |
+| 16,384 | 17,829 | 71,461 |
+| 65,536 | 15,441 | 84,633 |
 
 ## Scaling acceptance
 
@@ -20,15 +20,15 @@ Fitted log–log slope of throughput vs N_MC below saturation (points [256, 1024
 
 ## CPU baseline comparison
 
-Per-replicate Python loop: **224 rep/s** at N_MC = 256 — the decohered execution model. The vectorized CPU batch peaks at **17,730 rep/s** (79× the loop); the CUDA batch peaks at **84,538 rep/s** (377× the loop, 4.8× the CPU batch). The batch never decoheres: every replicate shares the same kernel launches and the same outer time grid.
+Per-replicate Python loop: **226 rep/s** at N_MC = 256 — the decohered execution model. The vectorized CPU batch peaks at **17,829 rep/s** (79× the loop); the CUDA batch peaks at **84,633 rep/s** (374× the loop, 4.7× the CPU batch). The batch never decoheres: every replicate shares the same kernel launches and the same outer time grid.
 
 ## Structural block: batched IMEX Newmark, one shared LU across 4096 replicates
 
 | N | reduced dim | replicate-steps / s |
 |---|---|---|
-| 16 | 13 | 7,979,008 |
-| 24 | 21 | 2,738,016 |
-| 32 | 29 | 2,318,138 |
+| 16 | 13 | 3,436,832 |
+| 24 | 21 | 2,761,161 |
+| 32 | 29 | 2,309,181 |
 
 ## Achieved occupancy — PENDING instrumentation
 

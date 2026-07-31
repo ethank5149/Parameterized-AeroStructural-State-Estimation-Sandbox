@@ -1,6 +1,6 @@
 ![Status](https://img.shields.io/badge/status-formulation%20complete-blue?style=flat-square)
-![Implementation](https://img.shields.io/badge/implementation-roadmap%201%E2%80%936%20complete-brightgreen?style=flat-square)
-![Verification](https://img.shields.io/badge/verification-7%2F16%20tasks%20%2B%20V4%20partial-yellow?style=flat-square)
+![Implementation](https://img.shields.io/badge/implementation-roadmap%201%E2%80%938%20of%2013-brightgreen?style=flat-square)
+![Verification](https://img.shields.io/badge/verification-7%2F16%20tasks%20%2B%203%20partial-yellow?style=flat-square)
 ![Papers](https://img.shields.io/badge/papers-2%20preprints-informational?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
@@ -8,7 +8,7 @@
 
 A fixed-grid spectral formulation for coupled aeroelastic, thermal, and stochastic GNC flight simulation.
 
-**This repository contains two research manuscripts, their bibliographies, and the implementation of all six Paper-I roadmap items: structural kernel, guidance numerics, slosh regularization, charring-ablation thermal solver, adaptive filter, and the batched Monte Carlo layer with a CUDA backend. Seven of Paper I's eight verification tasks (V1–V3, V5–V8) are executed and passing; V4's manufactured-solutions leg passes with its FIAT comparison pending external reference data.** The papers present a mathematical formulation and a falsifiable verification plan; quantities still requiring code to produce are marked `[PENDING]` in red in the compiled PDFs. Measured results for the executed tasks live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
+**This repository contains two research manuscripts, their bibliographies, and a working implementation of the first eight roadmap items — all six of Paper I (structural kernel, guidance numerics, slosh regularization, charring ablation, adaptive filter, CUDA batch layer) plus Paper II's ultraspherical spectral core and aerothermal correlations. Seven of Paper I's eight verification tasks are executed and passing; three more (I-V4, II-V1, II-V8) pass the legs executable from this repository, with their remaining legs blocked on external reference data or on roadmap items not yet built.** The papers present a mathematical formulation and a falsifiable verification plan; quantities still requiring code to produce are marked `[PENDING]` in red in the compiled PDFs. Measured results for the executed tasks live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
 
 ---
 
@@ -59,9 +59,9 @@ Distinguishing what is derived from what is measured, because the distinction ma
 | Innovation-Based Adaptive Estimation | ✅ | ✅ | ✅ V5 |
 | AC-APN terminal guidance | ✅ | ✅ | ✅ V6 † |
 | CEP / $R_{95}$ dispersion estimators | ✅ | ✅ | ✅ V7 |
-| Ultraspherical spectral discretization | ✅ | ❌ | ❌ |
+| Ultraspherical spectral discretization | ✅ | ✅ | ◐ II-V1 § |
 | Mindlin–Reissner anisotropic plates | ✅ | ❌ | ❌ |
-| Fay–Riddell / Lees / Tauber–Sutton heating | ✅ | ❌ | ❌ |
+| Fay–Riddell / Lees / Tauber–Sutton heating | ✅ | ✅ | ◐ II-V8 ‖ |
 | Successive convexification guidance | ✅ | ❌ | ❌ |
 | Plasma blackout gating | ✅ | ❌ | ❌ |
 | $J_2$-perturbed orbital propagation | ✅ | ❌ | ❌ |
@@ -73,7 +73,11 @@ Distinguishing what is derived from what is measured, because the distinction ma
 
 ¶ V8's failure criterion (sublinear throughput scaling below device saturation) is evaluated on real CUDA hardware (RTX 3090, CuPy backend) and passes; the *achieved-occupancy* and warp-divergence counters listed in the task's method await Nsight profiler integration and are reported as pending instrumentation.
 
-**Verification tasks: 7 of 16 complete, plus V4 partial** (V1, V2, V3, V5, V6, V7, V8 of Paper I complete — reports with measured numbers in [`results/`](results/)). V1–V8 are tabulated in §8 of Paper I and §8 of Paper II, each with a stated reference and an explicit failure criterion. They were written before any results existed, so the plan is falsifiable in advance rather than reportable selectively afterward. Measured findings worth flagging against the papers' expectations:
+§ II-V1 is **partially complete**: the univariate leg passes (fourth-order variable-$EI$ operator, conditioning growth measured against the O(N) criterion, accuracy cross-checked against the analytic free-free beam), but the task's stated target is the assembled Mindlin–Reissner *block* operator, which needs the plate kernel of roadmap item 9.
+
+‖ II-V8 is **partially complete**: the implementation leg passes (exact scaling structure, Lees continuity, the opposite-sign blunting trade), but the stated 5% criterion is against published Fay–Riddell reference conditions, which require transcribed equilibrium-air properties this repository does not carry; the FIAT recession leg shares I-V4's pending status.
+
+**Verification tasks: 7 of 16 complete, plus 3 partial** (Paper I V1, V2, V3, V5, V6, V7, V8 complete; I-V4, II-V1, II-V8 partial — reports with measured numbers in [`results/`](results/)). V1–V8 are tabulated in §8 of Paper I and §8 of Paper II, each with a stated reference and an explicit failure criterion; Paper II's tasks carry the **II-** prefix throughout this repository to keep the two numbering schemes distinct. They were written before any results existed, so the plan is falsifiable in advance rather than reportable selectively afterward. Measured findings worth flagging against the papers' expectations:
 
 - **Conditioning (V1).** The raw $\kappa_2(\hat{\mathbf{K}})$ is pinned at $\sim 1/\varepsilon$ at every $N$, because the free-free operator retains its two *physical* rigid-body null directions. The informative measurand is the elastic condition number $\sigma_1/\sigma_{n-2}$, whose fitted slope is $\approx N^{8.0}$ for both uniform and stepped profiles — the projection removes the constraint-violating extremal modes (and passes the $10^{-6}$ frequency criterion at $N=32$ with $10^{-9}$ to spare) but does not flatten the asymptotic growth rate, which Remark 3 of Paper I deliberately declined to predict.
 - **Rigid-mode floor.** The two rigid eigenvalues compute to $\sim 10^{-15}$ relative to $\lambda_{\max}$, occasionally negative. Any long-horizon integration of the *unmodified* reduced operator therefore drifts at rate $\sqrt{|\lambda_{\text{rigid}}|}$ regardless of integrator; modal truncation or rigid-mode deflation handles it, and the V3 comparison accounts for it explicitly.
@@ -81,6 +85,9 @@ Distinguishing what is derived from what is measured, because the distinction ma
 - **Density-rate convention (V4).** Eqs. (3.17)–(3.18) as printed source the gas continuity and pyrolysis enthalpy with $\partial\rho/\partial t|_\eta$ — the full computational-frame rate including grid advection — where the CMA lineage uses the material-frame Arrhenius rate alone; the two differ at $\mathcal{O}(\dot s\,\rho_\eta/\ell)$. The solver implements the paper's letter by default and exposes the choice as an explicit option (`density_rate_convention`) rather than deciding silently; the MMS verifies the default.
 - **Filter calibration and recovery (V5).** The χ² gate fires at $9.8\times 10^{-4}$ against the design $p = 10^{-3}$ over $5\times 10^5$ nominal gate evaluations, and no replicate diverges in any of 27 $(N_w, \alpha_{\max}, p)$ configurations — the structural claim of Remark 8 that scalar inflation cannot destabilize the filter. IAE recovers from a 30 m/s separation transient in a median 1.30 s versus 2.15 s for the fixed-Q filter on identical measurements.
 - **Batch scaling (V8).** GPU throughput ramps with log–log slope 1.00 in $N_{\mathrm{MC}}$ below saturation and peaks at ~85k replicates/s on the entry workload — 5× the vectorized CPU batch and ~380× a per-replicate Python loop (the decohered execution model a moving-mesh formulation forces). The batched IMEX Newmark structural block sustains millions of replicate-steps/s through one shared LU factorization, which is the §5.2 batching argument made measurable.
+- **The conditioning claim, quantified (II-V1).** On the *same* fourth-order variable-$EI$ operator, the ultraspherical banded interior conditions as $\mathcal{O}(N^{1.01})$ where dense collocation gives $\mathcal{O}(N^{8})$ — a ratio of $7.8\times 10^{7}$ at $N = 64$. Under the leading-diagonal right preconditioner the interior $\kappa \le 13$ at every $N$ tested, reproducing the Olver–Townsend $\mathcal{O}(1)$ statement. The caveat Paper II's Remark raises is also confirmed: the *bordered* system grows as $N^{1.4}$, so the dense boundary rows — not the interior — are what costs conditioning. Both discretizations recover the analytic free-free frequencies, the ultraspherical one to $1.5\times 10^{-8}$ at $N = 32$.
+- **Free-free is not a BVP (II-V1).** Free-free boundary conditions leave the rigid-body null space, so the bordered free-free system is *singular by construction* — the configuration is a generalized eigenproblem, not a boundary-value problem. The solver detects this and says so rather than returning a factorization of a singular matrix; the bordered-conditioning sweep therefore uses clamped conditions.
+- **Blunting is a genuine trade (II-V8).** With convective heating falling as $R_{\mathrm{eff}}^{-1/2}$ through the modified-Newtonian velocity gradient and radiative rising as $R_{\mathrm{eff}}^{+1}$, the total heating has an *interior* optimum on the demonstration corridor. A convection-only framework drives the radius to the edge of the sweep — the over-blunting bias Paper II predicts. The Lewis-exponent choice moves the Fay–Riddell bracket by 1.07% between equilibrium and frozen/catalytic, confirming the paper's "several percent" statement for these conditions. The Tauber–Sutton velocity function is a **required input with mandatory provenance**, not a bundled constant: the implementation refuses to construct without a provenance string and refuses to extrapolate outside the supplied table.
 
 ---
 
@@ -172,8 +179,13 @@ Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ 
 │   ├── batch/                  #   NumPy/CuPy backends, Philox sampling,
 │   │                           #   rank-3 batched RK4, dispersion stats
 │   │                           #   (R95, CEP + fallback, bootstrap, HZ)
-│   └── verification/           #   executable V1–V8 runners + MMS
-├── tests/                      # 228 pytest cases
+│   ├── ultraspherical/         #   sparse D_k / S_λ / Jacobi operators,
+│   │                           #   banded variable-coefficient assembly,
+│   │                           #   bordered BVP solve  [Paper II]
+│   ├── aerothermal/            #   Fay–Riddell, Sutton–Graves, Tauber–
+│   │                           #   Sutton, Lees, leading-edge recession
+│   └── verification/           #   executable V1–V8, II-V1, II-V8 + MMS
+├── tests/                      # 284 pytest cases
 ├── results/                    # verification reports and CSV data
 └── passes.tex, passes-hgv.tex  # superseded earlier drafts (see note)
 ```
@@ -202,8 +214,8 @@ Requires Python ≥ 3.10 with NumPy ≥ 1.26 and SciPy ≥ 1.11. From the reposi
 ```bash
 pip install -e .[dev]           # editable install with dev tooling
 pip install -e .[cuda]          # optional: CuPy backend for the GPU batch layer
-make test                       # 228 pytest cases (GPU tests skip without CUDA)
-make verify                     # execute V1–V8; reports land in results/
+make test                       # 284 pytest cases (GPU tests skip without CUDA)
+make verify                     # execute V1–V8, II-V1, II-V8; reports in results/
 make check                      # ruff + mypy --strict + tests + verification
 ```
 
@@ -222,7 +234,15 @@ Ordered by dependency, not ambition.
 5. ~~**Filter**~~ **Done.** V5 executed and passing: false-alarm rate $9.8\times 10^{-4}$ against design $p = 10^{-3}$, zero divergence across all 27 sensitivity configurations, and IAE recovery measurably faster than the fixed-Q baseline on identical data.
 6. ~~**Batch layer**~~ **Done.** V7 and V8 executed and passing: CEP sampling error converges at the $1/\sqrt{2N_{\mathrm{MC}}}$ rate (fitted slope −0.63), the $R_{95}$ ellipse empirically contains 95.0% of impacts, the elongated-footprint CEP fallback engages exactly at the validity boundary, and the CUDA batch scales linearly below saturation on real hardware. Occupancy counters await profiler instrumentation.
 
-With Paper I's roadmap complete, remaining work is Paper II's scope — ultraspherical discretization, Mindlin–Reissner plates, hypersonic heating correlations, SCvx guidance, blackout gating, $J_2$ propagation — plus the V4 FIAT reference comparison and the coupled flight integration that assembles these kernels into the single-trajectory simulator.
+Paper I's roadmap is complete. The extension below covers Paper II's formulation and the remaining rows of the status table, again ordered by dependency: the ultraspherical core precedes the plates that need it, the correlations are self-contained, and the coupled integration comes last because it consumes everything else. Paper II's verification tasks are prefixed **II-V** to keep the two papers' numbering distinct.
+
+7. ~~**Ultraspherical spectral core**~~ **Done.** II-V1's univariate leg executed and passing: banded interior conditioning measured at $\mathcal{O}(N^{1.01})$ against the O(N) criterion, $\kappa \le 13$ under the leading-diagonal preconditioner, and free-free beam eigenvalues matching the analytic solution to $1.5\times 10^{-8}$ — the same physical problem Paper I verified in collocation form, reproduced by an independent discretization. The block-operator measurement lands with item 9.
+8. ~~**Aerothermal correlations**~~ **Done.** II-V8's implementation leg executed and passing: exact $R_{\mathrm{eff}}^{-1/2}$ scaling through the modified-Newtonian gradient, quantified Lewis-exponent sensitivity, Lees continuity at the stagnation-region boundary to $5\times 10^{-10}$, and the interior blunting optimum demonstrated. The published-reference-case comparison awaits transcribed reference data, as with I-V4's FIAT leg.
+9. **Mindlin–Reissner plate kernel** — three-field bivariate ultraspherical discretization, Kronecker/Sylvester assembly, three independent free-edge conditions. Unblocks **II-V1** (block-operator conditioning), **II-V2** (shear locking vs. $h/L$), **II-V3** (free-free plate frequencies + MMS). *Next up; the univariate machinery it builds on is in place.*
+10. **6-DOF state and aerodynamic blending** — quaternion kinematics with Baumgarte stabilization, local incidence on the deformed surface, hyperbolic aerodynamic blending. Unblocks **II-V4** (blend-width sensitivity of trim).
+11. **Orbital coast** — $J_2$-perturbed propagation and the regime transition within a single integration. Unblocks **II-V5** (coast step size, energy conservation).
+12. **SCvx and blackout gating** — successive convexification with free virtual controls under the exact $\ell_1$ penalty, plasma-frequency blackout gate, unaided covariance growth model. Unblocks **II-V6** (covariance growth exponents, trigger behavior) and **II-V7** (exact virtual-control zeroing at finite $w_\nu$).
+13. **Coupled flight integration and external reference data** — assembles the kernels into the single-trajectory simulator; closes the pending legs of **I-V4** and **II-V8** once FIAT/reference-case data are transcribed, and the occupancy instrumentation of **I-V8**.
 
 ---
 
