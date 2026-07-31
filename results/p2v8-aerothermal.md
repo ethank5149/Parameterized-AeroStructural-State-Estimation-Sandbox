@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper II §8):** heating disagreement > 5% on published reference conditions (unevaluated here — see scope); implementation leg: any scaling or continuity property failing its closed form
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 20:00 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-07-31 21:03 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Closed-form structure checks
 

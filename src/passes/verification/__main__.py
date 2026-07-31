@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from passes.verification.integration import run_integration
 from passes.verification.p2v1_ultraspherical import run_p2v1
 from passes.verification.p2v4_blending import run_p2v4
 from passes.verification.p2v5_coast import run_p2v5
@@ -43,6 +44,7 @@ def main() -> int:
         (run_p2v5, "p2v5-coast"),
         (run_p2v67, "p2v67-gnc"),
         (run_p2v8, "p2v8-aerothermal"),
+        (run_integration, "int-coupled"),
     ):
         report = runner(args.output)
         path = report.write(args.output, stem)

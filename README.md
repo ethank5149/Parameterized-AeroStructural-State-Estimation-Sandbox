@@ -1,5 +1,5 @@
 ![Status](https://img.shields.io/badge/status-formulation%20complete-blue?style=flat-square)
-![Implementation](https://img.shields.io/badge/implementation-roadmap%201%E2%80%9312%20of%2013-brightgreen?style=flat-square)
+![Implementation](https://img.shields.io/badge/implementation-roadmap%20complete-brightgreen?style=flat-square)
 ![Verification](https://img.shields.io/badge/verification-14%2F16%20tasks%20%2B%202%20partial-brightgreen?style=flat-square)
 ![Papers](https://img.shields.io/badge/papers-2%20preprints-informational?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
@@ -8,7 +8,7 @@
 
 A fixed-grid spectral formulation for coupled aeroelastic, thermal, and stochastic GNC flight simulation.
 
-**This repository contains two research manuscripts, their bibliographies, and a working implementation of twelve of the thirteen roadmap items — all six of Paper I, plus Paper II's ultraspherical core, aerothermal correlations, Mindlin–Reissner plate kernel, 6-DOF state with blended aerodynamics, $J_2$ coast propagation, and SCvx guidance with blackout gating. Fourteen of the sixteen verification tasks are executed and passing; the remaining two (I-V4, II-V8) pass every leg executable from this repository, with their comparison legs blocked on external reference data.** The papers present a mathematical formulation and a falsifiable verification plan; quantities still requiring code to produce are marked `[PENDING]` in red in the compiled PDFs. Measured results for the executed tasks live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
+**This repository contains two research manuscripts, their bibliographies, and a complete implementation of the roadmap — every kernel of both papers, assembled into a coupled single-trajectory simulator. Fourteen of the sixteen verification tasks are executed and passing; the remaining two (I-V4, II-V8) pass every leg executable from this repository, with only their published-reference-data comparisons outstanding.** The papers present a mathematical formulation and a falsifiable verification plan; quantities still requiring code to produce are marked `[PENDING]` in red in the compiled PDFs. Measured results for the executed tasks live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
 
 ---
 
@@ -73,7 +73,7 @@ Distinguishing what is derived from what is measured, because the distinction ma
 
 ‡ V4 is **partially complete**: the method-of-manufactured-solutions leg passes (spectral convergence of the coupled energy/kinetics/gas-flux system on the Landau grid, error contracting $5\times 10^{8}$-fold from $N_T=6$ to $20$), but the stated failure criterion — recession within 5% of a FIAT reference case — requires the external FIAT code or its published reference data, neither of which is in this repository. It is not counted as finished.
 
-¶ V8's failure criterion (sublinear throughput scaling below device saturation) is evaluated on real CUDA hardware (RTX 3090, CuPy backend) and passes; the *achieved-occupancy* and warp-divergence counters listed in the task's method await Nsight profiler integration and are reported as pending instrumentation.
+¶ V8's failure criterion (sublinear throughput scaling below device saturation) is evaluated on real CUDA hardware (RTX 3090, CuPy backend) and passes. **Theoretical** occupancy is now computed exactly from the compiled kernel's register and shared-memory footprint against the device's per-SM limits (see [`results/int-coupled.md`](results/int-coupled.md)); the *achieved*-occupancy hardware counter and warp-divergence measurement still require Nsight Compute, which is not installed here.
 
 § II-V3's stated reference is *published Rayleigh–Ritz values* for the free-free plate. This repository cannot audit those figures against a publisher record, so the frequency criterion is instead evaluated against the **closed-form Mindlin solution for the simply-supported plate**, derived in the code rather than transcribed and exercising the identical operator, boundary machinery, projection and eigensolve. The free-free comparison against the commonly circulated values is reported alongside, clearly labelled, and carries no verdict.
 
@@ -99,6 +99,8 @@ Distinguishing what is derived from what is measured, because the distinction ma
 - **A quadratic blackout model under-predicts by 13× (II-V6).** All three covariance channels reproduce their $t^3$, $t^4$ and $t^6$ exponents to better than $10^{-6}$, measured from a Lyapunov propagation that carries the biases and tilt as *states* and so shares no code with the closed form. The operational consequence the paper's Remark asserts is now quantified: at two minutes of blackout the gyro channel carries 88% of the variance and a $t^2$ model under-predicts position uncertainty **13-fold**. A pull-up trigger sized on the quadratic model fires far too late.
 - **Chattering is structural, not a tuning problem (II-V6).** A bare threshold on $\omega_p \ge \omega_{\mathrm{GNSS}}$ produces 966 transitions on a signal that merely hovers at the boundary. No choice of threshold fixes that — only hysteresis does, and a 10% reacquisition margin reduces it to the single legitimate latch. The gate is therefore hysteretic by construction.
 - **The $\ell_1$ penalty is exact; $\ell_2$ is not (II-V7).** On the *same* linearized subproblem, the $\ell_1$ penalty drives $\|\bm{\nu}\|_1$ to **exactly 0.0** at every weight from $w_\nu = 3$ upward — a finite threshold, visible between 1 and 3 — while a quadratic penalty gives 92 → 12 → 1.3 over three decades of weight and then *grows again* as the solver loses the ill-conditioned problem. Both halves are the paper's argument: $\ell_2$ approaches zero only asymptotically, and the weight that makes it small is the weight that wrecks conditioning.
+- **A modeling bug the coupled run caught (item 13).** The free-free spectrum's three zero-frequency modes are rigid translation and rotation, which the 6-DOF block already carries. Integrating them in the *modal* block too double-counts rigid motion, and because they have no restoring term the modal coordinate grows without bound under any steady load — it reached $10^7$ before the integrator failed. The structural state of Eq. (3.20) is the *elastic* deformation; only the coupled assembly exposes this, because each kernel is correct on its own.
+- **Implicit beats adaptive, decisively (item 13).** With per-component tolerances the coupled system costs ~1970 right-hand-side evaluations under BDF, **flat across a 19× range of $\omega_{\max}$** (265 → 4973 rad/s) — the Prop. 2 constraint removed on the full assembly, not just the structural block. LSODA, nominally a stiffness-switching method, does not switch here and needs $10^5$–$10^6$ evaluations for the same arc. A single scalar `atol` cannot serve a state spanning nine orders of magnitude in units, and using one costs three orders of magnitude in work.
 - **Blunting is a genuine trade (II-V8).** With convective heating falling as $R_{\mathrm{eff}}^{-1/2}$ through the modified-Newtonian velocity gradient and radiative rising as $R_{\mathrm{eff}}^{+1}$, the total heating has an *interior* optimum on the demonstration corridor. A convection-only framework drives the radius to the edge of the sweep — the over-blunting bias Paper II predicts. The Lewis-exponent choice moves the Fay–Riddell bracket by 1.07% between equilibrium and frozen/catalytic, confirming the paper's "several percent" statement for these conditions. The Tauber–Sutton velocity function is a **required input with mandatory provenance**, not a bundled constant: the implementation refuses to construct without a provenance string and refuses to extrapolate outside the supplied table.
 
 ---
@@ -205,8 +207,10 @@ Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ 
 │   │                           #   panel loads and trim  [Paper II]
 │   ├── orbital/                #   J₂ gravity, coast propagation, regime
 │   │                           #   transition, strategy comparison  [Paper II]
-│   └── verification/           #   executable V1–V8 and II-V1…II-V8 + MMS
-├── tests/                      # 405 pytest cases
+│   ├── flight/                 #   coupled single-trajectory simulator: fixed
+│   │                           #   global state, one integrator, all regimes
+│   └── verification/           #   executable V1–V8, II-V1…II-V8, integration
+├── tests/                      # 425 pytest cases
 ├── results/                    # verification reports and CSV data
 └── passes.tex, passes-hgv.tex  # superseded earlier drafts (see note)
 ```
@@ -235,8 +239,8 @@ Requires Python ≥ 3.10 with NumPy ≥ 1.26 and SciPy ≥ 1.11. From the reposi
 ```bash
 pip install -e .[dev]           # editable install with dev tooling
 pip install -e .[cuda]          # optional: CuPy backend for the GPU batch layer
-make test                       # 405 pytest cases (GPU tests skip without CUDA)
-make verify                     # execute V1–V8 and II-V1…II-V8; reports in results/
+make test                       # 425 pytest cases (GPU tests skip without CUDA)
+make verify                     # execute every task + the integration check
 make check                      # ruff + mypy --strict + tests + verification
 ```
 
@@ -263,7 +267,14 @@ Paper I's roadmap is complete. The extension below covers Paper II's formulation
 10. ~~**6-DOF state and aerodynamic blending**~~ **Done.** II-V4 executed and passing: trim incidence shifts by $0.027°$ across the blend-width sweep against a $0.1°$ criterion, with the $C^0$-but-not-$C^1$ seam measured directly and the $C^2$ smoothstep shown to close it.
 11. ~~**Orbital coast**~~ **Done.** II-V5 executed and passing: secular energy drift $1.7\times 10^{-14}$ per orbit against a $10^{-8}$ criterion, nodal regression matching the analytic first-order rate to 0.2%, and the frozen-structure strategy costing 15× fewer right-hand-side evaluations than carrying the block through coast.
 12. ~~**SCvx and blackout gating**~~ **Done.** II-V6 and II-V7 executed and passing: all three covariance channels reproduce their $t^3/t^4/t^6$ exponents to 1e-6, the hysteretic gate eliminates boundary chattering, and the $\ell_1$ penalty drives the virtual controls to *exactly* zero at $w_\nu = 3$ where an $\ell_2$ penalty on the same subproblem never reaches zero at any weight.
-13. **Coupled flight integration and external reference data** *(all that remains)* — assembles the kernels into the single-trajectory simulator; closes the pending legs of **I-V4** and **II-V8** once FIAT/reference-case data are transcribed, and the occupancy instrumentation of **I-V8**.
+13. ~~**Coupled flight integration**~~ **Done.** The simulator in [`src/passes/flight/`](src/passes/flight/) advances a 71-component global state — rigid-body translation and attitude, elastic modal coordinates, and the charring thermal block on its Landau grid — through entry as **one ODE with one integrator**, with the checks in [`results/int-coupled.md`](results/int-coupled.md): fixed dimension, no regime branch, the aerothermal loop closing inside a single right-hand side, and implicit cost flat in retained modes. I-V8's occupancy instrumentation is closed as far as it can be without a profiler.
+
+**What genuinely remains is data, not code.** Two verification legs are blocked on material this repository cannot generate or audit:
+
+- **I-V4's FIAT comparison** — needs the FIAT code or its published reference-case output. The comparison harness accepts any tabulated $(t, s, T)$ reference.
+- **II-V8's Fay–Riddell reference conditions** — needs transcribed equilibrium-air properties ($\rho_e\mu_e$, $\rho_w\mu_w$, $h_D$) at published reference states, and the Tauber–Sutton velocity-function table, which the code already requires as a provenance-tagged input.
+
+A third item is environmental: **achieved** occupancy and warp divergence for I-V8 need Nsight Compute. None of these is a code gap, and none can honestly be closed by generating a stand-in — which is why they are listed rather than quietly satisfied.
 
 ---
 
@@ -301,4 +312,4 @@ Under ITAR, information already published and generally accessible to the public
 
 ## License
 
-MIT. *(A `LICENSE` file has not yet been added to this repository — the badge is currently a statement of intent.)*
+MIT — see [`LICENSE`](LICENSE).

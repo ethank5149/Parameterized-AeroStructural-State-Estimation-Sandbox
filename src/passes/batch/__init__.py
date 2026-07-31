@@ -19,6 +19,11 @@ from passes.batch.dispersion import (
     summarize_dispersion,
 )
 from passes.batch.entry_demo import EntryDispersionModel
+from passes.batch.occupancy import (
+    OccupancyReport,
+    device_limits,
+    theoretical_occupancy,
+)
 from passes.batch.propagation import rk4_batch
 from passes.batch.sampling import DispersionSpec, sample_dispersions
 
@@ -26,11 +31,14 @@ __all__ = [
     "DispersionReport",
     "DispersionSpec",
     "EntryDispersionModel",
+    "OccupancyReport",
     "cuda_available",
+    "device_limits",
     "get_array_module",
     "henze_zirkler",
     "rk4_batch",
     "sample_dispersions",
     "summarize_dispersion",
+    "theoretical_occupancy",
     "to_numpy",
 ]

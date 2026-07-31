@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper II §8):** κ growing faster than O(N); Mindlin–Reissner block-operator leg pending roadmap item 9
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 20:00 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-07-31 21:03 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Conditioning of the fourth-order variable-EI operator (ultraspherical)
 

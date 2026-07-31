@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper II §8):** II-V1: κ growing faster than O(N); II-V2: spurious stiffening above 1% at h/L = 1e-3; II-V3: relative frequency error > 1e-5 for the first ten modes
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 20:00 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-07-31 21:03 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## II-V3 (a): manufactured solutions on Eqs. (5.5)–(5.7)
 
