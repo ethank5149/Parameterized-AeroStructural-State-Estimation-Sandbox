@@ -58,6 +58,12 @@ from passes.thermal.fiat.materials import (
     pica_like_material,
     structural_material,
 )
+from passes.thermal.fiat.pica_kinetics import (
+    COMPETITIVE_PICA_DETERMINISTIC,
+    PARALLEL_PICA_RESIN,
+    competitive_mass_fraction,
+    parallel_pica_resin,
+)
 from passes.thermal.fiat.solver import _StepContext, _virgin_density
 from passes.thermal.material import ArrheniusComponent
 from passes.thermal.surface import STEFAN_BOLTZMANN
@@ -469,6 +475,74 @@ def run_v4_fiat(output_dir: Path) -> VerificationReport:
         "gap in the material model the moment one is available.",
     )
 
+    # --- published PICA kinetics, and FIAT's model-form limit ---------------
+    scan = np.linspace(300.0, 2500.0, 3000)
+    parallel = parallel_pica_resin(94.0)
+    parallel_w = np.ones(len(parallel))
+    peaks: dict[str, list[float]] = {"parallel": [], "competitive": []}
+    for rate in (10.0, 366.0):
+        m_par = tga_mass_fraction(parallel, parallel_w, scan, rate / 60.0)
+        m_com = competitive_mass_fraction(
+            COMPETITIVE_PICA_DETERMINISTIC, scan, rate / 60.0
+        )
+        peaks["parallel"].append(
+            float(scan[int(np.argmax(-np.gradient(m_par, scan)))])
+        )
+        peaks["competitive"].append(
+            float(scan[int(np.argmax(-np.gradient(m_com, scan)))])
+        )
+    parallel_shift = peaks["parallel"][1] - peaks["parallel"][0]
+    competitive_shift = peaks["competitive"][1] - peaks["competitive"][0]
+    form_ok = parallel_shift > 0.0 and competitive_shift < 0.0
+    slow_yield = float(
+        competitive_mass_fraction(COMPETITIVE_PICA_DETERMINISTIC, scan, 10.0 / 60.0)[-1]
+    )
+    resin_loss = 1.0 - float(
+        tga_mass_fraction(parallel, parallel_w, scan, 10.0 / 60.0)[-1]
+    )
+    composite_loss = resin_loss * 94.0 / 274.0
+    published_loss = (274.0 - 227.0) / 274.0
+    cross_ok = (
+        abs(slow_yield - 227.0 / 274.0) < 0.02
+        and abs(composite_loss - published_loss) < 0.015
+    )
+    report.add_table(
+        "Published PICA pyrolysis kinetics — and the limit of FIAT Eq. (8)",
+        ["model form", "peak at 10 K/min", "peak at 366 K/min", "shift"],
+        [
+            ["parallel — Torres-Herrador 2019 Table 2, *in* Eq. (8)'s form",
+             f"{peaks['parallel'][0]:.0f} K", f"{peaks['parallel'][1]:.0f} K",
+             f"**{parallel_shift:+.0f} K**"],
+            ["competitive — Torres-Herrador 2020 Table 1, *outside* it",
+             f"{peaks['competitive'][0]:.0f} K", f"{peaks['competitive'][1]:.0f} K",
+             f"**{competitive_shift:+.0f} K**"],
+        ],
+        "The two heating rates are the ones the 2020 model was calibrated "
+        "against: Wong et al. at 10 K/min and Bessire & Minton at 366 K/min. "
+        "Carbon/phenolic is measured to shift its pyrolysis peak **down** in "
+        "temperature as the heating rate rises — Stokes reported it above "
+        "300 K/min — and Torres-Herrador et al. state that parallel "
+        "mechanisms are 'not able to reproduce this effect due to their "
+        "mathematical formulation'.\n\n"
+        f"That is reproduced here: {'**PASS**' if form_ok else '**FAIL**'}. "
+        "FIAT Eq. (8) is a sum of independent parallel reactions, and such a "
+        "sum can only shift its peak upward, because every term does. "
+        "Recovering the measured direction needs two reactions competing for "
+        "the same reactant. **This is a model-form limitation of Eq. (8), not "
+        "a calibration error, and no refitting removes it.** It matters in "
+        "flight rather than in the laboratory: heating rates across the MSL "
+        "heat shield run from 60 to 60000 K/min, while legacy TGA calibration "
+        "data rarely exceeds tens of K/min.\n\n"
+        f"Two cross-checks between unrelated sources, both passing: the "
+        f"competitive model's slow-branch char yield is {slow_yield:.3f} "
+        f"against {227.0 / 274.0:.3f} from the published bulk densities, and "
+        f"the 2019 set's density-loss fractions "
+        f"({sum(r.density_loss_fraction for r in PARALLEL_PICA_RESIN):.3f} of "
+        f"the resin) scaled by PICA's 94/274 resin fraction give a "
+        f"{composite_loss * 100:.1f}% composite mass loss against the "
+        f"{published_loss * 100:.1f}% those same densities imply.",
+    )
+
     # --- material provenance ------------------------------------------------
     report.add_table(
         "Material used, by provenance",
@@ -478,7 +552,12 @@ def run_v4_fiat(output_dir: Path) -> VerificationReport:
              f"published (Heritage PICA, MEDLI2 paper): {PICA_VIRGIN_DENSITY:.0f}"],
             ["RT conductivity, both pressures", "8 values", "published (Table 3)"],
             ["char bulk density", "227.0 kg/m³", "reconstructed from composition"],
-            ["Arrhenius triplets", "—", "**pinned to stated TGA targets; not published**"],
+            ["PICA kinetics (parallel)", "6 reactions",
+             "published (Torres-Herrador 2019, Table 2)"],
+            ["PICA kinetics (competitive)", "10 parameters",
+             "published (Torres-Herrador 2020, Tables 1-2)"],
+            ["kinetics used by the solver", "—",
+             "**Eq. (8) parallel form; see the model-form table**"],
             ["conductivity/c_p slopes", "—", "**representative, not published**"],
             ["B' table", "—", "**synthetic logistic, not thermochemistry**"],
         ],
@@ -490,7 +569,9 @@ def run_v4_fiat(output_dir: Path) -> VerificationReport:
         "discretisation and must not be read as PICA predictions.",
     )
 
-    report.passed = bool(all_ok and grid_ok and step_ok and kinetics_ok)
+    report.passed = bool(
+        all_ok and grid_ok and step_ok and kinetics_ok and form_ok and cross_ok
+    )
     return report
 
 

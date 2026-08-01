@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper I §8):** any conservation, convergence, interface-exactness or Jacobian property failing its closed form; the stated 5% recession criterion against a published FIAT reference case is NOT evaluated here — see scope
 - **Verdict:** **PASS**
-- **Generated:** 2026-08-01 11:06 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-08-01 22:23 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Closed-form and conservation checks
 
@@ -57,6 +57,19 @@ All eight values are published and are reproduced here exactly. The **two publis
 
 The last two rows are the useful part. Forward-modelling a scan and then fitting it recovers the generating pre-exponentials and activation energies to better than a part in a thousand, so a real thermogravimetric curve — one curve — closes the largest remaining gap in the material model the moment one is available.
 
+## Published PICA pyrolysis kinetics — and the limit of FIAT Eq. (8)
+
+| model form | peak at 10 K/min | peak at 366 K/min | shift |
+|---|---|---|---|
+| parallel — Torres-Herrador 2019 Table 2, *in* Eq. (8)'s form | 576 K | 681 K | **+105 K** |
+| competitive — Torres-Herrador 2020 Table 1, *outside* it | 829 K | 700 K | **-129 K** |
+
+The two heating rates are the ones the 2020 model was calibrated against: Wong et al. at 10 K/min and Bessire & Minton at 366 K/min. Carbon/phenolic is measured to shift its pyrolysis peak **down** in temperature as the heating rate rises — Stokes reported it above 300 K/min — and Torres-Herrador et al. state that parallel mechanisms are 'not able to reproduce this effect due to their mathematical formulation'.
+
+That is reproduced here: **PASS**. FIAT Eq. (8) is a sum of independent parallel reactions, and such a sum can only shift its peak upward, because every term does. Recovering the measured direction needs two reactions competing for the same reactant. **This is a model-form limitation of Eq. (8), not a calibration error, and no refitting removes it.** It matters in flight rather than in the laboratory: heating rates across the MSL heat shield run from 60 to 60000 K/min, while legacy TGA calibration data rarely exceeds tens of K/min.
+
+Two cross-checks between unrelated sources, both passing: the competitive model's slow-branch char yield is 0.836 against 0.828 from the published bulk densities, and the 2019 set's density-loss fractions (0.544 of the resin) scaled by PICA's 94/274 resin fraction give a 18.3% composite mass loss against the 17.2% those same densities imply.
+
 ## Material used, by provenance
 
 | quantity | value | source |
@@ -64,7 +77,9 @@ The last two rows are the useful part. Forward-modelling a scan and then fitting
 | virgin bulk density | 274.0 kg/m³ | published (Heritage PICA, MEDLI2 paper): 274 |
 | RT conductivity, both pressures | 8 values | published (Table 3) |
 | char bulk density | 227.0 kg/m³ | reconstructed from composition |
-| Arrhenius triplets | — | **pinned to stated TGA targets; not published** |
+| PICA kinetics (parallel) | 6 reactions | published (Torres-Herrador 2019, Table 2) |
+| PICA kinetics (competitive) | 10 parameters | published (Torres-Herrador 2020, Tables 1-2) |
+| kinetics used by the solver | — | **Eq. (8) parallel form; see the model-form table** |
 | conductivity/c_p slopes | — | **representative, not published** |
 | B' table | — | **synthetic logistic, not thermochemistry** |
 

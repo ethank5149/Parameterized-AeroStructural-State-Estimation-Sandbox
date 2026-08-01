@@ -242,16 +242,25 @@ class BPrimeTable:
         return (1.0 - w) * a + w * b
 
     def roughness(self) -> float:
-        """Max relative second difference of :math:`B'_c` along :math:`T_w`.
+        """Max second difference of :math:`B'_c` along :math:`T_w`,
+        relative to the table's own range.
 
         The diagnostic behind Milos, Chen & Squire's stability warning.
-        Values above roughly 0.5 indicate a table too coarse or too kinked
-        for a Newton surface solve; the table will still interpolate, but
-        the iteration may stall.
+        Values above roughly 0.1 indicate a table too coarse or too
+        kinked for a Newton surface solve; the table will still
+        interpolate, but the iteration may stall.
+
+        The normalisation is by the **global** span of :math:`B'_c`, not
+        by the local value. A real equilibrium table is essentially zero
+        below the onset of surface chemistry, and a per-point relative
+        measure divides by those zeros: applied to a TACOT table it
+        reported a roughness of :math:`10^{11}` for a surface that is in
+        fact smooth everywhere it matters.
         """
         values = self._b_c_values
         if values.shape[2] < 3:
             return 0.0
-        second = np.diff(values, n=2, axis=2)
-        scale = np.maximum(np.abs(values[:, :, 1:-1]), 1e-12)
-        return float(np.max(np.abs(second) / scale))
+        span = float(np.max(values) - np.min(values))
+        if span <= 0.0:
+            return 0.0
+        return float(np.max(np.abs(np.diff(values, n=2, axis=2))) / span)

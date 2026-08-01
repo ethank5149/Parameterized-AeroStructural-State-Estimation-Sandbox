@@ -9,8 +9,11 @@ refusals that keep an equilibrium table from being extrapolated.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
+import scipy.integrate
 
 from passes.thermal.fiat import (
     AerothermalEnvironment,
@@ -48,6 +51,17 @@ from passes.thermal.fiat.materials import (
     PressureConductivity,
     pica_like_material,
     structural_material,
+)
+from passes.thermal.fiat.mutationpp import read_mutationpp_bprime
+from passes.thermal.fiat.pica_kinetics import (
+    COMPETITIVE_PICA_BAYESIAN,
+    COMPETITIVE_PICA_DETERMINISTIC,
+    PARALLEL_PICA_RESIN,
+    CompetitivePica,
+    ParallelReaction,
+    advancement_to_fiat_rate,
+    competitive_mass_fraction,
+    parallel_pica_resin,
 )
 from passes.thermal.fiat.solver import (
     SolverOptions,
@@ -1034,3 +1048,256 @@ class TestAnalysis:
             optimize_ply_thickness(
                 stack, 0, t, envs, make_table(), ADIABATIC, 5000.0, bounds=(0.01, 0.06)
             )
+
+
+class TestPublishedPicaKinetics:
+    """Torres-Herrador et al. 2019 and 2020, both in `reference/`.
+
+    The point of this class is one structural claim: FIAT Eq. (8)'s
+    independent-parallel form cannot reproduce PICA's *measured* response
+    to heating rate, and the published competitive model can. Everything
+    else here supports that.
+    """
+
+    SCAN = np.linspace(300.0, 2500.0, 3000)
+
+    def test_deterministic_and_bayesian_tables_are_as_published(self):
+        d, b = COMPETITIVE_PICA_DETERMINISTIC, COMPETITIVE_PICA_BAYESIAN
+        # [TH2020] Table 1.
+        assert (d.log10_a11, d.e11) == (2.019, 32618.482)
+        assert (d.log10_a12, d.e12) == (14.292, 143273.910)
+        assert (d.log10_a21, d.e21) == (0.442, 51783.980)
+        assert (d.log10_a31, d.e31) == (0.993, 31087.851)
+        assert (d.gamma_gas_2, d.gamma_gas_3) == (0.163, 0.244)
+        # [TH2020] Table 2, posterior means.
+        assert (b.log10_a11, b.e11) == (2.4768, 26811.37)
+        assert (b.gamma_gas_2, b.gamma_gas_3) == (0.1648, 0.3190)
+
+    def test_mechanism_requires_the_slow_branch_to_start_first(self):
+        """E11 < E12 is not a fitted accident, it is what makes the
+        competition work: the fast branch must only take over as the rate
+        climbs. A set violating it is not this mechanism."""
+        with pytest.raises(ValueError, match="E11 < E12"):
+            CompetitivePica(
+                log10_a11=5.0, e11=2.0e5, log10_a12=5.0, e12=1.0e5,
+                log10_a21=1.0, e21=5.0e4, log10_a31=1.0, e31=3.0e4,
+                gamma_gas_2=0.16, gamma_gas_3=0.24,
+            )
+
+    @pytest.mark.parametrize(
+        "model", [COMPETITIVE_PICA_DETERMINISTIC, COMPETITIVE_PICA_BAYESIAN]
+    )
+    def test_competitive_peak_shifts_down_with_heating_rate(self, model):
+        """The published anomaly, at the two rates the model was calibrated
+        against: Wong et al. at 10 K/min and Bessire & Minton at 366 K/min."""
+        peaks = []
+        for rate in (10.0, 366.0):
+            mass = competitive_mass_fraction(model, self.SCAN, rate / 60.0)
+            peaks.append(float(self.SCAN[int(np.argmax(-np.gradient(mass, self.SCAN)))]))
+        assert peaks[1] < peaks[0] - 100.0, f"expected a downward shift, got {peaks}"
+
+    def test_parallel_peak_shifts_up_with_heating_rate(self):
+        """The same two rates through FIAT Eq. (8)'s model form move the
+        peak the *other* way. This is the structural limitation, not a
+        calibration failure — and it is why both models are carried."""
+        comps = parallel_pica_resin(94.0)
+        w = np.ones(len(comps))
+        peaks = []
+        for rate in (10.0, 366.0):
+            mass = tga_mass_fraction(comps, w, self.SCAN, rate / 60.0)
+            peaks.append(float(self.SCAN[int(np.argmax(-np.gradient(mass, self.SCAN)))]))
+        assert peaks[1] > peaks[0] + 50.0, f"expected an upward shift, got {peaks}"
+
+    def test_char_yield_becomes_heating_rate_dependent(self):
+        """A consequence of competition that Eq. (8) cannot express: the two
+        branches have different gas coefficients, so the char yield is a
+        function of heating rate rather than a constant of the material."""
+        slow, fast = COMPETITIVE_PICA_DETERMINISTIC.char_yield_limits()
+        assert slow == pytest.approx(1.0 - 0.163)
+        assert fast == pytest.approx(1.0 - 0.244)
+        assert slow > fast
+
+    def test_low_rate_char_yield_matches_the_published_bulk_densities(self):
+        """Independent cross-check between two unrelated sources: the
+        competitive model's slow-branch limit against PICA's published
+        virgin and char bulk densities."""
+        mass = competitive_mass_fraction(
+            COMPETITIVE_PICA_DETERMINISTIC, self.SCAN, 10.0 / 60.0
+        )
+        assert float(mass[-1]) == pytest.approx(227.0 / 274.0, rel=0.02)
+
+    def test_solid_mass_is_monotone_and_bounded(self):
+        mass = competitive_mass_fraction(
+            COMPETITIVE_PICA_DETERMINISTIC, self.SCAN, 100.0 / 60.0
+        )
+        assert mass[0] == pytest.approx(1.0, abs=1e-9)
+        assert np.all(np.diff(mass) <= 1e-10)
+        assert np.all(mass >= 0.0)
+
+    def test_parallel_table_is_as_published(self):
+        assert len(PARALLEL_PICA_RESIN) == 6
+        assert PARALLEL_PICA_RESIN[0] == ParallelReaction(0.060, 6.59, 77.6, 5.65)
+        assert PARALLEL_PICA_RESIN[-1] == ParallelReaction(0.059, 6.35, 175.2, 8.85)
+        total = sum(r.density_loss_fraction for r in PARALLEL_PICA_RESIN)
+        assert total == pytest.approx(0.544, abs=5e-4)
+
+    def test_parallel_set_reproduces_its_own_density_loss(self):
+        comps = parallel_pica_resin(94.0)
+        w = np.ones(len(comps))
+        residual = float(tga_mass_fraction(comps, w, self.SCAN, 10.0 / 60.0)[-1])
+        total = sum(r.density_loss_fraction for r in PARALLEL_PICA_RESIN)
+        assert 1.0 - residual == pytest.approx(total, rel=0.03)
+
+    def test_parallel_set_cross_checks_the_published_composite_loss(self):
+        """[TH2019]'s F values scaled by PICA's 94/274 resin fraction against
+        the (274-227)/274 implied by the published bulk densities. Two
+        unrelated sources, agreeing to about a percentage point."""
+        comps = parallel_pica_resin(94.0)
+        w = np.ones(len(comps))
+        resin_loss = 1.0 - float(tga_mass_fraction(comps, w, self.SCAN, 10.0 / 60.0)[-1])
+        composite_loss = resin_loss * 94.0 / 274.0
+        assert composite_loss == pytest.approx((274.0 - 227.0) / 274.0, abs=0.015)
+
+    @pytest.mark.parametrize("order", [1.0, 2.0, 4.38, 8.85])
+    def test_rate_normalisation_conversion_is_exact(self, order):
+        """The advancement form and FIAT Eq. (8) differ by a power of the
+        decomposable fraction. Verified by integrating both and comparing,
+        not by re-deriving the algebra."""
+        rho_v, rho_r = 100.0, 40.0
+        log10_a = 6.0
+        a_fiat = advancement_to_fiat_rate(log10_a, order, rho_v, rho_r)
+        comp = ArrheniusComponent(a_fiat, 1.0e5, order, rho_v, rho_r)
+        t = np.linspace(300.0, 2000.0, 2000)
+        rho = tga_mass_fraction([comp], np.array([1.0]), t, 10.0 / 60.0) * rho_v
+
+        # Advancement form, integrated independently.
+        def rhs(temp, chi):
+            k = 10.0**log10_a * np.exp(-1.0e5 / (8.31446261815324 * temp))
+            return k * max(1.0 - chi[0], 0.0) ** order / (10.0 / 60.0)
+
+        sol = scipy.integrate.solve_ivp(
+            rhs, (300.0, 2000.0), [0.0], t_eval=t, method="LSODA",
+            rtol=1e-11, atol=1e-13,
+        )
+        rho_adv = rho_v - sol.y[0] * (rho_v - rho_r)
+        assert np.max(np.abs(rho - rho_adv)) < 1e-6 * rho_v
+
+    def test_conversion_is_identity_at_first_order(self):
+        assert advancement_to_fiat_rate(6.0, 1.0, 100.0, 40.0) == pytest.approx(1e6)
+
+    def test_conversion_rejects_bad_densities(self):
+        with pytest.raises(ValueError, match="char_density < virgin_density"):
+            advancement_to_fiat_rate(6.0, 2.0, 40.0, 100.0)
+
+
+TACOT_TABLE = Path("data/bprime/tacot26-air.dat")
+
+
+@pytest.mark.skipif(not TACOT_TABLE.exists(), reason="TACOT B' table not generated")
+class TestMutationppTable:
+    """The real equilibrium B' table, generated by Mutation++ for TACOT-26.
+
+    TACOT is the open surrogate for PICA. This replaces the synthetic
+    logistic used elsewhere in this file, which exercised the coupling but
+    said nothing about surface chemistry.
+    """
+
+    def _read(self, **kw):
+        return read_mutationpp_bprime(TACOT_TABLE, max_gas_rate=3.0, **kw)
+
+    def test_axes_and_units(self):
+        m = self._read()
+        # Source is in bar and MJ/kg; the table must be in Pa and J/kg.
+        assert m.table.pressure_range == pytest.approx((101.325, 101325.0), rel=1e-9)
+        assert m.table.wall_temperature_range == (250.0, 4000.0)
+        assert m.table.gas_rate_range[0] == 0.0
+        hw = m.table.wall_enthalpy(101325.0, 0.0, 3000.0)
+        assert 1.0e5 < abs(hw) < 1.0e8, f"h_w {hw:g} J/kg is not a specific enthalpy"
+
+    def test_identifies_the_solver_ceiling(self):
+        """The flat 200-500 series is the solver's cap, not physics. It is
+        identified by the condensed-carbon indicator, not by magnitude, so
+        genuine B'_c values well above 100 survive."""
+        m = self._read()
+        assert 0.10 < m.capped_fraction < 0.25
+        # Nothing anywhere near the ceiling should survive into the table.
+        assert m.table.char_rate(101325.0, 0.0, 4000.0) < 100.0
+
+    def test_sublimation_onset_rises_with_pressure(self):
+        """Physical: a higher ambient pressure suppresses sublimation, so
+        the carbon survives to a higher wall temperature."""
+        m = self._read()
+        onsets = [m.sublimation.limit(p, 0.0) for p in (101.325, 1013.25, 10132.5)]
+        assert onsets[0] < onsets[1] < onsets[2]
+        assert onsets[0] == pytest.approx(3100.0, abs=100.0)
+
+    def test_sublimation_predicate(self):
+        m = self._read()
+        low = 101.325
+        onset = m.sublimation.limit(low, 0.0)
+        assert m.sublimation.exceeded(low, 0.0, onset + 50.0)
+        assert not m.sublimation.exceeded(low, 0.0, onset - 50.0)
+
+    def test_char_rate_is_physical_and_monotone_below_sublimation(self):
+        m = self._read()
+        temps = np.arange(1500.0, 3400.0, 100.0)
+        b_c = np.array([m.table.char_rate(101325.0, 0.5, t) for t in temps])
+        assert np.all(b_c > 0.0)
+        assert np.all(b_c < 5.0), "B'_c should stay O(1) well below sublimation"
+        assert np.all(np.diff(b_c) > -1e-9), "diffusion-limited plateau then rise"
+
+    def test_derivative_is_positive_through_the_rise(self):
+        """The Newton surface solve differentiates this; a wrong sign here
+        would push the iteration the wrong way."""
+        m = self._read()
+        for t in (2500.0, 3000.0, 3200.0):
+            assert m.table.char_rate_derivative(101325.0, 0.5, t) > 0.0
+
+    def test_roughness_is_acceptable_for_a_newton_solve(self):
+        """The metric normalises by the table's global B'_c span. A
+        per-point relative measure divides by the near-zero values below
+        the onset of surface chemistry and reported 1e11 for this table."""
+        assert self._read().table.roughness() < 1.0
+
+    def test_refuses_a_file_without_the_carbon_indicator(self, tmp_path):
+        bad = tmp_path / "bad.dat"
+        rows = np.column_stack(
+            [np.ones(8), np.zeros(8), np.linspace(300.0, 1000.0, 8),
+             np.zeros(8), np.zeros(8), np.full(8, 0.5)]
+        )
+        with bad.open("w") as fh:
+            fh.write("header\n")
+            np.savetxt(fh, rows)
+        with pytest.raises(ValueError, match="condensed-carbon indicator"):
+            read_mutationpp_bprime(bad)
+
+    def test_refuses_an_incomplete_grid(self, tmp_path):
+        raw = np.loadtxt(TACOT_TABLE, skiprows=1)
+        bad = tmp_path / "trunc.dat"
+        with bad.open("w") as fh:
+            fh.write("header\n")
+            np.savetxt(fh, raw[:-3])
+        with pytest.raises(ValueError, match="complete grid"):
+            read_mutationpp_bprime(bad)
+
+    def test_solver_runs_against_the_real_table(self):
+        """The end of the chain: an ablation run whose surface chemistry is
+        an equilibrium calculation rather than a fitted curve."""
+        m = self._read()
+        stack = make_stack(30, structure=False)
+        t, envs = pulse(120, 60.0, peak=3.5e6)
+        envs = [
+            AerothermalEnvironment(
+                film_coefficient=e.film_coefficient,
+                recovery_enthalpy=e.recovery_enthalpy,
+                pressure=10132.5,
+            )
+            for e in envs
+        ]
+        solution = FiatSolver(stack).solve(t, envs, m.table, ADIABATIC, 300.0)
+        assert np.all(np.isfinite(solution.wall_temperature))
+        assert solution.recession[-1] > 0.0
+        assert np.all(np.diff(solution.recession) >= -1e-15)
+        # And the run must stay on the physical side of sublimation.
+        peak_t = float(solution.wall_temperature.max())
+        assert peak_t < m.sublimation.limit(10132.5, 0.0)

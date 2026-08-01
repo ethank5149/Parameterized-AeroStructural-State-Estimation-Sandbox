@@ -10,15 +10,14 @@ FIAT Eq. (8) needs an Arrhenius triplet per decomposing component,
 
 and those triplets are the least transferable part of a material model.
 
-**They are not in the open literature for PICA.** None of the FIAT,
-MEDLI2, MSL or MEDLI reconstruction papers in ``reference/`` tabulates
-them: the MEDLI2 material-response paper characterises conductivity,
-specific heat and density and states that "the MEDLI2 PICA model is the
-same as the heritage model" for specific heat without printing the
-kinetics; the MSL reconstruction paper goes further and notes that "no
-kinetic rate-limited recession model for PICA exists that is
-sufficiently validated for use in TPS design" — about surface
-chemistry, but indicative of the state of the published record.
+**Published PICA kinetics now exist in ``reference/`` and are implemented
+in** :mod:`passes.thermal.fiat.pica_kinetics` — Torres-Herrador et al.
+2019 (a six-reaction parallel set, in FIAT Eq. (8)'s form) and 2020 (a
+competitive scheme, outside it). Use those for PICA.
+
+This module remains the general machinery: it calibrates *any* material
+against a thermogravimetric scan, which is what you need for a material
+whose kinetics are not published — the ordinary case.
 
 So this module does not assert triplets it cannot source. It provides
 the two things that are actually useful:
@@ -34,6 +33,16 @@ one, :func:`calibrated_components` builds a set from three *stated,
 checkable* targets — onset temperature, peak-rate temperature and char
 yield — so that the resulting material is reproducible and its
 assumptions are visible, rather than being three magic numbers.
+
+.. warning::
+
+   Everything here assumes **independent parallel reactions**, because
+   that is what FIAT Eq. (8) is. For carbon/phenolic that assumption is
+   known to fail across heating rates: the measured pyrolysis peak moves
+   *down* in temperature as the rate rises, and no parallel set can
+   reproduce that. See :mod:`passes.thermal.fiat.pica_kinetics`. A fit
+   from this module is valid over the range of heating rates it was
+   calibrated on and should not be extrapolated far outside it.
 """
 
 from __future__ import annotations
