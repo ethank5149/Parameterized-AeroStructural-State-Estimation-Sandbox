@@ -1,0 +1,7 @@
+check,measured,expected,pass
+"energy stored / energy supplied, sealed inert stack",0.9999999999999993,1.0,True
+pyrolysis gas released / solid mass lost,1.0048710013575883,1.0,True
+steady wall temperature / series-resistance value (k ratio 10:1),0.9999999999895797,1.0,True
+max relative Jacobian error vs central differences,9.720665442480034e-07,0.0,True
+ln(1+2λB')/(2λB') vs 2λB'_1/(exp(2λB'_1)−1),0.0,0.0,True
+gray-kernel flux in radiative equilibrium (expect 0),1.5925506583368376e-16,0.0,True
