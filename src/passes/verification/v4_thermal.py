@@ -204,7 +204,12 @@ def run_v4(output_dir: Path) -> VerificationReport:
         "data, neither of which is available in this repository. The comparison "
         "harness accepts any tabulated (t, s, T(y)) reference once one is "
         "supplied; until then V4 is **partially complete** and is *not* counted "
-        "as a finished verification task.",
+        "as a finished verification task.\n\n"
+        "`docs/FIAT-reference-data.md` specifies what a usable case must "
+        "contain — the recession curve is not sufficient on its own, because "
+        "a recession number without its wall boundary condition and material "
+        "property set is not interpretable against a 5% criterion — and where "
+        "such a case may be obtainable.",
     )
 
     report.passed = bool(mms_ok and supporting_ok and seb_ok)

@@ -31,12 +31,26 @@ class VerificationReport:
     def add_section(self, heading: str, body: str) -> None:
         self.sections.append(f"## {heading}\n\n{body.rstrip()}\n")
 
-    def add_table(self, heading: str, headers: list[str], rows: list[list[str]]) -> None:
+    def add_table(
+        self,
+        heading: str,
+        headers: list[str],
+        rows: list[list[str]],
+        notes: str | None = None,
+    ) -> None:
+        """Emit a markdown table, optionally followed by prose.
+
+        ``notes`` keeps the interpretation attached to the numbers it
+        interprets; a table whose caveats live in a separate section is a
+        table that gets quoted without them.
+        """
         lines = [
             "| " + " | ".join(headers) + " |",
             "|" + "|".join("---" for _ in headers) + "|",
         ]
         lines += ["| " + " | ".join(row) + " |" for row in rows]
+        if notes is not None:
+            lines += ["", notes]
         self.add_section(heading, "\n".join(lines))
 
     def to_markdown(self) -> str:

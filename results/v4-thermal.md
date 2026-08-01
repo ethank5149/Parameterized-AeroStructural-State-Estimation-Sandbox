@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper I §8):** recession disagreement > 5% on the FIAT reference case (unevaluated here — see scope); MMS leg: loss of spectral convergence on Eqs. (3.17)–(3.18)
 - **Verdict:** **PASS**
-- **Generated:** 2026-08-01 01:23 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-08-01 01:48 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## MMS convergence, coupled T/ρ/ṁ system to t = 2.0 s (normalized max-norm errors at t_f)
 
@@ -34,3 +34,5 @@ Brent solve of Eq. (3.19) with ablating mass fluxes returns T_w = 1995.2 K with 
 ## FIAT reference comparison — PENDING
 
 The stated failure criterion (recession within 5% of a FIAT reference case) requires the external FIAT code or its published reference-case data, neither of which is available in this repository. The comparison harness accepts any tabulated (t, s, T(y)) reference once one is supplied; until then V4 is **partially complete** and is *not* counted as a finished verification task.
+
+`docs/FIAT-reference-data.md` specifies what a usable case must contain — the recession curve is not sufficient on its own, because a recession number without its wall boundary condition and material property set is not interpretable against a 5% criterion — and where such a case may be obtainable.

@@ -144,6 +144,8 @@ class AchievedOccupancy:
     achieved: float | None = None
     """``sm__warps_active.avg.pct_of_peak_sustained_active`` as a fraction."""
     kernel: str | None = None
+    launches: int = 0
+    """Number of matching launches averaged."""
     reason: str | None = None
     """Why the measurement is unavailable, when it is."""
 
@@ -153,6 +155,7 @@ def achieved_occupancy(
     python_executable: str | None = None,
     ncu_executable: str = "ncu",
     timeout: float = 600.0,
+    kernel_name: str | None = None,
 ) -> AchievedOccupancy:
     """Measure achieved occupancy by running ``script`` under Nsight Compute.
 
@@ -167,6 +170,15 @@ def achieved_occupancy(
     host-level security setting, so this function reports the condition
     rather than attempting to change it.
 
+    Parameters
+    ----------
+    kernel_name:
+        Select this kernel from the profile. Required in practice: a
+        CuPy process launches its own fill and copy kernels alongside
+        the one under study, and averaging over them would report the
+        occupancy of the setup rather than of the workload. When several
+        launches match, the mean is returned.
+
     Returns
     -------
     AchievedOccupancy
@@ -180,13 +192,20 @@ def achieved_occupancy(
     path = Path(script)
     if not path.is_file():
         raise FileNotFoundError(f"profiling script not found: {path}")
-    if shutil.which(ncu_executable) is None:
+    resolved = shutil.which(ncu_executable)
+    if resolved is None:
+        # Nsight ships alongside the interpreter in a conda environment, and
+        # invoking that interpreter by absolute path leaves its bin/ off PATH.
+        sibling = Path(sys.executable).parent / ncu_executable
+        if sibling.is_file():
+            resolved = str(sibling)
+    if resolved is None:
         return AchievedOccupancy(
             available=False, reason=f"{ncu_executable} not found on PATH"
         )
     metric = "sm__warps_active.avg.pct_of_peak_sustained_active"
     command = [
-        ncu_executable, "--metrics", metric, "--csv", "--target-processes", "all",
+        resolved, "--metrics", metric, "--csv", "--target-processes", "all",
         python_executable or sys.executable, str(path),
     ]
     try:
@@ -206,25 +225,41 @@ def achieved_occupancy(
                 "to enable it"
             ),
         )
-    rows = [line for line in output.splitlines() if metric in line and '","' in line]
-    if not rows:
-        for line in output.splitlines():
-            if line.startswith('"') and metric in line:
-                rows.append(line)
+    rows = [
+        [field.strip('"') for field in line.split('","')]
+        for line in output.splitlines()
+        if metric in line and '","' in line
+    ]
     if not rows:
         return AchievedOccupancy(
             available=False, reason="no occupancy metric captured from the profile"
         )
-    fields = [field.strip('"') for field in rows[-1].split('","')]
-    value = None
-    for field in reversed(fields):
-        try:
-            value = float(field.replace(",", ""))
-            break
-        except ValueError:
-            continue
-    if value is None:
+
+    def _value(fields: list[str]) -> float | None:
+        for field in reversed(fields):
+            try:
+                return float(field.replace(",", ""))
+            except ValueError:
+                continue
+        return None
+
+    if kernel_name is not None:
+        rows = [r for r in rows if any(kernel_name in field for field in r)]
+        if not rows:
+            return AchievedOccupancy(
+                available=False,
+                reason=f"kernel {kernel_name!r} not present in the profile",
+            )
+    values = [v for v in (_value(r) for r in rows) if v is not None]
+    if not values:
         return AchievedOccupancy(available=False, reason="could not parse the profile")
+    mean = sum(values) / len(values)
+    matched = kernel_name
+    if matched is None:
+        for field in rows[-1]:
+            if field and not field.replace(".", "").replace(",", "").isdigit():
+                matched = field
+                break
     return AchievedOccupancy(
-        available=True, achieved=value / 100.0, kernel=fields[0] if fields else None
+        available=True, achieved=mean / 100.0, kernel=matched, launches=len(values)
     )

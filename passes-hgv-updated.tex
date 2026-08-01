@@ -258,6 +258,17 @@ The terms require specification, since \cref{eq:fayriddell} is frequently quoted
 \end{itemize}
 \Cref{eq:velgrad} makes the coupling to ablation explicit: recession increases $R_{\text{eff}}$, which reduces the velocity gradient, which reduces $\dot{q}_{s,\text{conv}}$ as $R_{\text{eff}}^{-1/2}$. Nose blunting is self-limiting, and capturing that requires the recession model of \cref{sec:ablation} to feed back into \cref{eq:velgrad} within the same time step.
 
+\begin{remark}[Where the constants in \cref{eq:fayriddell} actually come from]
+\label{rem:frconst}
+Implementing \cref{eq:fayriddell} against Fay and Riddell's original paper rather than against its restatements produced two findings worth recording.
+
+First, the split exponents are \emph{derivable} rather than conventional. The source's Eq.~(45) writes the flux as $q = (Nu/\!\sqrt{Re})\sqrt{\rho_w \mu_w (\diff u_e/\diff x)_s}\,(h_s - h_w)/\Pr$, and its Eq.~(62) correlates $Nu/\!\sqrt{Re} = 0.67\,(\rho_s\mu_s/\rho_w\mu_w)^{0.4}\{1 + (Le^{0.52}-1)h_D/h_s\}$ --- a \emph{ratio} across the boundary layer, since the parameter "was found to depend only upon the total variation in $\rho\mu$." Substituting the second into the first gives the $0.4$ from the ratio and a residual $0.5 - 0.4 = 0.1$ from the $\sqrt{\rho_w\mu_w}$, which is exactly the $(\rho_e\mu_e)^{0.4}(\rho_w\mu_w)^{0.1}$ of \cref{eq:fayriddell}. This matters practically: the archived scan of Eq.~(63) is too degraded to read the exponents off directly, and the assignment can be recovered instead.
+
+Second, and less comfortably, that same substitution shows every constant in the correlation descending from \emph{one} fitted number carried at two significant figures --- the $0.67$ of Eq.~(58)/(62). The $0.94$ printed in Eq.~(63) is $0.67/0.71 = 0.9437$ rounded; the $\Pr^{-0.6}$ of the footnote is the correlation's own $\Pr^{0.4}$ scaling set against the $\Pr^{-1}$ of Eq.~(45). Backing the \cref{eq:fayriddell} coefficient out of the paper's three statements therefore gives three answers: $0.67\,\Pr^{-0.4} = 0.7684$ from Eq.~(62), $0.94\,\Pr^{0.6} = 0.7654$ from Eq.~(63), and $0.76$ from the footnote as printed --- a band of $1.1\%$. The $0.763$ we write above, and which is in general circulation, appears nowhere in the source, though it sits inside that band and is as defensible as any of them.
+
+We are not claiming an error. The spread is around one percent in $\dot q_s$, well inside the uncertainty of the edge properties that feed the correlation. We record it because a heat-flux coefficient quoted to three or four significant figures implies a traceability that the source does not support at more than two, and because a reader reproducing our results from the original paper would otherwise find a mismatch and reasonably assume an implementation error. Our implementation names all four constants and defaults to $0.763$ for continuity with the literature rather than fidelity to the source.
+\end{remark}
+
 \begin{remark}
 Where the inputs to \cref{eq:fayriddell} are unavailable --- typically in early trajectory screening, before a boundary-layer edge solution exists --- the framework falls back to the Sutton--Graves correlation \cite{sutton1971}, $\dot{q}_s = k_{SG}\sqrt{\rho_\infty/R_{\text{eff}}}\,V_\infty^3$ with $k_{SG} = 1.7415\times10^{-4}$ in SI units for air. This is a correlation, not a theory, and results obtained with it should not be reported as Fay--Riddell results. The distinction is noted because conflating the two is a common error.
 \end{remark}
@@ -520,7 +531,7 @@ The expanding covariance is exposed to the SCvx layer of \cref{sec:scvx} as a st
 \section{Orbital Mechanics and the Coast Phase}
 \label{sec:orbital}
 
-\subsection{$J_2$-perturbed propagation}
+\subsection{\texorpdfstring{$J_2$}{J2}-perturbed propagation}
 \label{sec:j2}
 
 Over a fractional orbit, a spherical gravity model accumulates unacceptable secular error. The dominant correction is the $J_2$ zonal harmonic accounting for Earth oblateness \cite{vallado2013}. In Earth-Centered Inertial Cartesian coordinates with $r = \|\mathbf{r}\|$,

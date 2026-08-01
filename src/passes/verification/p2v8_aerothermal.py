@@ -45,6 +45,12 @@ from passes.aerothermal import (
     sutton_graves,
 )
 from passes.aerothermal.stagnation import (
+    FAY_RIDDELL_COEFFICIENT_EXACT_094,
+    FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT,
+    FAY_RIDDELL_COEFFICIENT_LITERATURE,
+    FAY_RIDDELL_COEFFICIENT_SOURCE,
+    FAY_RIDDELL_FACTOR_PR071,
+    FAY_RIDDELL_NUSSELT_COEFFICIENT,
     LEWIS_EXPONENT_EQUILIBRIUM,
     LEWIS_EXPONENT_FROZEN_CATALYTIC,
 )
@@ -236,23 +242,90 @@ def run_p2v8(output_dir: Path) -> VerificationReport:
         f"survives, but the exponent does not. Second, the source returns "
         f"**W/cm²**, so an SI framework needs a 10⁴ conversion; omitting it is a "
         f"four-order-of-magnitude error that still resembles a heat flux. The "
-        f"OCR of the r_n-dependent conditional clauses in Eq. (2) is degraded in "
-        f"the archived scan, so the implementation covers the principal branch "
-        f"and enforces the a < 1 requirement rather than guessing the clauses.",
+        f"r_n-dependent conditional clauses of Eq. (2) — a ≤ 0.6 on 1 ≤ r_n ≤ 2, "
+        f"a ≤ 0.5 on 2 < r_n ≤ 3 — were unreadable in the archived scan and were "
+        f"supplied separately from the published text; they are implemented as "
+        f"caps with the band edges exactly as printed (first band closed, second "
+        f"half-open) rather than guessed.",
+    )
+
+    # --- Fay–Riddell primary source ----------------------------------------
+    q_of = {
+        name: float(fay_riddell(velocity_gradient=dudx0, **_FR_BASE, coefficient=c))
+        for name, c in (
+            ("nusselt", FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT),
+            ("printed", FAY_RIDDELL_COEFFICIENT_EXACT_094),
+            ("footnote", FAY_RIDDELL_COEFFICIENT_SOURCE),
+            ("literature", FAY_RIDDELL_COEFFICIENT_LITERATURE),
+        )
+    }
+    spread = max(q_of.values()) / min(q_of.values()) - 1.0
+    band = (
+        FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT / FAY_RIDDELL_COEFFICIENT_SOURCE - 1.0
+    )
+    report.add_table(
+        "Fay–Riddell leading constant, back-substituted from the original paper",
+        ["source statement", "back-substitution", "constant", "q_s here"],
+        [
+            ["Eq. (58)/(62), factor "
+             f"{FAY_RIDDELL_NUSSELT_COEFFICIENT}", "0.67·Pr^(−0.4)",
+             f"{FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT:.4f}",
+             f"{q_of['nusselt'] / 1e6:.4f} MW/m²"],
+            [f"Eq. (63), factor {FAY_RIDDELL_FACTOR_PR071}", "0.94·Pr^(+0.6)",
+             f"{FAY_RIDDELL_COEFFICIENT_EXACT_094:.4f}",
+             f"{q_of['printed'] / 1e6:.4f} MW/m²"],
+            ["footnote to Eq. (63)", "as printed",
+             f"{FAY_RIDDELL_COEFFICIENT_SOURCE:.4f}",
+             f"{q_of['footnote'] / 1e6:.4f} MW/m²"],
+            ["*not in the source*", "literature / this framework",
+             f"{FAY_RIDDELL_COEFFICIENT_LITERATURE:.4f}",
+             f"{q_of['literature'] / 1e6:.4f} MW/m²"],
+        ],
+        "**Exponents: derived, not assumed.** The archived scan of Eq. (63) is "
+        "too degraded to read its exponents directly, but they are "
+        "recoverable. Eq. (45) gives q = (Nu/√Re)·√(ρ_w μ_w (du_e/dx)_s)·"
+        "(h_s − h_w)/Pr, and Eq. (58)/(62) correlates Nu/√Re = "
+        "0.67·(ρ_s μ_s / ρ_w μ_w)^0.4·{1 + (Le^0.52 − 1) h_D/h_s} — a *ratio*, "
+        "because the parameter 'was found to depend only upon the total "
+        "variation in ρμ across the boundary layer'. Substituting gives 0.4 "
+        "from the ratio and a residual 0.1 from the √(ρ_w μ_w), i.e. exactly "
+        "(ρ_e μ_e)^0.4 (ρ_w μ_w)^0.1. The Lewis exponents are confirmed "
+        "directly: 0.52 equilibrium (Eq. 60/62), 0.63 frozen with a fully "
+        "catalytic wall (Eq. 65, corroborated by Fig. 4).\n\n"
+        "**The constant is a different story.** The same substitution shows "
+        "every constant descending from one fitted number at two significant "
+        f"figures — the {FAY_RIDDELL_NUSSELT_COEFFICIENT} of Eq. (58)/(62). "
+        f"The printed {FAY_RIDDELL_FACTOR_PR071} of Eq. (63) is "
+        f"{FAY_RIDDELL_NUSSELT_COEFFICIENT}/0.71 = "
+        f"{FAY_RIDDELL_NUSSELT_COEFFICIENT / 0.71:.4f} rounded, and the "
+        "footnote's Pr^(−0.6) is the correlation's own Pr^(+0.4) against the "
+        "Pr^(−1) of Eq. (45). Backing the coefficient out three ways spans "
+        f"{band * 100:.1f}%, "
+        f"or {spread * 100:.2f}% in flux. The widely quoted 0.763 occurs "
+        "**nowhere in the source**, but it lies inside that band and is as "
+        "defensible as any of them. This is a provenance finding, not an "
+        "accuracy finding: no reading supports a third significant figure, "
+        "all four constants are named and selectable, and none is presented "
+        "as *the* source value.",
     )
 
     # --- pending legs -------------------------------------------------------
     report.add_section(
         "Fay–Riddell reference cases and FIAT — PENDING",
-        "The radiative half of this task is now closed against published data "
-        "(previous section). What remains is the **convective** half: the 5% "
-        "criterion is stated against published Fay–Riddell reference "
-        "conditions, which need transcribed equilibrium-air properties "
-        "(ρ_e μ_e, ρ_w μ_w, h_D at the reference states). The FIAT recession "
+        "The radiative half of this task is closed against published data, and "
+        "the convective **coefficients** are now checked against the original "
+        "Fay & Riddell paper (previous two sections). What remains is the "
+        "convective **reference case**: the 5% criterion is stated against "
+        "published Fay–Riddell reference conditions, and those need transcribed "
+        "equilibrium-air properties (ρ_e μ_e, ρ_w μ_w, h_D at the reference "
+        "states). The source presents its numerical results in figures (Figs. "
+        "2, 3, 4, 7, 8), not tables, so no reference q values are extractable "
+        "from it at the precision a 5% criterion requires. The FIAT recession "
         "comparison shares the pending status of I-V4. Neither dataset is in "
         "this repository, and no synthetic stand-in is presented as either. "
         "II-V8 is therefore **partially complete**: implementation verified, "
-        "radiative reference verified, convective reference pending data.",
+        "radiative reference verified, convective coefficients verified, "
+        "convective reference case pending tabulated data.",
     )
 
     report.passed = bool(all_ok and trade_ok and published_ok)

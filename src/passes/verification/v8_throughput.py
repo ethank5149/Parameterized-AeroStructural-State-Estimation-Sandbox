@@ -296,15 +296,25 @@ extern "C" __global__ void rk4_stage(const double* y, const double* beta,
             ],
         )
         probe = Path(__file__).with_name("_occupancy_probe.py")
-        measured = achieved_occupancy(probe) if probe.is_file() else None
+        measured = (
+            achieved_occupancy(probe, kernel_name="rk4_stage")
+            if probe.is_file()
+            else None
+        )
         if measured is not None and measured.available:
             report.add_section(
                 "Achieved occupancy — measured",
                 f"Nsight Compute reports an achieved occupancy of "
                 f"**{measured.achieved:.3f}** for kernel `{measured.kernel}`, "
-                f"against the theoretical bound above. The gap between the two "
-                f"is tail effect and load imbalance, which is exactly what the "
-                f"counter exists to expose.",
+                f"averaged over {measured.launches} launches, against the "
+                f"theoretical bound of 1.000 at the 256-thread block size used. "
+                f"The gap is what the counter exists to expose and the model "
+                f"cannot predict: launch tail, since the grid does not divide "
+                f"evenly across 82 SMs, plus ramp-up and drain at the ends of a "
+                f"short kernel. The kernel is selected by name because a CuPy "
+                f"process also launches its own fill and copy kernels, and "
+                f"averaging over those would report the occupancy of the setup "
+                f"rather than of the workload.",
             )
         else:
             reason = measured.reason if measured is not None else "no probe script"

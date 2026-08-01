@@ -16,6 +16,12 @@ from passes.aerothermal.distribution import lees_distribution
 from passes.aerothermal.radiative import TauberSuttonRadiation
 from passes.aerothermal.recession import stefan_recession_rate
 from passes.aerothermal.stagnation import (
+    FAY_RIDDELL_COEFFICIENT_EXACT_094,
+    FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT,
+    FAY_RIDDELL_COEFFICIENT_LITERATURE,
+    FAY_RIDDELL_COEFFICIENT_SOURCE,
+    FAY_RIDDELL_FACTOR_PR071,
+    FAY_RIDDELL_NUSSELT_COEFFICIENT,
     fay_riddell,
     newtonian_velocity_gradient,
     sutton_graves,
@@ -35,6 +41,12 @@ from passes.aerothermal.tauber_sutton import (
 __all__ = [
     "EARTH_EXPONENT_CAPS",
     "EARTH_VELOCITY_FUNCTION",
+    "FAY_RIDDELL_COEFFICIENT_EXACT_094",
+    "FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT",
+    "FAY_RIDDELL_COEFFICIENT_LITERATURE",
+    "FAY_RIDDELL_COEFFICIENT_SOURCE",
+    "FAY_RIDDELL_FACTOR_PR071",
+    "FAY_RIDDELL_NUSSELT_COEFFICIENT",
     "MARS_VELOCITY_FUNCTION",
     "TAUBER_SUTTON_PROVENANCE",
     "TauberSuttonRadiation",

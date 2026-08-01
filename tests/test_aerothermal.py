@@ -4,6 +4,12 @@ import numpy as np
 import pytest
 
 from passes.aerothermal import (
+    FAY_RIDDELL_COEFFICIENT_EXACT_094,
+    FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT,
+    FAY_RIDDELL_COEFFICIENT_LITERATURE,
+    FAY_RIDDELL_COEFFICIENT_SOURCE,
+    FAY_RIDDELL_FACTOR_PR071,
+    FAY_RIDDELL_NUSSELT_COEFFICIENT,
     TauberSuttonRadiation,
     fay_riddell,
     lees_distribution,
@@ -365,3 +371,79 @@ class TestPublishedTauberSutton:
         assert float(radiative_heat_transfer_coefficient(q, rho, v)) == pytest.approx(
             q / (0.5 * rho * v**3)
         )
+
+
+class TestFayRiddellCoefficientProvenance:
+    """The source states its leading constant three times, inconsistently.
+
+    Every constant in Fay & Riddell descends from the single fitted 0.67
+    of Eq. (58)/(62), carried at two significant figures. Backing the
+    modern Eq. (63) coefficient out of the paper's three statements gives
+    0.7684, 0.7654 and 0.76 — a 1.1% band. These tests pin the
+    reconstruction and the spread so neither can be quietly "fixed" by
+    someone who assumes one of the constants is a typo.
+    """
+
+    def test_printed_094_is_the_nusselt_constant_over_prandtl(self) -> None:
+        """Eq. (63)'s 0.94 is Eq. (62)'s 0.67 divided by Pr, via Eq. (45).
+
+        This is the check that the whole reconstruction rests on: if it
+        holds, the substitution of Eq. (62) into Eq. (45) is the right
+        reading of the source, and the (rho_e mu_e)^0.4 (rho_w mu_w)^0.1
+        exponent split follows from it rather than from convention.
+        """
+        implied = FAY_RIDDELL_NUSSELT_COEFFICIENT / 0.71
+        assert abs(implied / FAY_RIDDELL_FACTOR_PR071 - 1.0) < 5e-3
+
+    def test_exponents_sum_to_the_half_power_of_rho_mu(self) -> None:
+        """0.4 (from the Eq. 62 ratio) + 0.1 (residue of sqrt(rho_w mu_w))."""
+        args = dict(FR_ARGS)
+        scaled = dict(args)
+        for key in ("edge_density", "wall_density"):
+            scaled[key] = 4.0 * args[key]
+        # Scaling both rho by 4 scales (rho mu)_e^0.4 (rho mu)_w^0.1 by 4^0.5.
+        ratio = float(fay_riddell(**scaled)) / float(fay_riddell(**args))
+        assert ratio == pytest.approx(2.0, rel=1e-12)
+
+    def test_three_source_statements_disagree_by_about_one_percent(self) -> None:
+        readings = [
+            FAY_RIDDELL_COEFFICIENT_SOURCE,
+            FAY_RIDDELL_COEFFICIENT_EXACT_094,
+            FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT,
+        ]
+        spread = max(readings) / min(readings) - 1.0
+        assert 0.005 < spread < 0.02
+
+    def test_back_substitutions_are_arithmetically_correct(self) -> None:
+        from_nusselt = FAY_RIDDELL_NUSSELT_COEFFICIENT * 0.71**-0.4
+        from_printed = FAY_RIDDELL_FACTOR_PR071 * 0.71**0.6
+        assert abs(from_nusselt - FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT) < 5e-5
+        assert abs(from_printed - FAY_RIDDELL_COEFFICIENT_EXACT_094) < 5e-5
+
+    def test_literature_value_lies_inside_the_source_spread(self) -> None:
+        assert (
+            FAY_RIDDELL_COEFFICIENT_SOURCE
+            < FAY_RIDDELL_COEFFICIENT_LITERATURE
+            < FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT
+        )
+
+    def test_coefficient_scales_the_flux_linearly(self) -> None:
+        args = dict(FR_ARGS)
+        base = float(fay_riddell(**args, coefficient=FAY_RIDDELL_COEFFICIENT_SOURCE))
+        exact = float(fay_riddell(**args, coefficient=FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT))
+        ratio = FAY_RIDDELL_COEFFICIENT_FROM_NUSSELT / FAY_RIDDELL_COEFFICIENT_SOURCE
+        assert exact / base == pytest.approx(ratio, rel=1e-12)
+        # The whole provenance question is worth around a percent in flux.
+        assert 0.0 < exact / base - 1.0 < 0.02
+
+    def test_default_is_the_literature_value(self) -> None:
+        args = dict(FR_ARGS)
+        assert float(fay_riddell(**args)) == pytest.approx(
+            float(fay_riddell(**args, coefficient=FAY_RIDDELL_COEFFICIENT_LITERATURE)),
+            rel=1e-15,
+        )
+
+    @pytest.mark.parametrize("bad", [0.0, -0.763, float("nan"), float("inf")])
+    def test_rejects_nonphysical_coefficients(self, bad: float) -> None:
+        with pytest.raises(ValueError, match="coefficient"):
+            fay_riddell(**dict(FR_ARGS), coefficient=bad)
