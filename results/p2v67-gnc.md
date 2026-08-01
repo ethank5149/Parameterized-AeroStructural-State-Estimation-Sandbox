@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper II §8):** II-V6: measured growth not matching the Eq. (6.5) exponents, or chattering at the boundary; II-V7: ||ν|| not reaching zero for finite w_ν
 - **Verdict:** **PASS**
-- **Generated:** 2026-08-01 00:51 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-08-01 01:24 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## II-V6 (a): unaided covariance growth exponents
 

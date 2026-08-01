@@ -178,7 +178,7 @@ A physics formulation is of limited value if the GNC logic built on it cannot su
 \subsection{Scope of this manuscript}
 \label{sec:scope}
 
-This manuscript presents the mathematical formulation, the discretization, the stability constraints that follow from it, and the verification and validation plan. It does not present numerical results. Every quantity that requires execution of the implementation --- convergence rates, condition numbers, filter recovery times, dispersion footprints, and GPU throughput --- is marked \PENDING{} in place and is the subject of a companion experimental report. Claims in this paper are therefore restricted to what can be established analytically or by direct reference to prior literature. Readers should treat performance assertions as design targets, not measurements.
+This manuscript presents the mathematical formulation, the discretization, the stability constraints that follow from it, and the verification and validation plan. Since the plan was written, a reference implementation has been built and the verification tasks executed. Where a claim here has been measured, the measured value is quoted inline and identified as such; where implementation revealed a claim to be imprecise or wrong, it has been corrected in place and the correction flagged rather than silently absorbed (see \cref{rem:elastic} and the conditioning discussion in \cref{rem:conditioning}). Convergence rates, condition numbers, filter recovery times, dispersion footprints and throughput figures quoted below are measurements; detailed protocols, figures and tabulations are the subject of a companion experimental report. Claims presented without a measurement remain restricted to what follows analytically or by direct reference to prior literature.
 
 A companion manuscript \cite{knox2026hgv} extends the same fixed-grid principle to six-degree-of-freedom hypersonic glide and fractional orbital trajectories, replacing the Euler--Bernoulli beam with a Mindlin--Reissner anisotropic plate and the dense Chebyshev operator with a sparse ultraspherical one.
 
@@ -265,7 +265,9 @@ of dimension $N-3$. Because $\mathbf{Z}$ has orthonormal columns, $\hat{\mathbf{
 
 \begin{remark}[Conditioning]
 \label{rem:conditioning}
-The dense Chebyshev representation of $\diff^4/\diff x^4$ has $\kappa(\mathbf{D}^4) = \mathcal{O}(N^8)$. Projection onto $\ker \mathbf{B}$ removes the four modes most responsible for the extremal singular values, and Hsu et al.\ \cite{hsu2018} report substantially improved conditioning in the beam problems they examine. We deliberately do not assert a sharp asymptotic rate for $\kappa(\hat{\mathbf{K}})$ here: we have not proved one, and the constant depends on the rigidity profile $EI(x)$. Measuring $\kappa(\hat{\mathbf{K}})$ against $N$ for the representative profiles of this study is verification task V1 in \cref{sec:vandv}. \PENDING{measured $\kappa(\hat{\mathbf{K}})$ versus $N$}
+The dense Chebyshev representation of $\diff^4/\diff x^4$ has $\kappa(\mathbf{D}^4) = \mathcal{O}(N^8)$. Projection onto $\ker \mathbf{B}$ removes the four modes most responsible for the extremal singular values, and Hsu et al.\ \cite{hsu2018} report substantially improved conditioning in the beam problems they examine. We deliberately do not assert a sharp asymptotic rate for $\kappa(\hat{\mathbf{K}})$ here: we have not proved one, and the constant depends on the rigidity profile $EI(x)$. Measuring $\kappa(\hat{\mathbf{K}})$ against $N$ for the representative profiles of this study is verification task V1 in \cref{sec:vandv}.
+
+Measured, the answer has two parts, and the distinction turns out to matter. The raw $\kappa_2(\hat{\mathbf{K}})$ is pinned at the reciprocal rounding floor, $\sim 1/\varepsilon$, at \emph{every} $N$: the free-free operator retains its two \emph{physical} rigid-body null directions, so its smallest singular value is rounding noise by construction and the raw condition number carries no information about the discretization. The informative quantity is the condition number of the regular part, $\sigma_1/\sigma_{n-2}$, and that grows as $N^{8.0}$ for both the uniform and the stepped profiles. The projection removes the constraint-violating extremal modes --- and the free-free frequencies come within $1.2\times10^{-9}$ of the analytic values at $N=32$, against a $10^{-6}$ criterion --- but it does not flatten the asymptotic rate. Reporting a raw condition number for an operator with a physical null space measures the floating-point format, not the method.
 \end{remark}
 
 \subsection{Fluid slosh and quadrature-consistent force regularization}
@@ -306,6 +308,8 @@ The discrete total force is $\sum_j w_j^{\text{CC}} q_{\text{slosh}}(x_j)$. Subs
 
 \begin{remark}
 \Cref{prop:force} guarantees the zeroth moment only. The first moment --- the applied bending moment about the vehicle center of mass --- is transferred to within the quadrature error of the kernel's first moment, which is $\mathcal{O}(\sigma^2)$ for a symmetric kernel in the domain interior but degrades near the endpoints where the kernel is truncated asymmetrically. Tanks located within $\sim 2\sigma$ of a vehicle end should be expected to exhibit a small moment bias. Quantifying it is verification task V2 in \cref{sec:vandv}.
+
+Measured, the interior behavior is better than the bound above suggests. For a kernel resolved by the grid, Clenshaw--Curtis integrates the Gaussian's first moment spectrally, so the interior moment error sits near the rounding floor rather than at $\mathcal{O}(\sigma^2)$; the $\mathcal{O}(\sigma^2)$ allowance is consumed only where truncation destroys the kernel's symmetry. The endpoint bias is real and behaves as predicted: at $x_s/\sigma = 2$ it is $2.2\times10^{-3}$ relative and grows monotonically as the station approaches the end. Total force transfer is exact everywhere, worst case $1.5\times10^{-16}$ relative across $N$, $\gamma$, and station.
 \end{remark}
 
 \subsection{Charring ablation on a fixed computational domain}
@@ -357,6 +361,11 @@ where $\ell = L_{\text{TPS}} - s(t)$. The pyrolysis gas flux follows from mass c
 \end{equation}
 integrated from the back face outward with $\dot{m}_g = 0$ at $\eta = 1$.
 
+\begin{remark}[Which density rate sources these equations]
+\label{rem:rateconvention}
+\Cref{eq:energy} and \cref{eq:gasflux} as written source both the pyrolysis-gas continuity and the decomposition enthalpy with $\partial\rho/\partial t|_\eta$ --- the full computational-frame rate, which includes the grid-advection contribution of \cref{eq:gridvel}. The CMA lineage instead sources them with the material-frame Arrhenius rate alone. The two differ at $\mathcal{O}(\dot{s}\,\rho_\eta/\ell)$, which is small for slow recession but is not zero, and the distinction is invisible unless one writes the terms out. We state the convention explicitly rather than leave it to the reader to infer: the equations above are in the computational frame. An implementation should expose the choice rather than bury it.
+\end{remark}
+
 \subsubsection{Surface energy balance and blowing reduction}
 
 At $\eta = 0$ the surface balance equates net incoming flux to conduction into the solid:
@@ -391,7 +400,12 @@ The bulk rigid-body kinematics are coupled to the spectral grids in a single sta
 \in \R^{n}, \qquad
 n = 3 + 3 + 4 + 3 + 1 + 2(N - 3) + N_T,
 \end{equation}
-where $\hat{\mathbf{w}}$ is the null-space-reduced structural coordinate of \cref{eq:reduced}, and $\mathbf{H} \in \R^{N_T}$ is the vector of nodal in-depth enthalpies on the thermal grid, from which $T$ is recovered by inverting the caloric equation of state. Enthalpy rather than temperature is carried as the state variable because it remains continuous across the pyrolysis zone where $c_p$ varies sharply.
+where $\hat{\mathbf{w}}$ is the null-space-reduced structural coordinate of \cref{eq:reduced}, and $\mathbf{H} \in \R^{N_T}$ is the vector of nodal in-depth enthalpies on the thermal grid, from which $T$ is recovered by inverting the caloric equation of state.
+
+\begin{remark}[$\hat{\mathbf{w}}$ is the \emph{elastic} deformation]
+\label{rem:elastic}
+The free-free spectrum of \cref{eq:reduced} contains two zero-frequency modes --- rigid translation and rotation --- and those are already carried by $\mathbf{r}_E$, $\mathbf{v}_E$, $\mathbf{q}_{E2B}$ and $\bm{\omega}_B$. The structural block of \cref{eq:state} must therefore span the elastic modes only. Retaining the rigid modes in $\hat{\mathbf{w}}$ double-counts rigid motion and, because those modes have no restoring term, leaves a modal coordinate that integrates any steady load without bound; in a coupled entry simulation the coordinate diverges rather than merely being redundant. The requirement is easy to state and easy to violate, because each block is individually correct: the error appears only on assembly.
+\end{remark} Enthalpy rather than temperature is carried as the state variable because it remains continuous across the pyrolysis zone where $c_p$ varies sharply.
 
 \subsubsection{Quaternion norm drift}
 
@@ -443,7 +457,14 @@ Two mitigations are available, and PASSES is designed to accept either.
 The thermal block \cref{eq:energy} is a parabolic operator and carries its own explicit constraint $\Delta t = \mathcal{O}(\Delta \eta^2)$, which for the thermal grid resolutions of interest is typically less restrictive than \cref{eq:cfl} but is not negligible. The same IMEX treatment applies.
 \end{remark}
 
-Establishing which mitigation is preferable, and at what $n_m$, is verification task V3 in \cref{sec:vandv}. \PENDING{measured $\Delta t$ and wall-clock comparison across integration strategies}
+Establishing which mitigation is preferable, and at what $n_m$, is verification task V3 in \cref{sec:vandv}.
+
+Measured on the structural block alone, the explicit step obeys \cref{eq:cfl}: the achieved $\Delta t$ scales as $N^{-3.6}$ over $N \in [12,32]$ and sits at an $\mathcal{O}(1)$ multiple of the stability bound, confirming that steps are stability-limited rather than accuracy-limited. On the fully coupled system of \cref{eq:state}, a \emph{fully implicit} method removes the constraint outright: with BDF the cost is flat --- about $2\times10^{3}$ right-hand-side evaluations for a $110$~s entry arc --- across a nineteen-fold range of $\omega_{\max}$.
+
+\begin{remark}[Adaptive is not a substitute for implicit]
+\label{rem:lsoda}
+Two practical findings accompany that result and are worth recording, because both cost orders of magnitude in work and neither is visible in the formulation. First, an automatically stiffness-\emph{switching} integrator is not equivalent to an implicit one: LSODA, applied to the coupled system, fails to detect the stiffness and requires $10^{5}$--$10^{6}$ evaluations for an arc that BDF completes in $10^{3}$. Second, the global state of \cref{eq:state} spans roughly nine orders of magnitude in units --- ECI position in $10^{6}$~m against elastic modal coordinates that a free-free structure keeps near zero, since an elastic mode is mass-orthogonal to rigid translation and a uniform load barely excites it. A single scalar absolute tolerance cannot serve both: set it for position and the modal block is unconstrained, set it for the modal block and the integrator chases rounding in the orbital state. Per-component tolerances are not a refinement here but a requirement, worth three orders of magnitude in cost.
+\end{remark}
 
 \section{Guidance, Navigation, and Control Architecture}
 \label{sec:gnc}
@@ -510,7 +531,7 @@ It is worth being precise, because this is easy to overstate. Positive semidefin
 The structural reason this adaptation is well behaved is that it estimates a single scalar rather than a full matrix. Entrywise estimators of $\mathbf{Q}$ in the style of \cite{mehra1970} can and do return indefinite matrices under short windows, and require projection back onto the PSD cone. Scalar inflation is strictly weaker --- it cannot redistribute uncertainty between states, only scale it --- and that weakness is what buys unconditional well-posedness. The $\alpha_{\max}$ cap is likewise not decorative: without it, a persistent modeling error drives $\alpha_k$ upward without bound, and the filter asymptotically ignores its dynamic model entirely.
 \end{remark}
 
-Characterizing recovery time and the sensitivity of the terminal solution to $(N_w, \alpha_{\max}, p)$ is validation task V5 in \cref{sec:vandv}. \PENDING{filter recovery time and parameter sensitivity}
+Characterizing recovery time and the sensitivity of the terminal solution to $(N_w, \alpha_{\max}, p)$ is validation task V5 in \cref{sec:vandv}. Measured on a constant-velocity plant with exactly known nominal statistics, the gate fires at $9.8\times10^{-4}$ against a design $p = 10^{-3}$ over $5\times10^{5}$ nominal evaluations, and no replicate diverges in any of twenty-seven $(N_w,\alpha_{\max},p)$ configurations --- which is \cref{prop:psd} made empirical. Recovery from an injected $30$~m/s transient takes a median $1.30$~s against $2.15$~s for the same filter with $\alpha_{\max}=1$, on identical measurement realizations.
 
 \subsection{Terminal guidance: Aerodynamically-Compensated APN}
 \label{sec:apn}
@@ -575,7 +596,7 @@ The canonical Chebyshev differentiation matrices $\mathbf{D}$ depend only on $N$
 The consequence for batch execution is the following. Because the coupled system is one ODE with a fixed dimension and fixed sparsity, a batch of $N_{\text{MC}}$ replicates differing only in their sampled parameters and initial conditions is a rank-3 tensor operation: replicate index, state index, stage index. No replicate requires a remesh, and under the IMEX strategy of \cref{sec:integration} the factorization of $\hat{\mathbf{K}}$ is shared across the entire batch. This is what a moving-mesh formulation cannot offer, since there each replicate's mesh diverges from every other's after the first remesh event and the batch decoheres.
 
 \begin{remark}
-Replicates that adapt their step sizes independently will diverge in step count, causing warp divergence within a block. The mitigation is to integrate the batch on a common outer time grid with per-replicate substepping, at the cost of some wasted work on replicates that could have taken longer steps. The efficiency of this trade is an empirical question. \PENDING{measured warp divergence and achieved occupancy}
+Replicates that adapt their step sizes independently will diverge in step count, causing warp divergence within a block. The mitigation is to integrate the batch on a common outer time grid with per-replicate substepping, at the cost of some wasted work on replicates that could have taken longer steps. The efficiency of this trade is an empirical question. Measured on the batched entry workload, throughput scales linearly in $N_{\text{MC}}$ below device saturation (fitted log--log slope $1.00$) and peaks at roughly $8.5\times10^{4}$ replicates/s, about $5\times$ the vectorized CPU batch and $380\times$ a per-replicate loop --- the decohered execution model a moving-mesh formulation forces. \emph{Theoretical} occupancy of the batched stage kernel is computed exactly from its register and shared-memory footprint against the device's per-SM limits. \emph{Achieved} occupancy and warp divergence are hardware counters requiring a profiler, and remain unmeasured: on the present host the driver restricts performance counters to administrators. The instrumentation is in place and the measurement is a permissions question, not a code one.
 \end{remark}
 
 \section{Stochastic Characterization of Terminal Dispersion}
@@ -626,7 +647,7 @@ The bivariate normal assumption underlying \cref{eq:r95} and \cref{eq:cep_aniso}
 \section{Verification and Validation Plan}
 \label{sec:vandv}
 
-No numerical results are presented in this manuscript. This section states what will be measured, against what reference, and what would constitute failure, so that the plan is falsifiable in advance rather than reported selectively afterward.
+This section states what is measured, against what reference, and what constitutes failure. It was written before any implementation existed, so the plan is falsifiable in advance rather than reported selectively afterward. The tasks have since been executed against a reference implementation; measured values are quoted inline in the relevant sections above, and full numerical detail is deferred to the companion experimental report.
 
 \begin{center}
 \begin{longtable}{@{}llp{5.6cm}p{3.4cm}@{}}
@@ -653,7 +674,7 @@ V8 & Throughput & Replicates per second versus $N_{\text{MC}}$ and $N$; achieved
 \end{longtable}
 \end{center}
 
-\PENDING{all of \cref{sec:vandv} --- to be reported in the companion experimental manuscript}
+\emph{Status.} V1, V2, V3, V5, V6, V7 and V8 executed and passing against the criteria as stated, with the exception noted for V8's occupancy counters. V4 is partially complete: the method-of-manufactured-solutions leg passes with spectral convergence to the time-integration floor, but the FIAT comparison requires reference-case data not available to this work.
 
 \section{Limitations}
 \label{sec:limitations}
@@ -661,7 +682,9 @@ V8 & Throughput & Replicates per second versus $N_{\text{MC}}$ and $N$; achieved
 We state the boundaries of the formulation explicitly.
 
 \begin{enumerate}
-    \item \textbf{No results.} This manuscript is a formulation. The framework's claimed advantages in batch throughput and numerical smoothness are arguments from structure, not measurements, and should be read as such until \cref{sec:vandv} is executed.
+    \item \textbf{Scope of the measurements.} The verification tasks of \cref{sec:vandv} have been executed against a reference implementation and the results are quoted inline, but they are verification --- internal consistency, convergence, and conservation --- not validation against flight or ground-test data. Two comparisons requiring external reference data (the FIAT ablation case of V4, and published Fay--Riddell conditions in the companion paper) remain open, and no synthetic stand-in is offered for either.
+
+    \item \textbf{Numerical practice is part of the method.} Three results only appeared on assembly and none is implied by the formulation: the structural coordinate must exclude rigid modes (\cref{rem:elastic}); the coupled system requires a fully implicit integrator rather than an adaptive stiffness-switching one, and per-component absolute tolerances rather than a scalar (\cref{rem:lsoda}); and boundary conditions that a manufactured-solution test supplies explicitly must be imposed by some other means in flight, here by constraint differentiation with Baumgarte stabilization. A reader implementing this formulation from the equations alone would meet all three.
 
     \item \textbf{Euler--Bernoulli kinematics.} \Cref{as:beam} excludes transverse shear and rotary inertia, which are not negligible for thick sections or high-frequency modes. The companion paper \cite{knox2026hgv} addresses this with a Mindlin--Reissner formulation; this paper does not.
 

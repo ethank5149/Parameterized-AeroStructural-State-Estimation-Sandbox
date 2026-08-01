@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper II §8):** trim incidence shifting by more than 0.1° across the blend-width sweep
 - **Verdict:** **PASS**
-- **Generated:** 2026-08-01 00:50 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-08-01 01:24 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Configuration
 

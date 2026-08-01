@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper II §8):** secular energy drift exceeding 1e-8 per orbit
 - **Verdict:** **PASS**
-- **Generated:** 2026-08-01 00:51 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-08-01 01:24 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Configuration
 
@@ -53,8 +53,8 @@ The ratio decays monotonically through 25 decades with a log-slope varying by 4.
 
 | strategy | RHS evaluations | mean step (s) | wall (s) | energy drift | final modal energy ratio |
 |---|---|---|---|---|---|
-| single-integration | 93,290 | 0.0502 | 1.651 | 3.29e-15 | 1.46e-17 |
-| frozen-structure | 6,220 | 0.8021 | 0.111 | 8.37e-13 | 9.90e-07 |
+| single-integration | 93,290 | 0.0502 | 1.694 | 3.29e-15 | 1.46e-17 |
+| frozen-structure | 6,220 | 0.8021 | 0.114 | 8.37e-13 | 9.90e-07 |
 
 ## Strategy acceptance
 

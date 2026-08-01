@@ -160,7 +160,7 @@ The companion paper \cite{knox2026passes} established a fixed-grid approach to t
 \subsection{Scope and relationship to the companion paper}
 \label{sec:scope}
 
-This manuscript is a formulation paper. It presents the mathematical model, the discretization, and a falsifiable verification plan; it presents no numerical results. Every quantity requiring execution of the implementation is marked \PENDING{} in place. Claims are restricted to what follows analytically or by direct reference to prior work.
+This manuscript is a formulation paper: it presents the mathematical model, the discretization, and a falsifiable verification plan. Since the plan was written, a reference implementation has been built and the verification tasks executed; where a claim in this paper has been measured, the measured value is quoted inline and attributed, and where a claim proved wrong it has been corrected in place with the correction identified as such (see \cref{rem:tauberunits}). Detailed numerical results, figures, and the full experimental protocol remain the subject of a companion report. Claims not accompanied by a measurement are restricted to what follows analytically or by direct reference to prior work.
 
 Readers should treat \cite{knox2026passes} as prerequisite for the fixed-grid rationale, the Landau transformation used for ablation, the adaptive filtering architecture, and the Monte Carlo dispersion estimators, none of which are re-derived here. Where this paper's choices differ from that one, the difference is flagged and justified rather than left for the reader to discover.
 
@@ -270,7 +270,27 @@ At the entry velocities relevant to fractional orbital return, shock-layer radia
 \label{eq:tauber}
 \dot{q}_{s,\text{rad}} = C\, R_{\text{eff}}^{\,a}\, \rho_\infty^{\,b}\, f(V_\infty),
 \end{equation}
-with $a \approx 1.0$ and $b \approx 1.22$ for Earth entry and $f$ a tabulated velocity function rising steeply --- effectively as $V_\infty^{8}$ to $V_\infty^{10}$ over the range of interest. Note that the $R_{\text{eff}}$ dependence in \cref{eq:tauber} is of \emph{opposite sign} to that in \cref{eq:velgrad}: blunting reduces convective heating but increases radiative heating. The optimal nose radius is therefore a genuine trade rather than a monotone preference, and a framework that models only convection will systematically favor over-blunted geometries.
+where, for air,
+\begin{equation}
+\label{eq:tauberconst}
+C = 4.736\times10^{4},
+\qquad
+a = 1.072\times10^{6}\, V_\infty^{-1.88}\rho_\infty^{-0.325},
+\qquad
+b = 1.22,
+\end{equation}
+with $a$ additionally capped by nose radius --- $a \le 0.6$ for $1 \le R_{\text{eff}} \le 2$~m and $a \le 0.5$ for $2 < R_{\text{eff}} \le 3$~m --- and subject throughout to the source's requirement that $a < 1$. The velocity function $f$ is tabulated and rises steeply, effectively as $V_\infty^{8}$ to $V_\infty^{10}$ over the correlation's validity range.
+
+\begin{remark}[Three properties of \cref{eq:tauber} that are easy to lose]
+\label{rem:tauberunits}
+An earlier draft of this paper described the nose-radius exponent as $a \approx 1.0$. That is incorrect: $a$ is a function of both velocity and density, it is capped by nose radius, and the source states explicitly that $a<1$ must always be met. Over the correlation's own validity envelope it runs approximately $0.25$ to $0.6$. The qualitative claim below --- that blunting \emph{increases} radiative heating --- is unaffected, since $a>0$; the quantitative exponent is.
+
+Second, \cref{eq:tauber} returns $\dot{q}_r$ in W/cm$^2$, not W/m$^2$. A framework carrying SI units throughout requires a factor of $10^4$, and omitting it produces a four-order-of-magnitude error in a quantity that still resembles a heat flux.
+
+Third, the tabulated $f_E$ extends from $9$~km/s, but \cref{eq:tauber}--\cref{eq:tauberconst} are stated to apply only for $10 \le V_\infty \le 16$~km/s, $6.66\times10^{-5} \le \rho_\infty \le 6.31\times10^{-4}$~kg/m$^3$, and $0.3 \le R_{\text{eff}} \le 3$~m. Interpolating the table below $10$~km/s is legitimate; evaluating the correlation there is extrapolation of a fit beyond where its authors validated it, and the implementation refuses it unless asked explicitly.
+\end{remark}
+
+Note that the $R_{\text{eff}}$ dependence in \cref{eq:tauber} is of \emph{opposite sign} to that in \cref{eq:velgrad}: blunting reduces convective heating but increases radiative heating. The optimal nose radius is therefore a genuine trade rather than a monotone preference, and a framework that models only convection will systematically favor over-blunted geometries. Evaluated on the published correlation at $V_\infty = 12$~km/s and $\rho_\infty = 3\times10^{-4}$~kg/m$^3$, the total stagnation heating has an interior minimum near $R_{\text{eff}} \approx 0.8$~m --- inside the source's own nose-radius envelope, and at a condition where radiation exceeds convection.
 
 \subsection{Heat flux distribution over the planform}
 \label{sec:distribution}
@@ -384,9 +404,21 @@ which written out are
 \end{equation}
 The third condition is evaluated independently of the geometric slope --- this is exactly the freedom the three-field formulation provides, and collapsing it back onto $\partial w/\partial x$ reintroduces the Kirchhoff constraint the formulation exists to relax.
 
+\begin{remark}[Corner redundancy and how the conditions are imposed]
+\label{rem:corner}
+Imposing \cref{eq:freeedge} on all four edges produces a rank-deficient constraint set, and the deficiency is specific rather than incidental. The twist condition $M_{xy}=0$ belongs to the free-edge triple of \emph{both} edges meeting at a corner, so it is imposed twice there; $M_x \ne M_y$ and $Q_x \ne Q_y$ in general, so those are independent. The set is therefore deficient by exactly four, one per corner. A uniformly simply-supported perimeter, used here as a verification configuration because it admits a closed-form Mindlin solution, is deficient by twelve.
+
+Because the deficiency is a property of the boundary configuration rather than of the discretization, the conditions are imposed by null-space projection --- the same treatment the companion paper applies to the free-free beam \cite{knox2026passes} --- which degrades gracefully under redundancy where row replacement does not. In implementation the rank is measured rather than assumed, so an inconsistent boundary assembly surfaces as an out-of-range deficiency instead of as quietly wrong frequencies.
+\end{remark}
+
+\begin{remark}[Free edges converge algebraically]
+\label{rem:cornersing}
+Free-edge plates carry weak stress singularities at the corners. In consequence the free-free spectrum converges \emph{algebraically} in $N$, whereas the simply-supported spectrum on the same operator converges exponentially --- measured here to $3.7\times10^{-10}$ relative on the first ten modes at $N=20$ against the closed-form Mindlin solution. This is a property of the boundary-value problem, not of the discretization, and it means a free-free frequency comparison at modest $N$ should not be expected to reach the tolerance an analytic case reaches. Verification of the plate kernel therefore rests on the closed-form simply-supported reference and on manufactured solutions; the free-free comparison is reported alongside without a pass criterion attached.
+\end{remark}
+
 \begin{remark}[Shear locking]
 \label{rem:locking}
-As $h \to 0$ the shear stiffness in \cref{eq:shears} grows as $h^{-1}$ relative to the bending stiffness, and a discretization unable to represent $\gamma_{xz} \to 0$ exactly develops spurious stiffness --- shear locking. This is severe for low-order finite elements and motivates the reduced-integration and mixed formulations standard in that setting. High-order spectral discretizations are markedly less susceptible, because the polynomial space is rich enough to represent the constrained limit closely. "Less susceptible" is not "immune": locking behavior should be measured against thickness ratio rather than assumed absent, which is verification task V2 in \cref{sec:vandv}. \PENDING{measured locking behavior versus $h/L$}
+As $h \to 0$ the shear stiffness in \cref{eq:shears} grows as $h^{-1}$ relative to the bending stiffness, and a discretization unable to represent $\gamma_{xz} \to 0$ exactly develops spurious stiffness --- shear locking. This is severe for low-order finite elements and motivates the reduced-integration and mixed formulations standard in that setting. High-order spectral discretizations are markedly less susceptible, because the polynomial space is rich enough to represent the constrained limit closely. "Less susceptible" is not "immune": locking behavior should be measured against thickness ratio rather than assumed absent, which is verification task V2 in \cref{sec:vandv}. Measured on the present discretization at $N=16$ per direction, the fundamental free-free frequency parameter falls from $11.71$ at $h/L = 0.2$ --- genuine shear softening of a thick section --- to a plateau of $13.307$, and at $h/L = 10^{-3}$ differs from that plateau by $+0.018\%$, against a $1\%$ criterion. No locking is observed across three decades. What \emph{is} paid as the section thins is conditioning: the shear-to-bending stiffness ratio grows as $h^{-2}$, and the rigid-body modes separate from the elastic spectrum by correspondingly fewer decades, which is what eventually limits the usable thickness range.
 \end{remark}
 
 \subsection{Ultraspherical discretization and Kronecker structure}
@@ -413,7 +445,9 @@ For the bivariate problem on $[-1,1]^2$, a separable operator of rank $r$ is wri
 so that the discretized system is a generalized Sylvester equation in the matrix of bivariate coefficients \cite{townsend2015}. The Mindlin--Reissner system \cref{eq:mr1}--\cref{eq:mr3} assembles as a $3\times3$ block operator, each block of the form \cref{eq:kron}, and is solved by the recursive blocked algorithm of Chen and Kressner \cite{chen2020}, which exploits the Kronecker structure rather than forming the $\mathcal{O}(N^4)$ dense matrix.
 
 \begin{remark}
-The $\mathcal{O}(1)$ conditioning claim is a property of the ultraspherical operator itself and is established in \cite{olver2013}. It does not automatically survive the addition of dense boundary rows, variable coefficients with slowly decaying expansions, or the block coupling of \cref{eq:mr1}--\cref{eq:mr3}. We assert only what \cite{olver2013} establishes and measure the rest: the conditioning of the assembled Mindlin--Reissner block operator against $N$ is verification task V1. \PENDING{measured $\kappa$ of the assembled block operator versus $N$}
+The $\mathcal{O}(1)$ conditioning claim is a property of the ultraspherical operator itself and is established in \cite{olver2013}. It does not automatically survive the addition of dense boundary rows, variable coefficients with slowly decaying expansions, or the block coupling of \cref{eq:mr1}--\cref{eq:mr3}. We assert only what \cite{olver2013} establishes and measure the rest: the conditioning of the assembled Mindlin--Reissner block operator against $N$ is verification task V1.
+
+Measured, the assembled block operator is essentially $\mathcal{O}(1)$-conditioned: $\kappa$ moves from $101$ to $108$ as $N$ goes from $8$ to $18$ per direction, a fitted log--log slope of $0.09$. The block coupling is therefore benign. Two qualifications matter. First, the result is \emph{scaling-dependent}: measured with column equilibration alone the same operator appears to grow as $N^{1.6}$, because a block operator mixes entries carrying different physical units --- transverse shear stiffness in N/m against bending rigidity in N$\cdot$m --- and a one-sided scaling leaves that imbalance in the matrix. Two-sided (Ruiz) equilibration removes it. A condition number quoted for a block operator without stating its scaling is not a well-defined quantity. Second, the boundary rows are \emph{not} benign: the projected pencil actually solved grows far faster than the interior, which is precisely the caveat above and localizes where a preconditioner would have to act.
 \end{remark}
 
 \section{Guidance and Navigation}
@@ -518,13 +552,13 @@ The mechanism is that the atmospheric terms are not switched off at the Kármán
 
 \begin{remark}[Cost of the single-integration choice]
 \label{rem:idle}
-This choice is not free, and the trade should be stated honestly rather than presented as a pure gain. Continuing to integrate the full structural state through a coast phase in which it carries no meaningful energy means the step-size controller remains subject to the structural stability constraint --- the $\mathcal{O}(N^{-4})$ bound of \cite{knox2026passes} --- during a phase whose rigid-body dynamics would otherwise permit steps orders of magnitude larger. A pragmatic mitigation is to freeze the structural block once its modal energy falls below a threshold and reactivate it on atmospheric re-entry, which reintroduces a switch but confines it to a regime where the frozen state is provably quiescent. Which approach is preferable is verification task V5. \PENDING{measured coast-phase step size and wall-clock, single-integration versus frozen-structure}
+This choice is not free, and the trade should be stated honestly rather than presented as a pure gain. Continuing to integrate the full structural state through a coast phase in which it carries no meaningful energy means the step-size controller remains subject to the structural stability constraint --- the $\mathcal{O}(N^{-4})$ bound of \cite{knox2026passes} --- during a phase whose rigid-body dynamics would otherwise permit steps orders of magnitude larger. A pragmatic mitigation is to freeze the structural block once its modal energy falls below a threshold and reactivate it on atmospheric re-entry, which reintroduces a switch but confines it to a regime where the frozen state is provably quiescent. Which approach is preferable is verification task V5. Measured over a $300$~s coast carrying a $100$~rad/s structural mode, freezing the block once its modal energy has decayed to $10^{-6}$ of its initial value costs $15\times$ fewer right-hand-side evaluations and $15\times$ less wall-clock time, with both strategies conserving specific orbital energy to better than $10^{-8}$ per orbit. The measurement settles the trade in favor of freezing for coasts of this length, and the margin grows with coast duration because the ring-down time is fixed while the coast is not. The switch is defensible only because the freeze condition is checked rather than assumed.
 \end{remark}
 
 \section{Verification and Validation Plan}
 \label{sec:vandv}
 
-No numerical results appear in this manuscript. This section states in advance what will be measured, against what reference, and what would constitute failure.
+This section states what is measured, against what reference, and what constitutes failure. The plan was written before any implementation existed, so it is falsifiable in advance rather than reported selectively afterward. Tasks V1--V7 have since been executed against the reference implementation; V8 is executed for the radiative correlation and its implementation properties, with the convective reference-case comparison outstanding. Measured values appear in the relevant sections above and in the companion repository's verification reports.
 
 \begin{center}
 \begin{longtable}{@{}llp{5.4cm}p{3.4cm}@{}}
@@ -551,7 +585,7 @@ V8 & Aerothermal & Stagnation heating against Fay--Riddell reference cases; rece
 \end{longtable}
 \end{center}
 
-\PENDING{all of \cref{sec:vandv} --- to be reported in the companion experimental manuscript}
+\emph{Status.} V1--V7 executed and passing against the criteria as stated. V8 is partially complete: the radiative correlation is verified against the published source (\cref{rem:tauberunits}) and the implementation properties hold, but the $5\%$ criterion is stated against published Fay--Riddell reference conditions, which require tabulated equilibrium-air properties not yet transcribed. Full numerical detail is deferred to the companion experimental manuscript.
 
 \section{Limitations}
 \label{sec:limitations}
@@ -568,6 +602,10 @@ V8 & Aerothermal & Stagnation heating against Fay--Riddell reference cases; rece
     \item \textbf{Linear structural response.} \Cref{eq:mr1}--\cref{eq:mr3} are linear. Geometric nonlinearity under large deflection and material nonlinearity under thermal softening are outside scope, as is aerothermoelastic buckling.
 
     \item \textbf{Rectangular computational domain.} The tensor-product ultraspherical construction requires a topologically rectangular parameterization of the planform. Genuinely multiply-connected geometries, or planforms with re-entrant corners, require domain decomposition that is not addressed here.
+
+    \item \textbf{Constant plate rigidities in the reference implementation.} \Cref{eq:moments} admits spatially varying $\mathbf{D}_{ij}(\xi,\eta)$, and the assembly is written to accept them, but the implementation exercised here uses constant coefficients. Genuinely bivariate coefficient fields require a low-rank approximation of each coefficient so that the Kronecker structure of \cref{eq:kron} survives; separable fields are a direct extension, general ones are not.
+
+    \item \textbf{Boundary conditioning, not operator conditioning, is the limiter.} The measurements reported in \cref{sec:ultraspherical} show the banded interior behaving as advertised while the bordered system does not. Any claim about the scalability of this discretization to large $N$ is a claim about the boundary treatment, and that has not been addressed by preconditioning here.
 
     \item \textbf{Equilibrium chemistry.} \Cref{eq:fayriddell} and the Saha estimate of \cref{eq:plasmafreq} assume equilibrium. At high altitude and high velocity the shock layer is chemically frozen or in nonequilibrium, and both the heating and the electron density will be misestimated.
 

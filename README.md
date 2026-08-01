@@ -8,7 +8,7 @@
 
 A fixed-grid spectral formulation for coupled aeroelastic, thermal, and stochastic GNC flight simulation.
 
-**This repository contains two research manuscripts, their bibliographies, and a complete implementation of the roadmap — every kernel of both papers, assembled into a coupled single-trajectory simulator. Fourteen of the sixteen verification tasks are executed and passing; the remaining two (I-V4, II-V8) pass every leg executable from this repository, with only their published-reference-data comparisons outstanding.** The papers present a mathematical formulation and a falsifiable verification plan; quantities still requiring code to produce are marked `[PENDING]` in red in the compiled PDFs. Measured results for the executed tasks live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
+**This repository contains two research manuscripts, their bibliographies, and a complete implementation of the roadmap — every kernel of both papers, assembled into a coupled single-trajectory simulator. Fourteen of the sixteen verification tasks are executed and passing; the remaining two (I-V4, II-V8) pass every leg executable from this repository, with only their published-reference-data comparisons outstanding.** The papers present a mathematical formulation and a falsifiable verification plan written *before* any implementation existed. **Both manuscripts have since been updated in place**: measured values are quoted inline where a claim has been verified, and where implementation showed a claim to be wrong it is corrected with the correction identified as such — most substantially the Tauber–Sutton exponent in Paper II §4.2 and the rigid/elastic split of the structural coordinate in Paper I §3.5. Measured results for every executed task live in [`results/`](results/). Please read the [status table](#status) before drawing conclusions about what works.
 
 ---
 
@@ -21,7 +21,7 @@ A fixed-grid spectral formulation for coupled aeroelastic, thermal, and stochast
 
 Paper II depends on Paper I for the fixed-grid rationale, the Landau transformation used for ablation, the adaptive filtering architecture, and the Monte Carlo dispersion estimators. Read them in order.
 
-Every bibliography entry in both papers has been verified against publisher records. The audit — including nine entries that were wrong or unverifiable in earlier drafts — is in [`CITATION-AUDIT.md`](CITATION-AUDIT.md).
+Every bibliography entry in both papers has been verified against publisher records. The audit — including nine entries that were wrong or unverifiable in earlier drafts — is in [`CITATION-AUDIT.md`](CITATION-AUDIT.md). Working from the archived sources rather than from recollection also caught a substantive error in Paper II's statement of the Tauber–Sutton correlation; see the [findings](#status).
 
 ---
 
@@ -270,14 +270,26 @@ Paper I's roadmap is complete. The extension below covers Paper II's formulation
 12. ~~**SCvx and blackout gating**~~ **Done.** II-V6 and II-V7 executed and passing: all three covariance channels reproduce their $t^3/t^4/t^6$ exponents to 1e-6, the hysteretic gate eliminates boundary chattering, and the $\ell_1$ penalty drives the virtual controls to *exactly* zero at $w_\nu = 3$ where an $\ell_2$ penalty on the same subproblem never reaches zero at any weight.
 13. ~~**Coupled flight integration**~~ **Done.** The simulator in [`src/passes/flight/`](src/passes/flight/) advances a 71-component global state — rigid-body translation and attitude, elastic modal coordinates, and the charring thermal block on its Landau grid — through entry as **one ODE with one integrator**, with the checks in [`results/int-coupled.md`](results/int-coupled.md): fixed dimension, no regime branch, the aerothermal loop closing inside a single right-hand side, and implicit cost flat in retained modes. I-V8's occupancy instrumentation is closed as far as it can be without a profiler.
 
-**What remains is data and one host permission, not code.**
+**Items 1–13 are complete.** The extension below is not a wish list: every item is something the *implementation* uncovered, ordered by how much it constrains what the framework can currently claim. Both manuscripts have been updated in place to record these findings — corrections identified as corrections, measurements quoted inline — so the roadmap and the papers now say the same thing.
 
-- ~~**II-V8's Tauber–Sutton velocity table**~~ **Closed.** Table 1 and Eqs. (1)–(4) are transcribed from the archived source in [`reference/`](reference/), verified node-by-node, and the radiative leg of II-V8 now runs against published values.
-- **I-V4's FIAT comparison** — needs the FIAT code or its published reference-case output. The harness accepts any tabulated $(t, s, T)$ reference.
-- **II-V8's Fay–Riddell reference conditions** — needs transcribed equilibrium-air properties ($\rho_e\mu_e$, $\rho_w\mu_w$, $h_D$) at the published reference states. This is the convective half of the task; the radiative half is done.
-- **I-V8's achieved occupancy** — Nsight Compute is installed and the code path is wired, but the NVIDIA driver returns `ERR_NVGPUCTRPERM` for a non-root user. Enabling counters requires loading the module with `NVreg_RestrictProfilingToAdminUsers=0`, a host-wide security setting outside this repository's remit.
+### Blocked on external material (not code)
 
-None is a code gap, and none can honestly be closed by generating a stand-in — which is why they are listed rather than quietly satisfied.
+14. **FIAT ablation reference (I-V4).** Needs the FIAT code or its published reference-case output. The comparison harness accepts any tabulated $(t, s, T)$ reference.
+15. **Fay–Riddell reference conditions (II-V8, convective half).** Needs transcribed equilibrium-air properties ($\rho_e\mu_e$, $\rho_w\mu_w$, $h_D$) at the published reference states. The radiative half is now closed against the Tauber–Sutton source, so this is the last data gap in II-V8.
+16. **Achieved occupancy and warp divergence (I-V8).** Nsight Compute is installed and the code path is wired, but the driver returns `ERR_NVGPUCTRPERM` for a non-root user. Enabling counters means loading the NVIDIA module with `NVreg_RestrictProfilingToAdminUsers=0` — a host-wide security setting, deliberately not changed from here.
+
+### Uncovered by implementation, and currently limiting
+
+17. **Boundary-row preconditioning.** II-V1 measured the banded ultraspherical interior at $\mathcal{O}(1)$ and the *bordered* system at $N^{1.4}$–$N^{3.3}$. The conditioning claim the method is sold on therefore belongs to the interior, not to what actually gets solved. Any statement about scaling this discretization to large $N$ is a statement about the boundary treatment, and nothing here preconditions it.
+18. **Corner-resolving refinement for free edges.** Free-edge plates carry weak corner singularities, so the free-free spectrum converges *algebraically* where the simply-supported spectrum converges exponentially. Until this is addressed, II-V3's free-free leg cannot carry a pass criterion at attainable $N$, and the verdict rests on the closed-form simply-supported reference. Graded meshes or singular enrichment would close it.
+19. **Variable-coefficient bivariate operators.** Paper II specifies $\mathbf{D}_{ij}(\xi,\eta)$ built by hyperbolic blending; the plate kernel currently uses constant coefficients. Separable fields drop straight into the Kronecker assembly; genuinely bivariate ones need a low-rank approximation of each coefficient for the Sylvester structure to survive.
+20. **Enthalpy-form thermal state.** Paper I, Eq. (3.20) carries nodal *enthalpy* precisely because it stays continuous across the pyrolysis zone where $c_p$ varies sharply. The charring solver integrates temperature, which is what the coupled state currently carries. Converting is a caloric-equation-of-state inversion, and the argument for doing it is strongest exactly where the current form is weakest.
+21. **Batched coupled trajectories.** The batch layer and the coupled simulator both exist but have not been composed: the fixed-dimension state makes a rank-3 ensemble of *full* trajectories available, which is the framework's headline claim at full strength rather than on the reduced entry model I-V7/V8 use.
+
+### Numerical practice worth promoting to first-class support
+
+22. **Constraint stabilization as a framework service.** Baumgarte stabilization is used for the quaternion norm (Paper I) and, as the coupled simulator forced, for the thermal boundary conditions. Both are hand-rolled. A single tested facility for "differentiate the constraint, stabilize the drift" would generalize to the plate edge conditions and the free-free projection.
+23. **Per-block tolerance and scaling policy.** A scalar `atol` costs three orders of magnitude on a state spanning nine orders of magnitude in units, and a block condition number is meaningless without its scaling stated. Both are currently conventions inside two modules rather than a policy the framework enforces.
 
 ---
 
