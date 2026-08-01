@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper I §8):** recession disagreement > 5% on the FIAT reference case (unevaluated here — see scope); MMS leg: loss of spectral convergence on Eqs. (3.17)–(3.18)
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 21:02 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-08-01 00:49 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## MMS convergence, coupled T/ρ/ṁ system to t = 2.0 s (normalized max-norm errors at t_f)
 

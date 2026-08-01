@@ -20,12 +20,32 @@ from passes.aerothermal.stagnation import (
     newtonian_velocity_gradient,
     sutton_graves,
 )
+from passes.aerothermal.tauber_sutton import (
+    EARTH_EXPONENT_CAPS,
+    EARTH_VELOCITY_FUNCTION,
+    MARS_VELOCITY_FUNCTION,
+    TAUBER_SUTTON_PROVENANCE,
+    earth_radiative_heat_flux,
+    earth_radiative_heating_exponent,
+    earth_velocity_function,
+    mars_radiative_heat_flux,
+    radiative_heat_transfer_coefficient,
+)
 
 __all__ = [
+    "EARTH_EXPONENT_CAPS",
+    "EARTH_VELOCITY_FUNCTION",
+    "MARS_VELOCITY_FUNCTION",
+    "TAUBER_SUTTON_PROVENANCE",
     "TauberSuttonRadiation",
+    "earth_radiative_heat_flux",
+    "earth_radiative_heating_exponent",
+    "earth_velocity_function",
     "fay_riddell",
     "lees_distribution",
+    "mars_radiative_heat_flux",
     "newtonian_velocity_gradient",
+    "radiative_heat_transfer_coefficient",
     "stefan_recession_rate",
     "sutton_graves",
 ]

@@ -242,3 +242,126 @@ class TestStefanRecession:
             stefan_recession_rate(1e6, -1.0, 0.9, 0.0, 1900.0, 2e7)
         with pytest.raises(ValueError, match="material_density"):
             stefan_recession_rate(1e6, 2500.0, 0.9, 0.0, -1.0, 2e7)
+
+
+class TestPublishedTauberSutton:
+    """The transcribed Tauber–Sutton relations (reference/, tauber1991)."""
+
+    def test_table_reproduced_exactly_at_every_node(self):
+        from passes.aerothermal import EARTH_VELOCITY_FUNCTION, earth_velocity_function
+
+        for velocity, published in EARTH_VELOCITY_FUNCTION:
+            assert float(earth_velocity_function(velocity)) == published
+
+    def test_linear_interpolation_as_the_source_prescribes(self):
+        from passes.aerothermal import earth_velocity_function
+
+        # midway between the 11,000 (151) and 11,500 (238) nodes
+        assert float(earth_velocity_function(11250.0)) == pytest.approx(194.5)
+
+    def test_table_refuses_extrapolation(self):
+        from passes.aerothermal import earth_velocity_function
+
+        with pytest.raises(ValueError, match="tabulated span"):
+            earth_velocity_function(8000.0)
+        with pytest.raises(ValueError, match="tabulated span"):
+            earth_velocity_function(17000.0)
+
+    def test_exponent_caps_match_the_published_conditionals(self):
+        """Eq. (2): a <= 0.6 for 1 <= r_n <= 2, a <= 0.5 for 2 < r_n <= 3."""
+        from passes.aerothermal import earth_radiative_heating_exponent
+
+        # the low-velocity, low-density corner, where the raw value exceeds both caps
+        velocity, density = 10000.0, 6.66e-5
+        raw = float(earth_radiative_heating_exponent(velocity, density))
+        assert raw > 0.6, "premise: the corner must exceed the caps"
+        assert float(earth_radiative_heating_exponent(velocity, density, 0.5)) == raw
+        assert float(earth_radiative_heating_exponent(velocity, density, 1.0)) == 0.6
+        assert float(earth_radiative_heating_exponent(velocity, density, 2.0)) == 0.6
+        assert float(earth_radiative_heating_exponent(velocity, density, 2.5)) == 0.5
+        assert float(earth_radiative_heating_exponent(velocity, density, 3.0)) == 0.5
+
+    def test_uncapped_where_the_raw_value_is_already_low(self):
+        from passes.aerothermal import earth_radiative_heating_exponent
+
+        raw = float(earth_radiative_heating_exponent(14000.0, 5e-4))
+        assert raw < 0.5
+        assert float(earth_radiative_heating_exponent(14000.0, 5e-4, 2.5)) == raw
+
+    def test_exponent_always_below_one(self):
+        """The source states a < 1 must always be met."""
+        from passes.aerothermal import earth_radiative_heating_exponent
+
+        v = np.linspace(10000.0, 16000.0, 25)
+        rho = np.geomspace(6.66e-5, 6.31e-4, 25)
+        vv, rr = np.meshgrid(v, rho)
+        assert np.all(earth_radiative_heating_exponent(vv, rr, 1.0) < 1.0)
+
+    def test_units_are_si_not_w_per_cm2(self):
+        """The source returns W/cm²; the SI value must be 1e4 larger."""
+        from passes.aerothermal import (
+            earth_radiative_heat_flux,
+            earth_radiative_heating_exponent,
+            earth_velocity_function,
+        )
+
+        r_n, rho, v = 1.0, 3.0e-4, 12000.0
+        a = float(earth_radiative_heating_exponent(v, rho, r_n))
+        expected_wcm2 = 4.736e4 * r_n**a * rho**1.22 * float(earth_velocity_function(v))
+        assert float(earth_radiative_heat_flux(r_n, rho, v)) == pytest.approx(
+            expected_wcm2 * 1.0e4, rel=1e-12
+        )
+
+    def test_validity_envelope_enforced(self):
+        from passes.aerothermal import earth_radiative_heat_flux
+
+        for bad in (
+            {"nose_radius": 1.0, "density": 3e-4, "velocity": 9500.0},
+            {"nose_radius": 1.0, "density": 1e-2, "velocity": 12000.0},
+            {"nose_radius": 10.0, "density": 3e-4, "velocity": 12000.0},
+        ):
+            with pytest.raises(ValueError, match="validity envelope"):
+                earth_radiative_heat_flux(**bad)
+        # deliberate extrapolation is possible but must be asked for
+        assert float(
+            earth_radiative_heat_flux(0.1, 3e-4, 12000.0, enforce_envelope=False)
+        ) > 0.0
+
+    def test_radiation_exceeds_convection_at_high_speed(self):
+        """The regime the paper was written for."""
+        from passes.aerothermal import earth_radiative_heat_flux
+
+        rho, r_n = 3.0e-4, 1.0
+        q_rad = float(earth_radiative_heat_flux(r_n, rho, 12000.0))
+        q_conv = float(sutton_graves(rho, r_n, 12000.0))
+        assert q_rad > q_conv
+
+    def test_blunting_trade_has_interior_optimum_on_published_data(self):
+        from passes.aerothermal import earth_radiative_heat_flux
+
+        rho, v = 3.0e-4, 12000.0
+        radii = np.linspace(0.3, 3.0, 200)
+        total = np.asarray(sutton_graves(rho, radii, v)) + np.asarray(
+            earth_radiative_heat_flux(radii, np.full_like(radii, rho),
+                                      np.full_like(radii, v))
+        )
+        index = int(np.argmin(total))
+        assert 0 < index < radii.size - 1
+
+    def test_mars_correlation(self):
+        from passes.aerothermal import mars_radiative_heat_flux
+
+        q = float(mars_radiative_heat_flux(2.0, 5.0e-4, 8000.0))
+        expected = 2.35e4 * 2.0**0.526 * (5.0e-4) ** 1.19 * 19.2 * 1.0e4
+        assert q == pytest.approx(expected, rel=1e-12)
+        with pytest.raises(ValueError, match="validity envelope"):
+            mars_radiative_heat_flux(2.0, 5.0e-4, 10000.0)
+
+    def test_heat_transfer_coefficient(self):
+        """Eq. (4): C_Hr = q_r / (0.5 rho V^3), dimensionless."""
+        from passes.aerothermal import radiative_heat_transfer_coefficient
+
+        rho, v, q = 3.0e-4, 12000.0, 8.5e6
+        assert float(radiative_heat_transfer_coefficient(q, rho, v)) == pytest.approx(
+            q / (0.5 * rho * v**3)
+        )

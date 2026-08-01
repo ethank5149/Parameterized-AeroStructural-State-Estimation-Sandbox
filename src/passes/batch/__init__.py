@@ -20,7 +20,9 @@ from passes.batch.dispersion import (
 )
 from passes.batch.entry_demo import EntryDispersionModel
 from passes.batch.occupancy import (
+    AchievedOccupancy,
     OccupancyReport,
+    achieved_occupancy,
     device_limits,
     theoretical_occupancy,
 )
@@ -28,10 +30,12 @@ from passes.batch.propagation import rk4_batch
 from passes.batch.sampling import DispersionSpec, sample_dispersions
 
 __all__ = [
+    "AchievedOccupancy",
     "DispersionReport",
     "DispersionSpec",
     "EntryDispersionModel",
     "OccupancyReport",
+    "achieved_occupancy",
     "cuda_available",
     "device_limits",
     "get_array_module",

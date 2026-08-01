@@ -18,9 +18,16 @@ over.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-__all__ = ["OccupancyReport", "device_limits", "theoretical_occupancy"]
+__all__ = [
+    "AchievedOccupancy",
+    "OccupancyReport",
+    "achieved_occupancy",
+    "device_limits",
+    "theoretical_occupancy",
+]
 
 
 @dataclass(frozen=True)
@@ -126,4 +133,98 @@ def theoretical_occupancy(
         active_warps_per_sm=int(active_blocks * warps_per_block),
         max_warps_per_sm=int(max_warps),
         limiter=limiter,
+    )
+
+
+@dataclass(frozen=True)
+class AchievedOccupancy:
+    """Profiler-measured occupancy, or the reason it is unavailable."""
+
+    available: bool
+    achieved: float | None = None
+    """``sm__warps_active.avg.pct_of_peak_sustained_active`` as a fraction."""
+    kernel: str | None = None
+    reason: str | None = None
+    """Why the measurement is unavailable, when it is."""
+
+
+def achieved_occupancy(
+    script: str | Path,
+    python_executable: str | None = None,
+    ncu_executable: str = "ncu",
+    timeout: float = 600.0,
+) -> AchievedOccupancy:
+    """Measure achieved occupancy by running ``script`` under Nsight Compute.
+
+    Achieved occupancy is a hardware counter — the time-averaged ratio of
+    resident warps to the architectural maximum — and unlike
+    :func:`theoretical_occupancy` it reflects what actually happened,
+    including tail effects and load imbalance.
+
+    Counter access is gated by the NVIDIA driver: unless the module is
+    loaded with ``NVreg_RestrictProfilingToAdminUsers=0``, a non-root
+    user gets ``ERR_NVGPUCTRPERM`` and no counters at all. That is a
+    host-level security setting, so this function reports the condition
+    rather than attempting to change it.
+
+    Returns
+    -------
+    AchievedOccupancy
+        ``available=False`` with a ``reason`` when profiling is blocked,
+        the profiler is missing, or no kernel was captured.
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    path = Path(script)
+    if not path.is_file():
+        raise FileNotFoundError(f"profiling script not found: {path}")
+    if shutil.which(ncu_executable) is None:
+        return AchievedOccupancy(
+            available=False, reason=f"{ncu_executable} not found on PATH"
+        )
+    metric = "sm__warps_active.avg.pct_of_peak_sustained_active"
+    command = [
+        ncu_executable, "--metrics", metric, "--csv", "--target-processes", "all",
+        python_executable or sys.executable, str(path),
+    ]
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except subprocess.TimeoutExpired:
+        return AchievedOccupancy(available=False, reason="profiler timed out")
+    output = completed.stdout + completed.stderr
+    if "ERR_NVGPUCTRPERM" in output:
+        return AchievedOccupancy(
+            available=False,
+            reason=(
+                "ERR_NVGPUCTRPERM: the NVIDIA driver restricts performance "
+                "counters to administrators. Load the module with "
+                "NVreg_RestrictProfilingToAdminUsers=0 (a host-level change) "
+                "to enable it"
+            ),
+        )
+    rows = [line for line in output.splitlines() if metric in line and '","' in line]
+    if not rows:
+        for line in output.splitlines():
+            if line.startswith('"') and metric in line:
+                rows.append(line)
+    if not rows:
+        return AchievedOccupancy(
+            available=False, reason="no occupancy metric captured from the profile"
+        )
+    fields = [field.strip('"') for field in rows[-1].split('","')]
+    value = None
+    for field in reversed(fields):
+        try:
+            value = float(field.replace(",", ""))
+            break
+        except ValueError:
+            continue
+    if value is None:
+        return AchievedOccupancy(available=False, reason="could not parse the profile")
+    return AchievedOccupancy(
+        available=True, achieved=value / 100.0, kernel=fields[0] if fields else None
     )

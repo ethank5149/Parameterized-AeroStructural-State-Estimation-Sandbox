@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, this runner — see the scope note):** self-stated (not a tabulated V&V task): a state dimension that changes in flight; a branch on flight regime; an aerothermal loop that does not close within one right-hand side; or an implicit cost that grows with retained structural modes
 - **Verdict:** **PASS**
-- **Generated:** 2026-07-31 21:04 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
+- **Generated:** 2026-08-01 00:51 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.12.13 (x86_64)
 
 ## Configuration
 
@@ -37,8 +37,8 @@ The recession rate is non-negative at every sampled state (minimum 0.000e+00 m/s
 |---|---|---|---|
 | 2 | 730.5 | 727 | 0.19 |
 | 3 | 1432.0 | 726 | 0.19 |
-| 4 | 2366.9 | 715 | 0.19 |
-| 5 | 3534.7 | 713 | 0.19 |
+| 4 | 2366.9 | 715 | 0.20 |
+| 5 | 3534.7 | 713 | 0.20 |
 | 6 | 4972.9 | 721 | 0.20 |
 
 ## Stiffness acceptance

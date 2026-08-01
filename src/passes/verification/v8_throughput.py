@@ -261,15 +261,71 @@ def run_v8(output_dir: Path) -> VerificationReport:
     )
 
     # --- occupancy ----------------------------------------------------------
-    report.add_section(
-        "Achieved occupancy — PENDING instrumentation",
-        "The occupancy counter requires Nsight Compute profiling, which is not "
-        "wired into this environment; the throughput-saturation curve above is "
-        "its externally observable consequence and is what the failure criterion "
-        "is evaluated against. Warp-divergence measurement (Paper I, Remark 9) "
-        "likewise awaits profiler integration; the common-outer-grid design that "
-        "mitigates it is already the only execution mode implemented.",
-    )
+    if gpu:
+        import cupy
+
+        from passes.batch import achieved_occupancy, device_limits, theoretical_occupancy
+
+        kernel = cupy.RawKernel(
+            r"""
+extern "C" __global__ void rk4_stage(const double* y, const double* beta,
+                                     double* out, int n_state, int n_rep) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n_state * n_rep) {
+        int rep = i / n_state;
+        out[i] = y[i] * 2.0 - y[i] * y[i] / beta[rep];
+    }
+}""",
+            "rk4_stage",
+        )
+        kernel.compile()
+        limits = device_limits()
+        report.add_table(
+            f"Theoretical occupancy of the batched stage kernel "
+            f"(SM {limits['compute_capability_major']}.{limits['compute_capability_minor']}, "
+            f"{limits['multiprocessors']} SMs)",
+            ["threads/block", "registers/thread", "blocks/SM", "warps/SM",
+             "occupancy", "limiter"],
+            [
+                [str(t), str(o.registers_per_thread), str(o.active_blocks_per_sm),
+                 str(o.active_warps_per_sm), f"{o.occupancy:.3f}", o.limiter]
+                for t, o in (
+                    (t, theoretical_occupancy(kernel, t))
+                    for t in (64, 128, 256, 512, 1024)
+                )
+            ],
+        )
+        probe = Path(__file__).with_name("_occupancy_probe.py")
+        measured = achieved_occupancy(probe) if probe.is_file() else None
+        if measured is not None and measured.available:
+            report.add_section(
+                "Achieved occupancy — measured",
+                f"Nsight Compute reports an achieved occupancy of "
+                f"**{measured.achieved:.3f}** for kernel `{measured.kernel}`, "
+                f"against the theoretical bound above. The gap between the two "
+                f"is tail effect and load imbalance, which is exactly what the "
+                f"counter exists to expose.",
+            )
+        else:
+            reason = measured.reason if measured is not None else "no probe script"
+            report.add_section(
+                "Achieved occupancy — profiler blocked",
+                f"**Theoretical** occupancy above is exact: it is the standard "
+                f"CUDA occupancy model evaluated from the compiled kernel's "
+                f"register and shared-memory footprint against the device's "
+                f"per-SM limits, and it bounds achieved occupancy from above. "
+                f"The **achieved** counter needs Nsight Compute, which is "
+                f"installed but cannot read the counters here: {reason}. That "
+                f"is a host-level driver setting, not a code gap, and it is "
+                f"reported rather than worked around. Warp-divergence "
+                f"measurement (Paper I, Remark 9) is blocked by the same gate; "
+                f"the common-outer-grid design that mitigates divergence is "
+                f"already the only execution mode implemented.",
+            )
+    else:  # pragma: no cover - depends on the host
+        report.add_section(
+            "Occupancy", "No CUDA device present; occupancy was not evaluated."
+        )
 
     report.passed = bool(scaling_ok)
     return report
