@@ -83,6 +83,7 @@ recession too.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -741,14 +742,46 @@ class FiatSolver:
             value, _ = self._surface(t_w, m_g, 0.0, ctx)
             return value
 
-        dt_w = 1.0e-3 * max(t_wall, 1.0)
-        d_seb_dtw = (closure(t_wall + dt_w, surface.gas_mass_flux)
-                     - closure(t_wall - dt_w, surface.gas_mass_flux)) / (2.0 * dt_w)
+        def probe(
+            f: float,
+            lo: float,
+            hi: float,
+            step: float,
+            args: Callable[[float], tuple[float, float]],
+        ) -> float:
+            """Central difference where the table allows it, one-sided where
+            it does not.
+
+            A converged state can sit exactly on an axis edge — a gas flux
+            that saturates the B'_g axis is the ordinary case, not a
+            pathology — and a symmetric probe around it then steps outside
+            a table that correctly refuses to extrapolate. Falling back to
+            the interior side costs one order of accuracy in a Jacobian
+            entry and nothing in the converged answer.
+            """
+            for a, b in ((f + step, f - step), (f, f - step), (f + step, f)):
+                a_c, b_c = min(max(a, lo), hi), min(max(b, lo), hi)
+                if a_c == b_c:
+                    continue
+                try:
+                    return (closure(*args(a_c)) - closure(*args(b_c))) / (a_c - b_c)
+                except TableRangeError:
+                    continue
+            return 0.0
+
         m_g = surface.gas_mass_flux
-        dm = 1.0e-6 * max(m_g, env.mass_coefficient, 1.0e-6)
-        d_seb_dmg = (closure(t_wall, m_g + dm) - closure(t_wall, max(m_g - dm, 0.0))) / (
-            (m_g + dm) - max(m_g - dm, 0.0)
+        c_m = env.mass_coefficient
+        t_lo, t_hi = ctx.table.wall_temperature_range
+        g_lo, g_hi = ctx.table.gas_rate_range
+        m_lo, m_hi = (g_lo * c_m, g_hi * c_m) if c_m > 0.0 else (0.0, np.inf)
+
+        d_seb_dtw = probe(
+            t_wall, t_lo, t_hi, 1.0e-3 * max(t_wall, 1.0), lambda v: (v, m_g)
         )
+        d_seb_dmg = probe(
+            m_g, m_lo, m_hi, 1.0e-6 * max(m_g, c_m, 1.0e-6), lambda v: (t_wall, v)
+        )
+
         jac[n, n] = d_seb_dtw - dq0_dtw
         jac[n, 0] = -dq0_dt0
         jac[n, :n] += d_seb_dmg * (-domega_dt * widths)

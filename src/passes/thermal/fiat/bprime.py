@@ -188,7 +188,13 @@ class BPrimeTable:
                 # A one-plane table is explicitly pressure-independent, which
                 # is a modelling statement, not an extrapolation.
                 continue
-            if not lo <= value <= hi:
+            # A query landing exactly on an axis endpoint is not
+            # extrapolation, but arithmetic that should produce the endpoint
+            # often lands a few ulps past it — a gas flux that saturates the
+            # B'_g axis is the common case. Admit the boundary to within a
+            # relative ulp scale; anything genuinely outside is still refused.
+            span = max(abs(lo), abs(hi), 1.0)
+            if not (lo - 1e-12 * span) <= value <= (hi + 1e-12 * span):
                 raise TableRangeError(
                     f"{name} = {value:.6g} is outside the tabulated range "
                     f"[{lo:.6g}, {hi:.6g}]; refusing to extrapolate an "

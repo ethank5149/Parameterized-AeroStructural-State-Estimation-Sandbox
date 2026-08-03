@@ -355,7 +355,7 @@ def solve_equilibrium(
     # obtained, repeat. It converges in a handful of passes because the
     # dependence is logarithmic.
     def _nu(lam: _FloatArray, ln_n: float) -> _FloatArray:
-        return np.exp(np.clip(lam @ a - g_rt - ln_p + ln_n, -700.0, 700.0))
+        return np.asarray(np.exp(np.clip(lam @ a - g_rt - ln_p + ln_n, -700.0, 700.0)))
 
     if initial_potentials is not None:
         lam = np.array([initial_potentials.get(e, 0.0) for e in elements])
@@ -407,7 +407,7 @@ def solve_equilibrium(
 
     nu = _nu(lam, ln_n)
 
-    x_frac = nu / float(nu.sum())
+    x_frac = np.asarray(nu / float(nu.sum()))
     molar_mass = float(sum(x * s.molar_mass for x, s in zip(x_frac, gas, strict=True)))
     h_molar = float(
         sum(

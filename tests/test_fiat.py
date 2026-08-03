@@ -35,6 +35,17 @@ from passes.thermal.fiat.analysis import (
     scale_environments,
     sized_stack,
 )
+from passes.thermal.fiat.arcjet import (
+    ANALYSIS_CASES,
+    ARC_CONDITIONS,
+    JSC_CONDITIONS,
+    MODELS,
+    TC_PLACEMENTS,
+    condition,
+    consumption_recession,
+    load_fig26_thermocouples,
+    recession_statistics,
+)
 from passes.thermal.fiat.bprime import TableRangeError
 from passes.thermal.fiat.kinetics import (
     TgaTargets,
@@ -63,6 +74,8 @@ from passes.thermal.fiat.pica_kinetics import (
     competitive_mass_fraction,
     parallel_pica_resin,
 )
+from passes.thermal.fiat.pica_surface import QUINN_GAS_RATES, read_quinn_bprime
+from passes.thermal.fiat.quinn import CURVE_LOCATIONS, load_quinn_case
 from passes.thermal.fiat.solver import (
     SolverOptions,
     _char_density,
@@ -1301,3 +1314,496 @@ class TestMutationppTable:
         # And the run must stay on the physical side of sublimation.
         peak_t = float(solution.wall_temperature.max())
         assert peak_t < m.sublimation.limit(10132.5, 0.0)
+
+
+QUINN_DIR = Path("reference/transcribed-data")
+
+
+@pytest.mark.skipif(
+    not (QUINN_DIR / "Quinn-et-al-Fig5a_Bprime_g=0.1.csv").exists(),
+    reason="digitised Quinn et al. Fig. 5 data not present",
+)
+class TestPicaSurfaceTable:
+    """PICA surface chemistry, digitised from Quinn et al. Fig. 5 (ACE output).
+
+    The first B' table in this package that is PICA rather than a
+    surrogate. It is figure-traced, so every assertion here is loose
+    enough to survive several percent of digitisation error — which is the
+    honest tolerance, not a weak test.
+    """
+
+    def _read(self):
+        return read_quinn_bprime(QUINN_DIR)
+
+    def test_axes_and_pressure_independence(self):
+        p = self._read()
+        assert p.gas_rates.tolist() == list(QUINN_GAS_RATES)
+        assert p.table.wall_temperature_range[0] <= 250.0
+        # One pressure in the figure, so the table must not pretend otherwise.
+        assert p.table.char_rate(1.0e3, 0.1, 2500.0) == pytest.approx(
+            p.table.char_rate(1.0e6, 0.1, 2500.0), rel=1e-12
+        )
+
+    def test_oxidation_plateau_then_sublimation_rise(self):
+        """The shape that makes a B' curve recognisable: a diffusion-limited
+        plateau through the oxidation regime, then a steep climb into
+        sublimation."""
+        p = self._read()
+        plateau = [p.table.char_rate(101325.0, 0.01, t) for t in (1500.0, 2000.0, 2500.0)]
+        assert max(plateau) / min(plateau) < 1.5, f"not a plateau: {plateau}"
+        assert 0.03 < min(plateau) < 0.2
+        assert p.table.char_rate(101325.0, 0.01, 3500.0) > 5.0 * max(plateau)
+
+    def test_char_rate_is_monotone_in_temperature(self):
+        p = self._read()
+        temps = np.arange(1100.0, 3700.0, 50.0)
+        for g in QUINN_GAS_RATES:
+            b = np.array([p.table.char_rate(101325.0, g, t) for t in temps])
+            assert np.all(np.diff(b) >= -1e-12), f"non-monotone at B'_g = {g}"
+
+    def test_wall_enthalpy_rises_through_zero(self):
+        """h_w is referenced to formation enthalpy, so it starts strongly
+        negative and crosses zero in the ablation regime."""
+        p = self._read()
+        cold = p.table.wall_enthalpy(101325.0, 0.01, 500.0)
+        hot = p.table.wall_enthalpy(101325.0, 0.01, 3500.0)
+        assert cold < -5.0e6
+        assert hot > 5.0e6
+        temps = np.arange(500.0, 3700.0, 50.0)
+        h = np.array([p.table.wall_enthalpy(101325.0, 0.01, t) for t in temps])
+        assert np.all(np.diff(h) > 0.0)
+
+    def test_more_pyrolysis_gas_raises_the_sublimation_branch(self):
+        """At high temperature the blown gas carries carbon off faster."""
+        p = self._read()
+        rates = np.array(
+            [p.table.char_rate(101325.0, g, 3500.0) for g in QUINN_GAS_RATES]
+        )
+        # The 0 and 0.01 nodes carry the same coalesced curve, so they tie to
+        # within round-off; everything above must strictly increase.
+        assert np.all(np.diff(rates) >= -1e-12), f"not increasing: {rates}"
+        assert np.all(np.diff(rates[1:]) > 0.0), f"not increasing: {rates}"
+
+    def test_smooth_enough_for_a_newton_solve(self):
+        assert self._read().table.roughness() < 0.2
+
+    def test_derivative_is_positive_in_the_ablation_regime(self):
+        p = self._read()
+        for t in (2500.0, 3000.0, 3400.0):
+            assert p.table.char_rate_derivative(101325.0, 0.1, t) > 0.0
+
+    def test_digitisation_uncertainty_is_declared(self):
+        """A figure-traced table must carry a number for its own error, or
+        anything compared against it implies an exactness it lacks."""
+        assert 0.01 <= self._read().digitisation_uncertainty <= 0.15
+
+    def test_missing_curve_is_reported(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="no digitised curve"):
+            read_quinn_bprime(tmp_path)
+
+    def test_solver_runs_on_real_pica_surface_chemistry(self):
+        """End of the chain: PICA kinetics from Torres-Herrador, PICA
+        conductivity from MEDLI2 Table 3, PICA surface chemistry from ACE."""
+        p = self._read()
+        # A 5 mm ply, because the digitised table stops at B'_g = 1 and a
+        # thicker one saturates it. That is a real incompatibility, not a
+        # test convenience: our PICA-*like* kinetics are pinned to stated
+        # targets rather than measured, and they release more pyrolysis gas
+        # than the envelope of this figure covers. Recorded in
+        # docs/FIAT-fidelity.md rather than tuned away.
+        stack = MaterialStack(
+            [
+                Ply(
+                    pica_like_material(),
+                    0.005,
+                    30,
+                    1.03,
+                    ablating=True,
+                    pressure_conductivity=MEDLI2_PICA_CONDUCTIVITY,
+                )
+            ]
+        )
+        t, envs = pulse(120, 60.0, peak=2.5e6)
+        envs = [
+            AerothermalEnvironment(
+                film_coefficient=e.film_coefficient,
+                recovery_enthalpy=e.recovery_enthalpy,
+                pressure=101325.0,
+            )
+            for e in envs
+        ]
+        solution = FiatSolver(stack).solve(t, envs, p.table, ADIABATIC, 300.0)
+        assert np.all(np.isfinite(solution.wall_temperature))
+        assert np.all(np.diff(solution.recession) >= -1e-15)
+        assert 0.0 < solution.recession[-1] < 0.005
+        assert 1000.0 < solution.wall_temperature.max() < 3800.0
+        # And the whole run must stay inside the digitised envelope.
+        assert max(s.surface.gas_rate for s in solution.steps) <= 1.0
+
+
+@pytest.mark.skipif(
+    not (QUINN_DIR / "Quinn-et-al-Fig6_Blue_Solid.csv").exists(),
+    reason="digitised Quinn et al. Figs. 6-8 not present",
+)
+class TestQuinnTorchData:
+    """The oxyacetylene-torch PICA measurements — the first real data here.
+
+    These tests check the dataset is coherent, not that our solver
+    reproduces it. Structure first: a mis-mapped colour or an inverted
+    solid/dashed convention would invert every comparison built on top,
+    and would do so silently.
+    """
+
+    FLUXES = (250.0, 500.0, 750.0)
+
+    def test_all_three_cases_load(self):
+        for q in self.FLUXES:
+            case = load_quinn_case(QUINN_DIR, q)
+            assert set(case.curves) == set(CURVE_LOCATIONS)
+            for by_kind in case.curves.values():
+                assert set(by_kind) == {"measured", "simulated"}
+
+    @pytest.mark.parametrize("flux", FLUXES)
+    def test_temperature_decreases_with_depth(self, flux):
+        """The ordering that confirms the colour mapping. If Orange and
+        Purple were swapped this is what would catch it."""
+        case = load_quinn_case(QUINN_DIR, flux)
+        peaks = [case.measured(loc).temperature.max() for loc in CURVE_LOCATIONS]
+        assert peaks == sorted(peaks, reverse=True), f"not ordered by depth: {peaks}"
+
+    @pytest.mark.parametrize("flux", FLUXES)
+    def test_depths_increase_and_carry_their_spread(self, flux):
+        case = load_quinn_case(QUINN_DIR, flux)
+        assert np.all(np.diff(case.depths) > 0.0)
+        assert case.depths[0] > 3.0e-3
+        # Three samples per case, so every depth has a real spread.
+        assert np.all(case.depth_spread > 0.0)
+
+    def test_depth_spread_is_the_dominant_uncertainty(self):
+        """At 750 W/cm² the deepest thermocouple's position varies by
+        4.2 mm across samples — larger than TC4's own depth at 250 W/cm².
+        A temperature error quoted without this is the wrong number."""
+        case = load_quinn_case(QUINN_DIR, 750.0)
+        assert case.depth_spread[-1] > 4.0e-3
+
+    @pytest.mark.parametrize("flux", FLUXES)
+    def test_pyrometer_has_a_low_temperature_cutoff(self, flux):
+        """The measured surface trace starts hot because a two-colour
+        pyrometer reports nothing below its threshold — not because data
+        is missing. The simulated trace starts at ambient. Their being
+        different is the evidence that solid means experimental."""
+        case = load_quinn_case(QUINN_DIR, flux)
+        assert case.measured("surface").temperature[0] > 1200.0
+        assert case.simulated("surface").temperature.min() < 700.0
+
+    @pytest.mark.parametrize("flux", FLUXES)
+    def test_thermocouples_start_at_ambient(self, flux):
+        """Unlike the pyrometer. This separates the surface curve from the
+        four in-depth ones without relying on the colour legend."""
+        case = load_quinn_case(QUINN_DIR, flux)
+        for loc in CURVE_LOCATIONS[1:]:
+            for kind in (case.measured(loc), case.simulated(loc)):
+                # The coldest point rather than the first: at 750 W/cm2 the
+                # rise is steep enough that a digitiser's first sample on a
+                # near-vertical section already reads several hundred kelvin.
+                assert 280.0 < kind.temperature.min() < 360.0
+
+    def test_peak_surface_temperature_rises_with_heat_flux(self):
+        peaks = [
+            load_quinn_case(QUINN_DIR, q).measured("surface").temperature.max()
+            for q in self.FLUXES
+        ]
+        assert peaks == sorted(peaks), f"expected monotone in heat flux: {peaks}"
+
+    def test_boundary_conditions_are_as_tabulated(self):
+        """Table 2. The recovery enthalpy rises with heat flux while the
+        film coefficient barely moves, which is how a torch is calibrated."""
+        cases = [load_quinn_case(QUINN_DIR, q) for q in self.FLUXES]
+        assert [c.recovery_enthalpy for c in cases] == [22538940.0, 45124400.0, 61616820.0]
+        assert cases[0].film_coefficient == cases[1].film_coefficient == 0.02661
+        assert cases[2].film_coefficient == 0.03366
+
+    def test_environment_carries_the_calibration(self):
+        case = load_quinn_case(QUINN_DIR, 500.0)
+        env = case.environment()
+        assert env.film_coefficient == case.film_coefficient
+        assert env.recovery_enthalpy == case.recovery_enthalpy
+
+    def test_interpolation_refuses_to_fill_the_pyrometer_gap(self):
+        """Filling it would manufacture agreement exactly where a
+        surface-energy-balance error would show."""
+        case = load_quinn_case(QUINN_DIR, 250.0)
+        early = case.measured("surface").at(np.array([0.0, 0.01]))
+        assert np.all(np.isnan(early))
+        mid = case.measured("surface").at(np.array([30.0]))
+        assert np.all(np.isfinite(mid))
+
+    def test_paper_own_simulation_error_sets_the_scale(self):
+        """What 'good agreement' means for this dataset, from the paper's
+        own model: useful context for anything we later compare."""
+        case = load_quinn_case(QUINN_DIR, 250.0)
+        times = np.linspace(5.0, 55.0, 40)
+        worst = 0.0
+        for loc in CURVE_LOCATIONS[1:]:
+            m = case.measured(loc).at(times)
+            s = case.simulated(loc).at(times)
+            ok = np.isfinite(m) & np.isfinite(s)
+            worst = max(worst, float(np.max(np.abs(m[ok] - s[ok]))))
+        # The paper's own fit is a few hundred kelvin off in places.
+        assert 50.0 < worst < 500.0
+
+    def test_rejects_an_unknown_heat_flux(self):
+        with pytest.raises(ValueError, match="no figure for"):
+            load_quinn_case(QUINN_DIR, 1000.0)
+
+    def test_reports_a_missing_trace(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="missing digitised trace"):
+            load_quinn_case(tmp_path, 250.0)
+
+
+REF = Path("reference/transcribed-data")
+
+
+@pytest.mark.skipif(
+    not (REF / "TH2020-Fig5b_Experiment_10Kmin^-1.csv").exists(),
+    reason="digitised TGA data not present",
+)
+class TestMeasuredPyrolysis:
+    """Validation against measured pyrolysis, not against another model.
+
+    Sources, all digitised from figures in ``reference/``:
+
+    * Wong et al. 2016 Fig. 4, TGA at 10 K/min.
+    * Bessire & Minton 2017 Fig. 8, simulated TGA at 3.1, 6.1, 12.7 and
+      25 °C/s (186 to 1500 K/min).
+    * Torres-Herrador et al. 2020 Fig. 5b, mass-loss-rate curves at
+      10 and 366 K/min, experiment and their computed fit.
+
+    Everything else in this file checks a model against a model. This
+    class checks against thermocouples and balances.
+    """
+
+    SCAN = np.linspace(300.0, 1600.0, 3000)
+
+    def _measured_peak(self, rate_label: str) -> float:
+        d = np.loadtxt(REF / f"TH2020-Fig5b_Experiment_{rate_label}.csv", delimiter=",")
+        return float(d[np.argmax(d[:, 1]), 0])
+
+    def _model_peak(self, model, rate_per_min: float) -> float:
+        mass = competitive_mass_fraction(model, self.SCAN, rate_per_min / 60.0)
+        return float(self.SCAN[int(np.argmax(-np.gradient(mass, self.SCAN)))])
+
+    def test_measured_peak_really_does_shift_down(self):
+        """The premise of the whole competitive-model argument, taken
+        straight off the measurement rather than from the paper's prose."""
+        slow = self._measured_peak("10Kmin^-1")
+        fast = self._measured_peak("366Kmin^-1")
+        assert slow == pytest.approx(814.0, abs=15.0)
+        assert fast == pytest.approx(686.0, abs=15.0)
+        assert fast < slow - 100.0
+
+    @pytest.mark.parametrize(
+        "model", [COMPETITIVE_PICA_DETERMINISTIC, COMPETITIVE_PICA_BAYESIAN]
+    )
+    def test_competitive_model_matches_measured_peaks(self, model):
+        """Absolute peak temperature to better than 20 K at both rates."""
+        for label, rate in (("10Kmin^-1", 10.0), ("366Kmin^-1", 366.0)):
+            assert self._model_peak(model, rate) == pytest.approx(
+                self._measured_peak(label), abs=25.0
+            )
+
+    @pytest.mark.parametrize(
+        "model", [COMPETITIVE_PICA_DETERMINISTIC, COMPETITIVE_PICA_BAYESIAN]
+    )
+    def test_competitive_model_matches_the_measured_shift(self, model):
+        """The shift itself, which is the quantity the model form exists to
+        capture and the one FIAT Eq. (8) cannot produce at all. Reproduced
+        to within a few kelvin on a 128 K effect."""
+        measured = self._measured_peak("366Kmin^-1") - self._measured_peak("10Kmin^-1")
+        modelled = self._model_peak(model, 366.0) - self._model_peak(model, 10.0)
+        assert measured < -100.0
+        assert modelled == pytest.approx(measured, abs=10.0)
+
+    def test_parallel_form_gets_the_sign_wrong_against_measurement(self):
+        """The same comparison for FIAT Eq. (8)'s model form. Not merely
+        less accurate — the opposite sign."""
+        measured = self._measured_peak("366Kmin^-1") - self._measured_peak("10Kmin^-1")
+        comps = parallel_pica_resin(94.0)
+        w = np.ones(len(comps))
+        peaks = [
+            float(self.SCAN[int(np.argmax(-np.gradient(
+                tga_mass_fraction(comps, w, self.SCAN, r / 60.0), self.SCAN)))])
+            for r in (10.0, 366.0)
+        ]
+        assert measured < 0.0
+        assert peaks[1] - peaks[0] > 0.0
+
+    def test_wong_mass_loss_matches_the_published_bulk_densities(self):
+        """Two unrelated measurements of the same material: a TGA balance at
+        10 K/min, and the virgin and char bulk densities from MEDLI2."""
+        d = np.loadtxt(REF / "Wong2016-Fig4.csv", delimiter=",")
+        assert float(d[:, 1].max()) == pytest.approx(
+            100.0 * (274.0 - 227.0) / 274.0, abs=1.0
+        )
+
+    def test_char_yield_depends_on_heating_rate(self):
+        """Measured confirmation of the structural point. Mass loss is ~17%
+        at 10 K/min and ~21% at 186 K/min and above — so char yield is a
+        function of heating rate, which FIAT Eq. (8) makes a constant of the
+        material and the competitive mechanism does not."""
+        slow = float(np.loadtxt(REF / "Wong2016-Fig4.csv", delimiter=",")[:, 1].max())
+        fast = [
+            100.0 - float(np.loadtxt(
+                REF / f"BM2017-Fig8_{r}Cs^-1.csv", delimiter=","
+            )[:, 1].min())
+            for r in ("3.1", "6.1", "12.7")
+        ]
+        assert slow < 18.0
+        assert all(f > 20.0 for f in fast)
+        # And the competitive model spans the same range in the same direction.
+        low, high = COMPETITIVE_PICA_DETERMINISTIC.char_yield_limits()
+        assert 100.0 * (1.0 - low) < slow + 3.0
+        assert 100.0 * (1.0 - high) > min(fast) - 3.0
+
+    @pytest.mark.parametrize("rate", ["3.1", "6.1", "12.7", "25.0"])
+    def test_bessire_curves_are_monotone_and_physical(self, rate):
+        d = np.loadtxt(REF / f"BM2017-Fig8_{rate}Cs^-1.csv", delimiter=",")
+        order = np.argsort(d[:, 0])
+        weight = d[order, 1]
+        assert weight[0] > 99.0
+        assert np.all(np.diff(weight) < 5.0), "weight should not rise materially"
+        assert 75.0 < weight.min() < 85.0
+
+
+TRANS = Path("reference/transcribed-data")
+
+
+class TestArcjetDataset:
+    """Milos & Chen 2010 — the reference case I-V4's criterion asks for."""
+
+    def test_every_analysis_case_has_measured_recession(self):
+        """Table 5 selects seven cases; Table 4 must supply recession for
+        all of them, or the criterion cannot be evaluated on any."""
+        for case in ANALYSIS_CASES:
+            mean, lo, hi = recession_statistics(case.condition)
+            assert 0.0 < lo <= mean <= hi < 0.03
+
+    def test_conditions_span_entry_relevant_pressure(self):
+        """The point of this dataset over the torch data, which is all at
+        one atmosphere: 2.3 kPa is 0.023 atm, squarely in entry's regime and
+        where the two published PICA conductivity models differ by 4x."""
+        pressures = [c.pressure for c in ARC_CONDITIONS.values()]
+        assert min(pressures) < 3.0e3
+        assert max(pressures) / min(pressures) > 30.0
+
+    def test_recession_scatter_sets_the_accuracy_floor(self):
+        """Eight nominally identical models at condition 13 scatter by 27%
+        of the mean. No 5% criterion can mean more than this does."""
+        mean, lo, hi = recession_statistics("13")
+        assert (hi - lo) / mean > 0.25
+
+    def test_the_two_reported_enthalpies_disagree_materially(self):
+        """Facility correlation against DPLR. Which one becomes the recovery
+        enthalpy is a modelling choice with a 45% lever arm, so both are
+        carried and neither is chosen in the data layer."""
+        worst = max(
+            c.enthalpy_disagreement
+            for c in (*ARC_CONDITIONS.values(), *JSC_CONDITIONS.values())
+        )
+        assert worst > 0.4
+
+    def test_oxygen_sweep_isolates_oxidation_from_heating(self):
+        """The JSC conditions hold heat flux and pressure nearly fixed while
+        sweeping oxygen 0 to 30%. Recession goes 1.75 to 24 mm — fourteenfold,
+        with the thermal environment essentially unchanged. Nothing else in
+        this dataset separates the two effects."""
+        fluxes, recessions = [], []
+        for n in ("19", "20", "21", "22"):
+            fluxes.append(condition(n).heat_flux)
+            recessions.append(recession_statistics(n)[0])
+        assert (max(fluxes) - min(fluxes)) / np.mean(fluxes) < 0.03
+        assert recessions == sorted(recessions)
+        assert recessions[-1] / recessions[0] > 10.0
+
+    def test_thermocouple_placements_are_consistent(self):
+        """Options A, B and C are a ladder offset by 1.27 mm; TC5 is common."""
+        for option in ("A", "B", "C"):
+            d = TC_PLACEMENTS[option]
+            assert len(d) == 5
+            assert np.all(np.diff(d) > 0.0)
+            assert d[4] == pytest.approx(30.48e-3)
+        assert TC_PLACEMENTS["B"][0] - TC_PLACEMENTS["A"][0] == pytest.approx(1.27e-3)
+
+    def test_instrumented_models_resolve_their_depths(self):
+        instrumented = [m for m in MODELS if m.tc_option in TC_PLACEMENTS]
+        assert len(instrumented) > 30
+        for m in instrumented:
+            assert len(m.depths) == 5
+
+    def test_grouped_conditions_resolve(self):
+        """Table 4 keys sub-cases as '4a'; Table 2 groups them as '4ab'."""
+        assert condition("4a").heat_flux == condition("4b").heat_flux
+        assert condition("6a").number == "6ab"
+        with pytest.raises(KeyError):
+            condition("99")
+
+    def test_dual_pulse_reports_one_recession_for_two_exposures(self):
+        """Condition 18 is a high pulse then a low one on the same model, so
+        recession is measured only after the second."""
+        first = [m for m in MODELS if m.condition == "18a"]
+        second = [m for m in MODELS if m.condition == "18b"]
+        assert all(m.recession is None for m in first)
+        assert all(m.recession is not None for m in second)
+
+    def test_jsc_models_have_no_surface_temperature(self):
+        """Table 4 reports it as not measured there; None rather than a
+        sentinel, so a comparison cannot quietly use zero."""
+        assert all(
+            m.peak_surface_temperature is None
+            for m in MODELS
+            if m.condition in JSC_CONDITIONS
+        )
+
+    @pytest.mark.skipif(
+        not (TRANS / "MC2010-Fig26_TC1_AA-44-213-N.csv").exists(),
+        reason="digitised Fig. 26 not present",
+    )
+    @pytest.mark.parametrize("tc", [1, 2, 3, 4, 5])
+    def test_fig26_carries_measurement_and_fiat_bracket(self, tc):
+        curves = load_fig26_thermocouples(TRANS, tc)
+        assert set(curves) == {"measured", "90", "100", "110"}
+        for time, temperature in curves.values():
+            assert time.size > 5
+            assert np.all(np.diff(time) > 0.0)
+            assert temperature.max() > 400.0
+
+    @pytest.mark.skipif(
+        not (TRANS / "MC2010-Fig26_TC1_AA-44-213-N.csv").exists(),
+        reason="digitised Fig. 26 not present",
+    )
+    def test_fig26_thermocouples_are_consumed_in_depth_order(self):
+        """Each measured trace ends when recession reaches it, so the end
+        times must increase with depth. This confirms the TC numbering more
+        robustly than peak temperature does — the shallow ones are cut off
+        while still rising, so TC 1 reports a *lower* maximum than TC 2."""
+        ends = [
+            float(load_fig26_thermocouples(TRANS, tc)["measured"][0].max())
+            for tc in (1, 2, 3, 4, 5)
+        ]
+        assert ends == sorted(ends), ends
+        # TC5 at 30.48 mm outlives the 20.5 mm of recession and survives.
+        assert ends[4] > 2.0 * ends[3]
+
+    def test_consumption_gives_a_measured_recession_history(self):
+        """Depths paired with death times are a recession curve the paper
+        never plots for this condition. It must be monotone and must reach
+        roughly the 20.5 mm Table 4 reports at 120 s."""
+        times, depths = consumption_recession(TRANS)
+        assert np.all(np.diff(times) > 0.0)
+        assert np.all(np.diff(depths) > 0.0)
+        rate = depths[-1] / times[-1]
+        assert rate * 120.0 == pytest.approx(20.5e-3, rel=0.4)
+
+    def test_rejects_a_bad_thermocouple_number(self):
+        with pytest.raises(ValueError, match="thermocouple must be"):
+            load_fig26_thermocouples(TRANS, 9)
