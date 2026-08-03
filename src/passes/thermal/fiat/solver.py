@@ -91,7 +91,7 @@ import scipy.linalg
 from numpy.typing import NDArray
 
 from passes.thermal.fiat.bprime import BPrimeTable, TableRangeError
-from passes.thermal.fiat.materials import PressureConductivity
+from passes.thermal.fiat.materials import PressureConductivity, TabulatedConductivity
 from passes.thermal.fiat.radiation import (
     gray_radiative_flux,
     optical_depth,
@@ -818,7 +818,7 @@ class FiatSolver:
 
         def _call(obj: object, name: str, t: float, b: float) -> float:
             method = getattr(obj, name)
-            if isinstance(obj, PressureConductivity):
+            if isinstance(obj, PressureConductivity | TabulatedConductivity):
                 return float(method(t, b, *extra))
             return float(method(t, b))
 

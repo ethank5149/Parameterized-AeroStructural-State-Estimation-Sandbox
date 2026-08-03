@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from passes.thermal.fiat.materials import PressureConductivity
+from passes.thermal.fiat.materials import PressureConductivity, TabulatedConductivity
 from passes.thermal.material import CharringMaterial
 
 __all__ = ["MaterialStack", "Ply", "StackGrid"]
@@ -79,7 +79,7 @@ class Ply:
     n_cells: int
     growth: float = 1.0
     ablating: bool = False
-    pressure_conductivity: PressureConductivity | None = None
+    pressure_conductivity: PressureConductivity | TabulatedConductivity | None = None
     extinction_coefficient: float | None = None
 
     def __post_init__(self) -> None:

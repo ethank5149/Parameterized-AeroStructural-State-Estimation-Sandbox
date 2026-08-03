@@ -220,3 +220,117 @@ def _find(root: Path, figure: str, rate: float, coalesced: bool) -> Path:
     raise FileNotFoundError(
         f"no digitised curve for {figure} at B'_g = {rate:g} under {root}"
     )
+
+
+#: :math:`B'_g` levels of Tran et al. Fig. 25.
+TRAN_GAS_RATES = (0.0, 0.01, 0.25, 1.0, 10.0)
+
+#: Pressures of Fig. 25: dashed is 0.01 atm, solid is 0.1 atm.
+TRAN_PRESSURES = (0.01 * 101325.0, 0.1 * 101325.0)
+
+#: Above this, Fig. 25's ordinate is the generating solver's ceiling rather
+#: than a physical char rate — the same artefact the Mutation++ tables show,
+#: and identified the same way: values that jump decades and then sit flat.
+_TRAN_CEILING = 50.0
+
+
+def read_tran_bprime(
+    directory: str | Path,
+    *,
+    temperatures: _FloatArray | None = None,
+    method: str = "cubic",
+) -> PicaSurfaceTable:
+    """PICA B' from Tran et al. Fig. 25 — **two** pressures, unlike Fig. 5.
+
+    Tran, H. K. et al., "Phenolic Impregnated Carbon Ablators (PICA) as
+    Thermal Protection Systems for Discovery Missions," NASA TM-110440,
+    1997, Fig. 25: *"B' curves for standard PICA char and gas pyrolysis."*
+
+    This matters because of how the single-pressure Quinn Fig. 5 table
+    behaved on the arcjet cases: its error ran monotonically from −65% at
+    2.3 kPa to +12% at 84.4 kPa, which is a table being read far outside
+    the one pressure it was drawn at. Fig. 25 carries 0.01 and 0.1 atm,
+    bracketing most of the arcjet set, so the pressure dependence is
+    interpolated rather than assumed away.
+
+    The ordinate reaches :math:`10^3`, which is not a char rate. As in the
+    Mutation++ tables it is the generating solver's ceiling, reported where
+    no steady ablation rate exists; here there is no condensed-carbon
+    column to identify it by, so it is cut at
+    :data:`_TRAN_CEILING` and held, and the cut is recorded rather than
+    silently applied.
+    """
+    root = Path(directory)
+    grid = (
+        np.arange(250.0, 3551.0, 25.0)
+        if temperatures is None
+        else np.asarray(temperatures, dtype=np.float64)
+    )
+    b_c = np.zeros((len(TRAN_PRESSURES), len(TRAN_GAS_RATES), grid.size))
+    for pi, style in enumerate(("dashed", "solid")):
+        for gi, rate in enumerate(TRAN_GAS_RATES):
+            # The zero node repeats the lowest tabulated curve: a run begins
+            # with no pyrolysis gas, and Fig. 25's lowest level is 0.01.
+            # The transcription writes 1.0 and 10 rather than 1 and 10.0, so
+            # the label is matched numerically instead of formatted.
+            wanted = max(rate, 0.01)
+            path = None
+            for candidate in sorted(root.glob(f"Tran1997-Fig25-Bprime-g=*-{style}.csv")):
+                text = candidate.name.split("g=")[1].rsplit("-", 1)[0]
+                if abs(float(text) - wanted) < 1e-12:
+                    path = candidate
+                    break
+            if path is None:
+                raise FileNotFoundError(
+                    f"no digitised Fig. 25 curve at B'_g = {wanted:g} ({style}) "
+                    f"under {root}"
+                )
+            raw = np.loadtxt(path, delimiter=",")
+            raw = raw[raw[:, 1] < _TRAN_CEILING]
+            if raw.size == 0:
+                raise ValueError(f"{path.name} is entirely above the ceiling cut")
+            b_c[pi, gi] = _monotone_curve(raw, grid, logarithmic=True)
+
+    # Fig. 25 gives no wall enthalpy, so it is taken from the Fig. 5 table,
+    # which is the same material from the same generating code. h_w is a
+    # much weaker function of pressure than B'_c, so borrowing it across is
+    # far less of a stretch than assuming B'_c pressure-independent was.
+    fig5 = read_quinn_bprime(root, temperatures=grid, method=method)
+    h_w = np.repeat(
+        np.interp(
+            np.asarray(TRAN_GAS_RATES),
+            fig5.gas_rates,
+            np.arange(fig5.gas_rates.size, dtype=np.float64),
+        )[None, :, None] * 0.0,
+        1,
+        axis=0,
+    )
+    h_w = np.zeros_like(b_c)
+    for gi, rate in enumerate(TRAN_GAS_RATES):
+        near = float(np.clip(rate, *fig5.table.gas_rate_range))
+        h_w[:, gi, :] = np.array(
+            [fig5.table.wall_enthalpy(101325.0, near, float(t)) for t in grid]
+        )
+
+    table = BPrimeTable(
+        np.asarray(TRAN_PRESSURES),
+        np.asarray(TRAN_GAS_RATES),
+        grid,
+        b_c,
+        h_w,
+        method=method,
+    )
+    return PicaSurfaceTable(
+        table=table,
+        temperatures=grid,
+        gas_rates=np.asarray(TRAN_GAS_RATES),
+        char_rates=b_c[1],
+        wall_enthalpies=h_w[1],
+        provenance=(
+            "PICA, digitised from Tran et al. NASA TM-110440 (1997) Fig. 25 at "
+            "0.01 and 0.1 atm; wall enthalpy borrowed from Quinn et al. Fig. 5b. "
+            "Figure-traced, so ordinates carry several percent of digitisation "
+            "error, and the solver ceiling above "
+            f"B'_c = {_TRAN_CEILING:g} is cut."
+        ),
+    )

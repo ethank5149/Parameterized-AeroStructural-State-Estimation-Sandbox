@@ -62,6 +62,7 @@ available.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -82,7 +83,10 @@ __all__ = [
     "PICA_VIRGIN_CONDUCTIVITY_RT",
     "PICA_VIRGIN_DENSITY",
     "PressureConductivity",
+    "TabulatedConductivity",
     "pica_like_material",
+    "read_tran_conductivity",
+    "read_tran_specific_heat",
     "structural_material",
 ]
 
@@ -347,4 +351,128 @@ def structural_material(
         solid_enthalpy_slope=specific_heat,
         emissivity_virgin=0.85,
         emissivity_char=0.85,
+    )
+
+
+#: Btu·in/(hr·ft²·°F) to W/(m K) — the unit of Tran et al. Fig. 9.
+_BTU_IN_PER_HR_FT2_F = 0.1442279
+#: Btu/(lbm·°F) to J/(kg K) — the unit of Tran et al. Fig. 7.
+_BTU_PER_LBM_F = 4186.8
+
+
+def _fahrenheit(x: ArrayLike) -> _FloatArray:
+    return np.asarray((np.asarray(x, dtype=np.float64) - 32.0) * 5.0 / 9.0 + 273.15)
+
+
+@dataclass(frozen=True)
+class TabulatedConductivity:
+    """Measured conductivity on a temperature/pressure grid.
+
+    Tran et al., NASA TM-110440 (1997), Fig. 9, "Thermal conductivity of
+    PICA-15", digitised at 0.001, 0.01 and 0.05 atm and spanning roughly
+    440 to 2950 K. It replaces the affine-in-temperature blend used
+    elsewhere, whose slopes above room temperature were invented: the
+    published MEDLI2 data pins only the 300 K intercepts.
+
+    Two honest limitations.
+
+    **Virgin or char is not stated.** The source labels the figure
+    "PICA-15" and says nothing more. It cannot be virgin throughout —
+    virgin PICA does not survive to 2950 K — so the curve is best read as
+    the conductivity of the material *as heated*, virgin at the cold end
+    and char at the hot end, with the transition folded in. It is
+    therefore applied to both phases here rather than assigned to one, and
+    :meth:`d_char_fraction` returns zero. That is a real loss of the
+    virgin/char distinction, traded for measured magnitudes over
+    2500 K of range.
+
+    **It corroborates MEDLI2 against Heritage.** Conductivity rises with
+    pressure at every temperature in this data — 0.248 to 0.296 W/(m K)
+    at 450 K going from 0.001 to 0.05 atm. The Heritage PICA model has
+    virgin conductivity *rising threefold as pressure falls*, which is
+    backwards for a porous medium. Two independent measurements 24 years
+    apart now agree against it.
+    """
+
+    pressures: _FloatArray
+    temperatures: _FloatArray
+    values: _FloatArray
+    """W/(m K), shape ``(n_pressures, n_temperatures)``."""
+
+    def _interpolate(self, temperature: ArrayLike, pressure: float) -> _FloatArray:
+        if not (np.isfinite(pressure) and pressure > 0.0):
+            raise ValueError(f"pressure must be finite and > 0, got {pressure}")
+        t = np.asarray(temperature, dtype=np.float64)
+        # Linear in log-pressure between planes, held outside them: three
+        # anchors over two decades say nothing about the fourth.
+        lp = np.log(np.clip(pressure, self.pressures[0], self.pressures[-1]))
+        planes = np.log(self.pressures)
+        j = int(np.clip(np.searchsorted(planes, lp) - 1, 0, planes.size - 2))
+        w = (lp - planes[j]) / (planes[j + 1] - planes[j])
+        lo = np.interp(t, self.temperatures, self.values[j])
+        hi = np.interp(t, self.temperatures, self.values[j + 1])
+        return np.asarray((1.0 - w) * lo + w * hi)
+
+    def value(
+        self, temperature: ArrayLike, char_fraction: ArrayLike, pressure: float
+    ) -> _FloatArray:
+        return np.asarray(
+            self._interpolate(temperature, pressure) + 0.0 * np.asarray(char_fraction)
+        )
+
+    def d_temperature(
+        self, temperature: ArrayLike, char_fraction: ArrayLike, pressure: float
+    ) -> _FloatArray:
+        t = np.asarray(temperature, dtype=np.float64)
+        h = 1.0
+        up = self._interpolate(t + h, pressure)
+        dn = self._interpolate(t - h, pressure)
+        return np.asarray((up - dn) / (2.0 * h) + 0.0 * np.asarray(char_fraction))
+
+    def d_char_fraction(
+        self, temperature: ArrayLike, char_fraction: ArrayLike, pressure: float
+    ) -> _FloatArray:
+        return np.zeros_like(np.asarray(temperature, dtype=np.float64) * 1.0)
+
+
+def read_tran_conductivity(directory: str | Path) -> TabulatedConductivity:
+    """Tran Fig. 9, digitised at three pressures."""
+    root = Path(directory)
+    atm = (0.001, 0.01, 0.05)
+    grid = np.arange(300.0, 3001.0, 25.0)
+    values = np.zeros((len(atm), grid.size))
+    for i, a in enumerate(atm):
+        path = root / f"Tran1997-Fig9-{a:g}atm.csv"
+        if not path.exists():
+            raise FileNotFoundError(f"no digitised Fig. 9 curve at {path}")
+        raw = np.loadtxt(path, delimiter=",")
+        t = _fahrenheit(raw[:, 0])
+        k = raw[:, 1] * _BTU_IN_PER_HR_FT2_F
+        order = np.argsort(t)
+        values[i] = np.interp(grid, t[order], k[order])
+    return TabulatedConductivity(
+        pressures=np.asarray(atm) * ONE_ATMOSPHERE,
+        temperatures=grid,
+        values=values,
+    )
+
+
+def read_tran_specific_heat(directory: str | Path) -> LinearBlendProperty:
+    """Tran Fig. 7, "Heat capacity of PICA-15", as an affine blend.
+
+    The measured curve is close to linear in temperature over its range,
+    so a least-squares affine fit loses little and keeps the property in
+    the same form the rest of the material model uses. As with the
+    conductivity, no virgin/char split is available, so both phases carry
+    the same fit.
+    """
+    path = Path(directory) / "Tran1997-Fig7.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"no digitised Fig. 7 curve at {path}")
+    raw = np.loadtxt(path, delimiter=",")
+    t = _fahrenheit(raw[:, 0])
+    cp = raw[:, 1] * _BTU_PER_LBM_F
+    slope, intercept = np.polyfit(t, cp, 1)
+    return LinearBlendProperty(
+        float(intercept), float(slope), float(intercept), float(slope)
     )
