@@ -47,6 +47,7 @@ from passes.thermal.fiat.arcjet import (
     recession_statistics,
 )
 from passes.thermal.fiat.bprime import TableRangeError
+from passes.thermal.fiat.equilibrium import ThermoDatabase, solve_equilibrium
 from passes.thermal.fiat.kinetics import (
     TgaTargets,
     calibrated_components,
@@ -1929,3 +1930,189 @@ class TestPicaPyrolysisComposition:
     def test_mass_balance_rejects_a_degenerate_gas_fraction(self):
         with pytest.raises(ValueError, match="gas_mole_fraction"):
             char_required_by_mass_balance(PICA_PYROLYSIS_ELEMENTS, 1.0)
+
+
+NASA9 = Path("/config/Mutationpp-1.0.5/data/thermo/nasa9.dat")
+
+
+@pytest.fixture(scope="module")
+def db():
+    """Parsed once; the file is 1262 species and parsing is not the subject."""
+    return ThermoDatabase.from_nasa9(NASA9)
+
+
+@pytest.mark.skipif(not NASA9.exists(), reason="NASA-9 thermo database not available")
+class TestNasa9Parsing:
+    """The reader, which had a positional bug that silenced the solver."""
+
+    def test_reads_the_whole_database(self, db):
+        assert len(db.names) > 1000
+
+    def test_species_with_an_explicit_zero_placeholder_parse_correctly(self, db):
+        """NASA-9 reserves the eighth coefficient slot and leaves it unused.
+        Gurvich-era records spell that as blanks; species added later write
+        ``0.000000000E+00``. Compacting non-blank fields instead of reading
+        positionally shifts the two integration constants one slot left on
+        exactly the latter group, substituting 0 for the enthalpy constant
+        and the enthalpy constant for the entropy constant.
+
+        C5 is such a record, and the corrupted parse gave it s/R = 147965
+        against a true 54.4 — which made exp(-g/RT) overflow and was the
+        real reason the equilibrium solver never converged."""
+        c5 = db["C5"]
+        assert c5.entropy_r(2000.0) == pytest.approx(54.43, abs=0.05)
+        assert c5.enthalpy_rt(2000.0) == pytest.approx(74.57, abs=0.05)
+
+    def test_blank_placeholder_records_still_parse(self, db):
+        """The other spelling must be unaffected by the fix. CO leaves the
+        slot blank and its values are textbook."""
+        co = db["CO"]
+        assert co.entropy_r(2000.0) == pytest.approx(31.12, abs=0.05)
+        assert co.gibbs_rt(2000.0) == pytest.approx(-34.35, abs=0.05)
+
+    def test_every_common_gas_species_has_a_sane_entropy(self, db):
+        """A blanket guard against the same class of shift elsewhere: no
+        ideal gas has |s/R| anywhere near 1e3 at 2000 K."""
+        for name in (
+            "C",
+            "H",
+            "O",
+            "N",
+            "CO",
+            "CO2",
+            "H2",
+            "H2O",
+            "N2",
+            "CH4",
+            "C2H2,acetylene",
+            "C3",
+            "C5",
+            "C6H6",
+            "HCN",
+        ):
+            assert abs(db[name].entropy_r(2000.0)) < 200.0, name
+
+
+@pytest.mark.skipif(not NASA9.exists(), reason="NASA-9 thermo database not available")
+class TestGibbsEquilibrium:
+    """Element-potential equilibrium on PICA's own pyrolysis gas."""
+
+    SPECIES = (
+        "C",
+        "H",
+        "O",
+        "N",
+        "CH4",
+        "CN",
+        "CO",
+        "CO2",
+        "C2",
+        "C2H",
+        "C2H2,acetylene",
+        "C3",
+        "C4",
+        "C4H2,butadiyne",
+        "C5",
+        "HCN",
+        "H2",
+        "H2O",
+        "N2",
+        "C6H6",
+        "OH",
+        "CH3",
+    )
+
+    def _solve(self, db, t, p, **kw):
+        return solve_equilibrium(db, self.SPECIES, t, p, PICA_PYROLYSIS_ELEMENTS, **kw)
+
+    def test_converges_across_the_ablation_regime(self, db):
+        """The regime the B' table actually spans, cold-started at every
+        state. Before the fix this failed at every single one of them."""
+        for t in (400.0, 600.0, 1000.0, 1500.0, 2000.0, 2500.0, 3000.0, 4000.0):
+            for p in (1e2, 1e3, 1e4, 1e5, 1e6):
+                self._solve(db, t, p)
+
+    def test_conserves_the_elemental_composition_exactly(self, db):
+        """The constraint the solve exists to satisfy. Element ratios in the
+        converged mixture must reproduce the input to solver tolerance."""
+        result = self._solve(db, 2000.0, 1e4)
+        totals = {}
+        for name, x in zip(result.species, result.mole_fractions, strict=True):
+            for element, count in db[name].composition.items():
+                totals[element] = totals.get(element, 0.0) + x * count
+        scale = sum(totals.values())
+        for element, target in PICA_PYROLYSIS_ELEMENTS.items():
+            assert totals[element] / scale == pytest.approx(target, rel=1e-8)
+
+    def test_drops_species_needing_an_absent_element(self, db):
+        """No nitrogen is supplied, so N2, CN and HCN cannot form. Keeping
+        them leaves them unconstrained by A n = b — the Jacobian loses rank
+        and the mixture reports species made of nothing."""
+        result = self._solve(db, 2000.0, 1e4)
+        assert "N2" not in result.species
+        assert "HCN" not in result.species
+        assert "CO" in result.species
+
+    def test_mixture_is_physically_ordered(self, db):
+        """At 2000 K a 60%-char-yield pyrolysis gas is mostly H2 and CO,
+        which is what Rabinovitch Fig. 6b shows for this composition."""
+        result = self._solve(db, 2000.0, 1e4)
+        x = dict(zip(result.species, result.mole_fractions, strict=True))
+        assert x["H2"] > 0.5
+        assert x["CO"] > 0.15
+        assert x["H2"] > x["CO"] > x["CH4"]
+
+    def test_all_oxygen_is_carried_by_carbon_monoxide(self, db):
+        """A carbon-rich, hydrogen-rich mixture at 2000 K puts essentially
+        every oxygen atom into CO rather than H2O or CO2 — CO is the most
+        stable sink available and carbon is not limiting."""
+        result = self._solve(db, 2000.0, 1e4)
+        x = dict(zip(result.species, result.mole_fractions, strict=True))
+        oxygen = sum(v * db[k].composition.get("O", 0.0) for k, v in x.items())
+        assert x["CO"] / oxygen > 0.99
+
+    def test_temperature_continuation_reaches_the_condensation_regime(self, db):
+        """Warm starting is what gets below 600 K, where gas-phase-only
+        equilibrium of a carbon-rich mixture is genuinely ill-posed because
+        condensed carbon should form. Cold starts fail there and say so."""
+        potentials = None
+        reached = 0
+        for t in np.arange(4000.0, 350.0, -50.0):
+            result = self._solve(db, float(t), 1e4, initial_potentials=potentials)
+            potentials = result.element_potentials
+            reached += 1
+        assert reached == len(np.arange(4000.0, 350.0, -50.0))
+
+    def test_continuation_fallback_rescues_a_failed_cold_start(self, db):
+        """1000 K at 1 bar cannot be reached cold — equilibrium there is a
+        near-degenerate competition between a few heavy species. The public
+        entry point must not expose that: it retries down a temperature
+        ladder automatically and only reports failure if that fails too."""
+        with pytest.raises(RuntimeError):
+            solve_equilibrium(
+                db,
+                self.SPECIES,
+                1000.0,
+                1e5,
+                PICA_PYROLYSIS_ELEMENTS,
+                _continuation=False,
+            )
+        # With the fallback the same state resolves.
+        result = self._solve(db, 1000.0, 1e5)
+        assert result.mole_fractions.sum() == pytest.approx(1.0)
+
+    def test_reports_rather_than_lies_where_carbon_must_condense(self, db):
+        """300 K is past what a gas-only model can represent for this
+        mixture, and continuation does not rescue it. Failing loudly beats
+        returning a mixture that omits the condensed phase carrying most of
+        the carbon."""
+        with pytest.raises(RuntimeError, match="did not converge"):
+            self._solve(db, 300.0, 1e4)
+
+    def test_rejects_an_empty_element_set(self, db):
+        with pytest.raises(ValueError, match="at least one positive entry"):
+            solve_equilibrium(db, self.SPECIES, 2000.0, 1e4, {"C": 0.0})
+
+    def test_rejects_species_that_cannot_be_formed_at_all(self, db):
+        with pytest.raises(ValueError, match="no gas species"):
+            solve_equilibrium(db, ("N2", "CN"), 2000.0, 1e4, {"C": 1.0})

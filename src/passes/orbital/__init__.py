@@ -22,17 +22,25 @@ from passes.orbital.gravity import (
     specific_energy,
     two_body_acceleration,
 )
+from passes.orbital.lambert import (
+    LambertSolution,
+    lambert,
+    minimum_energy_transfer,
+)
 
 __all__ = [
     "EARTH",
     "CoastResult",
     "GravityModel",
+    "LambertSolution",
     "RegimeTransition",
     "StrategyComparison",
     "compare_coast_strategies",
     "gravitational_acceleration",
     "gravitational_potential",
     "j2_acceleration",
+    "lambert",
+    "minimum_energy_transfer",
     "orbital_elements",
     "propagate_coast",
     "regime_transition_profile",

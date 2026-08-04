@@ -238,13 +238,29 @@ class ThermoDatabase:
                 except ValueError:
                     ok = False
                     break
-                a = _fixed_floats(lines[j + 1], 5) + _fixed_floats(lines[j + 2], 5)
-                if len(a) < 9:
+                # NASA-9 lays the second coefficient line out as
+                # ``a6 a7 <unused> b1 b2`` in five fixed-width fields. The
+                # slot for the eighth coefficient is *reserved but unused*,
+                # and files disagree on how to spell "empty" there: the
+                # Gurvich/McBride records leave it blank, while species added
+                # later (C5, C5H, and the rest of the Mutation++ additions)
+                # write an explicit ``0.000000000E+00``. Parsing positionally
+                # rather than by compacting non-blank fields is what makes
+                # both spellings read the same. Compacting shifts b1 and b2
+                # one slot left on exactly the records that fill the slot,
+                # which silently substitutes 0 for the enthalpy constant and
+                # the enthalpy constant for the entropy constant — an error
+                # of order 1e5 in s/R that no bounds check would catch.
+                head = _fixed_fields(lines[j + 1], 5)
+                tail = _fixed_fields(lines[j + 2], 5)
+                a = head[:5] + tail[:2]
+                b1, b2 = tail[3], tail[4]
+                if any(v is None for v in a) or b1 is None or b2 is None:
                     ok = False
                     break
                 ranges.append((lo, hi))
-                coeffs.append(tuple(a[:7]))
-                integrations.append((a[7], a[8]))
+                coeffs.append(tuple(float(v) for v in a))  # type: ignore[arg-type]
+                integrations.append((b1, b2))
                 j += 3
             if ok and composition and ranges:
                 species[name] = Nasa9Species(
@@ -260,17 +276,24 @@ class ThermoDatabase:
         return cls(species)
 
 
-def _fixed_floats(line: str, count: int, width: int = 16) -> list[float]:
-    """Parse Fortran ``D``-exponent fixed-width reals."""
-    out: list[float] = []
+def _fixed_fields(line: str, count: int, width: int = 16) -> list[float | None]:
+    """Parse Fortran ``D``-exponent fixed-width reals, **keeping positions**.
+
+    Returns exactly ``count`` entries, ``None`` where the field is blank or
+    unparseable. Preserving the slot is the point: in NASA-9 the meaning of a
+    number is its column, so a blank must occupy its place rather than let
+    the next value slide into it.
+    """
+    out: list[float | None] = []
     for k in range(count):
         field = line[k * width : (k + 1) * width].strip()
         if not field:
+            out.append(None)
             continue
         try:
             out.append(float(field.replace("D", "E").replace("d", "e")))
         except ValueError:
-            return out
+            out.append(None)
     return out
 
 
@@ -307,6 +330,8 @@ def solve_equilibrium(
     pressure: float,
     element_moles: dict[str, float],
     initial_potentials: dict[str, float] | None = None,
+    *,
+    _continuation: bool = True,
 ) -> EquilibriumResult:
     """Gas-phase equilibrium by the element-potential method.
 
@@ -328,7 +353,20 @@ def solve_equilibrium(
     if not elements:
         raise ValueError("element_moles must contain at least one positive entry")
 
-    gas = [database[s] for s in species if "(" not in s]
+    # A species built from an element that is absent from `element_moles` has
+    # no row constraining it: nothing in A n = b can hold it down, the
+    # Jacobian loses rank, and the solve either wanders or reports a mixture
+    # containing a species made of nothing. Dropping such species is the
+    # physically correct reading — you cannot form N2 with no nitrogen.
+    available = {k for k, v in element_moles.items() if v > 0.0}
+    gas = [
+        database[s] for s in species if "(" not in s and set(database[s].composition) <= available
+    ]
+    if not gas:
+        raise ValueError(
+            f"no gas species can be formed from elements {sorted(available)}; "
+            f"every species in `species` needs an element that is absent"
+        )
     names = tuple(s.name for s in gas)
     a = np.array(
         [[s.composition.get(e, 0.0) for s in gas] for e in elements]
@@ -338,74 +376,138 @@ def solve_equilibrium(
     b = np.array([element_moles[e] for e in elements])
     b = b / b.sum()
 
-    # Solved as the *convex dual* of the Gibbs minimisation rather than as a
-    # root-find on the stationarity conditions. For fixed total moles n,
+    # Solved as a Newton root-find on the element-potential conditions in
+    # **log space**, jointly in the potentials and the total moles.
     #
-    #     Psi(lambda) = sum_j nu_j(lambda) - sum_k lambda_k b_k,
-    #     nu_j = exp(lambda . a_j - g_j/RT - ln(P/P0) + ln n),
+    #     nu_j = exp(lambda . a_j + c_j + ln n),   c_j = -g_j/RT - ln(P/P0)
     #
-    # has gradient (A nu - b) and Hessian A diag(nu) A^T, which is positive
-    # semidefinite — so Psi is convex and a damped Newton converges from
-    # anywhere. Root-finding the same conditions directly does not: an
-    # earlier version using `scipy.optimize.root` converged to a spurious
-    # fixed point with three species at exactly 1/3 each and every other
-    # mole fraction underflowed to 1e-300.
+    # The conditions are (A nu = b) and (sum_j nu_j = n). Written directly
+    # those are sums of exponentials, and Newton on a sum of exponentials
+    # descends by exactly *one e-fold per iteration* when it starts far above
+    # the root — the step solves (a a^T) d = -a, so a.d = -1 regardless of
+    # how large the residual is. An earlier version did exactly that and
+    # needed ~120 iterations merely to walk the initial guess down to the
+    # right order of magnitude, which is why it hit its iteration cap and
+    # reported non-convergence at every single state.
     #
-    # Total moles is then a fixed point: solve for lambda, set n to the total
-    # obtained, repeat. It converges in a handful of passes because the
-    # dependence is logarithmic.
-    def _nu(lam: _FloatArray, ln_n: float) -> _FloatArray:
-        return np.asarray(np.exp(np.clip(lam @ a - g_rt - ln_p + ln_n, -700.0, 700.0)))
+    # Taking logs removes the pathology, because log-sum-exp is close to
+    # piecewise linear in lambda:
+    #
+    #     F_k    = ln n + ln (A nu')_k - ln b_k,    k = 1 .. n_elements
+    #     F_last = ln (sum_j nu'_j)
+    #
+    # where nu' is nu without the ln n shift. F_last is independent of ln n,
+    # and each F_k depends on it linearly, so the Jacobian is exact and
+    # cheap. Convergence is 4-8 iterations from a cold start.
+    #
+    # Everything is evaluated against the running maximum exponent, so no
+    # intermediate overflows even where c spans 400 e-folds (T = 400 K).
+    c = -g_rt - ln_p
+    n_el = len(elements)
+    ln_b = np.log(b)
+
+    def _residual(
+        lam: _FloatArray, ln_n: float
+    ) -> tuple[_FloatArray, _FloatArray, _FloatArray, float] | None:
+        z = lam @ a + c
+        shift = float(z.max())
+        mu = np.exp(z - shift)
+        a_mu = a @ mu
+        if not np.isfinite(mu).all() or np.any(a_mu <= 0.0):
+            return None
+        total = float(mu.sum())
+        f = np.append(ln_n + shift + np.log(a_mu) - ln_b, shift + np.log(total))
+        if not np.isfinite(f).all():
+            return None
+        return f, mu, a_mu, total
 
     if initial_potentials is not None:
         lam = np.array([initial_potentials.get(e, 0.0) for e in elements])
     else:
-        # Start where each element's atomic species carries that element's
-        # abundance; every species is then within a few decades of truth.
-        lam = np.array(
-            [
-                np.log(max(b[i], 1e-12))
-                + (database[e].gibbs_rt(temperature) if e in database else 0.0)
-                + ln_p
-                for i, e in enumerate(elements)
-            ]
-        )
+        # Place every species near equal abundance. This is deliberately not
+        # a thermodynamic guess: the obvious one — put each element's whole
+        # abundance on its monatomic species — is catastrophic for carbon,
+        # because atomic C is so unstable that reproducing its abundance
+        # demands a huge potential, which then overflows every polyatomic
+        # carbon species by hundreds of e-folds.
+        lam = np.linalg.lstsq(a.T, -c, rcond=None)[0]
 
     ln_n = 0.0
+    converged = False
     for _ in range(200):
-        nu = _nu(lam, ln_n)
-        gradient = a @ nu - b
-        # Scaled against the size of the terms being differenced, not
-        # against b: the element sums span decades between a trace element
-        # and a dominant one.
-        scale = np.maximum(np.abs(a) @ nu, 1e-30)
-        if np.max(np.abs(gradient) / scale) < 1e-12:
-            total = float(nu.sum())
-            if abs(np.log(max(total, 1e-300)) - ln_n) < 1e-12:
-                break
-            ln_n = float(np.log(max(total, 1e-300)))
-            continue
-        hessian = (a * nu) @ a.T
-        # A ridge keeps the step finite when an element is nearly absent and
-        # its row of the Hessian collapses.
-        hessian += np.eye(len(elements)) * (1e-14 * max(np.trace(hessian), 1.0))
+        state = _residual(lam, ln_n)
+        if state is None:
+            break
+        f, mu, a_mu, total = state
+        if float(np.max(np.abs(f))) < 1e-11:
+            converged = True
+            break
+        jac = np.zeros((n_el + 1, n_el + 1))
+        jac[:n_el, :n_el] = ((a * mu) @ a.T) / a_mu[:, None]
+        jac[:n_el, n_el] = 1.0
+        jac[n_el, :n_el] = a_mu / total
+        # A ridge keeps the step finite when one element is present only in
+        # species that have gone extinct, collapsing that row.
+        jac += np.eye(n_el + 1) * (1e-12 * max(float(np.abs(jac).max()), 1.0))
         try:
-            step = np.linalg.solve(hessian, -gradient)
+            step = np.linalg.solve(jac, -f)
         except np.linalg.LinAlgError:  # pragma: no cover - singular
-            step = -gradient
-        # Damped so no species' exponent moves by more than a few decades in
-        # one step; the exponential makes an undamped Newton overshoot into
-        # overflow long before it diverges in lambda.
-        swing = float(np.max(np.abs(a.T @ step)))
-        alpha = min(1.0, 4.0 / swing) if swing > 4.0 else 1.0
-        lam = lam + alpha * step
-    else:  # pragma: no cover - non-convergence
+            break
+        # Backtracking on the residual norm. The line search is what makes
+        # the cold start safe: a full step from far away can push an exponent
+        # out of range, and halving until the residual actually falls both
+        # rejects those and handles the mild non-convexity of the log form.
+        norm = float(np.linalg.norm(f))
+        t = 1.0
+        for _ in range(60):
+            trial = _residual(lam + t * step[:n_el], ln_n + t * step[n_el])
+            if trial is not None and float(np.linalg.norm(trial[0])) < norm:
+                break
+            t *= 0.5
+        else:
+            break
+        lam = lam + t * step[:n_el]
+        ln_n = float(ln_n + t * step[n_el])
+    if not converged:
+        # A cold start cannot always reach a carbon-rich mixture at low
+        # temperature or high pressure, because equilibrium there is a near
+        # degenerate competition between a few heavy species. Continuation
+        # fixes it without the caller needing to know: solves are easy at
+        # high temperature, and each rung is a warm start for the next.
+        if _continuation and initial_potentials is None:
+            anchor = max(4000.0, 2.0 * float(temperature))
+            ladder = np.geomspace(anchor, float(temperature), 24)
+            potentials: dict[str, float] | None = None
+            result: EquilibriumResult | None = None
+            for rung in ladder:
+                try:
+                    result = solve_equilibrium(
+                        database,
+                        species,
+                        float(rung),
+                        pressure,
+                        element_moles,
+                        potentials,
+                        _continuation=False,
+                    )
+                except RuntimeError:
+                    result = None
+                    break
+                potentials = result.element_potentials
+            if result is not None:
+                return result
         raise RuntimeError(
             f"equilibrium did not converge at T = {temperature:.6g} K, "
-            f"P = {pressure:.6g} Pa"
+            f"P = {pressure:.6g} Pa, including by continuation from "
+            f"{max(4000.0, 2.0 * float(temperature)):.6g} K. Gas-phase-only "
+            f"equilibrium of a carbon-rich mixture is genuinely ill-posed "
+            f"where condensed carbon should form; either admit a condensed "
+            f"phase or restrict the state range."
         )
 
-    nu = _nu(lam, ln_n)
+    final = _residual(lam, ln_n)
+    assert final is not None  # converged, so it evaluates
+    nu = final[1]
 
     x_frac = np.asarray(nu / float(nu.sum()))
     molar_mass = float(sum(x * s.molar_mass for x, s in zip(x_frac, gas, strict=True)))
@@ -449,9 +551,7 @@ class SurfaceComposition:
             stream = getattr(self, label)
             total = sum(stream.values())
             if not np.isclose(total, 1.0, atol=1e-6):
-                raise ValueError(
-                    f"{label} elemental mass fractions must sum to 1, got {total:.6g}"
-                )
+                raise ValueError(f"{label} elemental mass fractions must sum to 1, got {total:.6g}")
             if any(v < 0.0 for v in stream.values()):
                 raise ValueError(f"{label} mass fractions must be >= 0")
 

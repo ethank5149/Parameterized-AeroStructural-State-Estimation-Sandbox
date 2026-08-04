@@ -4,12 +4,17 @@ import numpy as np
 import pytest
 
 from passes.guidance import (
+    ExecutionErrorModel,
     TgoStatus,
     apn_acceleration,
+    correction_maneuver,
     los_rate,
+    miss_sensitivity,
+    schedule_corrections,
     time_to_go,
     time_to_go_naive,
 )
+from passes.orbital import EARTH, lambert, propagate_coast
 
 
 def quadratic_residual(r, v, a, t):
@@ -38,12 +43,12 @@ class TestTimeToGoBranches:
     @pytest.mark.parametrize(
         ("r", "v", "a"),
         [
-            (1.0e4, 1.0e3, 0.0),        # constant closure
-            (1.0e4, 1.0e3, -30.0),      # decelerating, still intercepts
-            (1.0e4, 1.0e3, 50.0),       # accelerating closure
-            (2.0e3, -50.0, 20.0),       # opening now, accelerating closure
-            (5.0e2, 0.0, 10.0),         # zero rate, positive acceleration
-            (1.0e4, 3.0e3, -1.0e-9),    # near-zero deceleration
+            (1.0e4, 1.0e3, 0.0),  # constant closure
+            (1.0e4, 1.0e3, -30.0),  # decelerating, still intercepts
+            (1.0e4, 1.0e3, 50.0),  # accelerating closure
+            (2.0e3, -50.0, 20.0),  # opening now, accelerating closure
+            (5.0e2, 0.0, 10.0),  # zero rate, positive acceleration
+            (1.0e4, 3.0e3, -1.0e-9),  # near-zero deceleration
         ],
     )
     def test_root_property_on_feasible_branches(self, r, v, a):
@@ -69,10 +74,10 @@ class TestTimeToGoBranches:
     @pytest.mark.parametrize(
         ("r", "v", "a"),
         [
-            (1.0e4, -100.0, 0.0),    # opening, no acceleration
-            (1.0e4, -100.0, -5.0),   # opening, decelerating further
-            (1.0e4, 0.0, 0.0),       # static
-            (1.0e4, 0.0, -1.0),      # static, opening acceleration
+            (1.0e4, -100.0, 0.0),  # opening, no acceleration
+            (1.0e4, -100.0, -5.0),  # opening, decelerating further
+            (1.0e4, 0.0, 0.0),  # static
+            (1.0e4, 0.0, -1.0),  # static, opening acceleration
         ],
     )
     def test_no_closure_is_inf_not_nan(self, r, v, a):
@@ -219,3 +224,289 @@ class TestApn:
             apn_acceleration(np.ones(4), np.ones(3), np.zeros(3), np.zeros(3))
         with pytest.raises(ValueError, match="nav_gain"):
             apn_acceleration(np.ones(3), np.ones(3), np.zeros(3), np.zeros(3), nav_gain=0.0)
+
+
+class TestMidcourseCorrection:
+    """Midcourse trajectory correction on the exoatmospheric arc."""
+
+    T_ARC = 1800.0
+
+    def _nominal(self):
+        """A ballistic arc and the aimpoint it actually reaches.
+
+        Building the target by *flying* the nominal rather than by naming a
+        point guarantees the aimpoint is reachable, so a failure to hit it
+        is a failure of the correction and never of the geometry.
+        """
+        r0 = np.array([6.7e6, 0.0, 0.0])
+        v0 = lambert(r0, np.array([2.0e6, 6.4e6, 0.5e6]), self.T_ARC).v1
+        target = np.asarray(
+            propagate_coast(r0, v0, self.T_ARC, rtol=1e-12, atol=1e-6, n_output=2).states[:3, -1]
+        )
+        return r0, v0, target
+
+    def _state_at(self, r0, v0, t):
+        arc = propagate_coast(r0, v0, t, rtol=1e-12, atol=1e-6, n_output=2)
+        return np.asarray(arc.states[:3, -1]), np.asarray(arc.states[3:, -1])
+
+    def _miss_after(self, r, v, tof, target):
+        arc = propagate_coast(r, v, tof, rtol=1e-12, atol=1e-6, n_output=2)
+        return float(np.linalg.norm(np.asarray(arc.states[:3, -1]) - target))
+
+    def test_correction_nulls_the_miss_across_the_whole_arc(self):
+        """The defining property, checked by flying the corrected state.
+        This must hold at both ends: early, where Lambert's geometry is
+        well conditioned, and late, where the vehicle is nearly collinear
+        with its own aimpoint and Lambert alone is useless."""
+        r0, v0, target = self._nominal()
+        perturbed = v0 + np.array([2.0, -1.5, 0.8])
+        for fraction in (0.02, 0.1, 0.5, 0.9, 0.98):
+            burn = fraction * self.T_ARC
+            r, v = self._state_at(r0, perturbed, burn)
+            correction = correction_maneuver(r, v, target, self.T_ARC - burn)
+            assert self._miss_after(r, correction.v_required, self.T_ARC - burn, target) < 1.0
+
+    def test_cost_follows_the_inverse_time_to_go_law(self):
+        """The trade the module exists to expose. Correcting a fixed
+        position error costs |dv| ~ |dr| / t_go, so the *product* of
+        maneuver magnitude and time-to-go should be roughly invariant along
+        the arc, and should equal the uncorrected miss distance. Both are
+        non-trivial predictions and both hold to about 10%."""
+        r0, v0, target = self._nominal()
+        perturbed = v0 + np.array([2.0, -1.5, 0.8])
+        uncorrected = self._miss_after(r0, perturbed, self.T_ARC, target)
+        products = []
+        for fraction in (0.05, 0.25, 0.5, 0.75, 0.9):
+            burn = fraction * self.T_ARC
+            r, v = self._state_at(r0, perturbed, burn)
+            correction = correction_maneuver(r, v, target, self.T_ARC - burn)
+            products.append(correction.cost * (self.T_ARC - burn))
+        for product in products:
+            assert product == pytest.approx(uncorrected, rel=0.12)
+
+    def test_delaying_the_burn_costs_more(self):
+        """Fuel argues for correcting early, monotonically."""
+        r0, v0, target = self._nominal()
+        perturbed = v0 + np.array([2.0, -1.5, 0.8])
+        costs = []
+        for fraction in (0.05, 0.25, 0.5, 0.75, 0.9):
+            burn = fraction * self.T_ARC
+            r, v = self._state_at(r0, perturbed, burn)
+            costs.append(correction_maneuver(r, v, target, self.T_ARC - burn).cost)
+        assert costs == sorted(costs)
+
+    def test_refinement_beats_the_raw_lambert_seed(self):
+        """Lambert is a two-body solve and the arc carries J2, so the
+        unrefined answer misses by kilometres. This is the measurement that
+        justifies running a Newton iteration at all."""
+        r0, v0, target = self._nominal()
+        r, v = self._state_at(r0, v0 + np.array([2.0, -1.5, 0.8]), 0.25 * self.T_ARC)
+        tof = 0.75 * self.T_ARC
+        raw = correction_maneuver(r, v, target, tof, refine=False)
+        refined = correction_maneuver(r, v, target, tof)
+        raw_miss = self._miss_after(r, raw.v_required, tof, target)
+        assert raw_miss > 1.0e3
+        assert self._miss_after(r, refined.v_required, tof, target) < 1.0
+        assert refined.refinements <= 8
+
+    def test_sensitivity_tends_to_the_free_particle_limit(self):
+        """Over a short arc gravity has not had time to act, so a velocity
+        change moves the terminal position by that change times the elapsed
+        time: dr_f/dv_0 -> t * I. Anything else means the finite-difference
+        steps are mis-scaled."""
+        r0, v0, _ = self._nominal()
+        tof = 10.0
+        sensitivity = miss_sensitivity(r0, v0, tof)
+        assert np.allclose(sensitivity.velocity, tof * np.eye(3), atol=1e-3)
+        # The position block departs from the identity by the gravity
+        # gradient acting over the arc, and it does so with the *structure*
+        # of the tidal tensor (mu/r^3)(3 rr^T - I): stretching along the
+        # radial direction and compressing across it, in a 2:-1 ratio. That
+        # is a sharper check than any blanket tolerance, and it would catch
+        # a sign error or a transposed Jacobian that a norm test would not.
+        radial = np.asarray(r0) / float(np.linalg.norm(r0))
+        tidal = EARTH.mu / float(np.linalg.norm(r0)) ** 3 * tof**2
+        expected = np.eye(3) + 0.5 * tidal * (3.0 * np.outer(radial, radial) - np.eye(3))
+        assert np.allclose(sensitivity.position, expected, atol=1e-6)
+
+    def test_sensitivity_agrees_with_a_direct_perturbation(self):
+        """The finite-difference Jacobian must predict the effect of a
+        finite velocity change, tested against an actual propagation rather
+        than against a second finite difference."""
+        r0, v0, _ = self._nominal()
+        tof = 600.0
+        sensitivity = miss_sensitivity(r0, v0, tof)
+        kick = np.array([0.5, -0.3, 0.2])
+        base = propagate_coast(r0, v0, tof, rtol=1e-12, atol=1e-6, n_output=2)
+        bumped = propagate_coast(r0, v0 + kick, tof, rtol=1e-12, atol=1e-6, n_output=2)
+        actual = np.asarray(bumped.states[:3, -1]) - np.asarray(base.states[:3, -1])
+        predicted = sensitivity.velocity @ kick
+        assert np.allclose(predicted, actual, rtol=2e-3)
+
+    def test_execution_covariance_is_anisotropic_about_the_burn(self):
+        """A burn is far better known along its own axis than across it,
+        and collapsing that to an isotropic sigma would hide the dominant
+        error direction of a large maneuver."""
+        model = ExecutionErrorModel(magnitude_fraction=0.01, pointing_sigma=0.05)
+        dv = np.array([100.0, 0.0, 0.0])
+        cov = model.covariance(dv)
+        assert cov[0, 0] == pytest.approx(1.0**2)
+        assert cov[1, 1] == pytest.approx(5.0**2)
+        assert cov[1, 1] > cov[0, 0]
+        assert np.allclose(cov, cov.T)
+        assert np.all(np.linalg.eigvalsh(cov) >= 0.0)
+
+    def test_execution_error_scales_with_the_burn_but_the_fixed_part_does_not(self):
+        model = ExecutionErrorModel(magnitude_fraction=0.01, pointing_sigma=0.0, fixed_sigma=0.02)
+        small = model.covariance([1.0, 0.0, 0.0])[0, 0]
+        large = model.covariance([100.0, 0.0, 0.0])[0, 0]
+        assert small == pytest.approx(0.01**2 + 0.02**2)
+        assert large == pytest.approx(1.0**2 + 0.02**2)
+        # A zero burn still carries the fixed term and nothing else.
+        assert model.covariance(np.zeros(3))[0, 0] == pytest.approx(0.02**2)
+
+    def test_residual_miss_grows_with_navigation_uncertainty(self):
+        """The knowledge side of the trade: a burn computed from a worse
+        estimate leaves a larger expected miss, even executed perfectly."""
+        r0, v0, target = self._nominal()
+        r, v = self._state_at(r0, v0, 0.25 * self.T_ARC)
+        tof = 0.75 * self.T_ARC
+        misses = []
+        for scale in (1.0, 4.0):
+            cov = np.diag([100.0, 100.0, 100.0, 0.01, 0.01, 0.01]) * scale**2
+            misses.append(
+                correction_maneuver(r, v, target, tof, state_covariance=cov).residual_miss
+            )
+        assert misses[1] > 3.0 * misses[0]
+
+    def test_execution_error_adds_to_the_expected_miss(self):
+        r0, v0, target = self._nominal()
+        r, v = self._state_at(r0, v0 + np.array([5.0, -3.0, 2.0]), 0.1 * self.T_ARC)
+        tof = 0.9 * self.T_ARC
+        cov = np.diag([100.0, 100.0, 100.0, 0.01, 0.01, 0.01])
+        perfect = correction_maneuver(r, v, target, tof, state_covariance=cov)
+        sloppy = correction_maneuver(
+            r,
+            v,
+            target,
+            tof,
+            state_covariance=cov,
+            execution=ExecutionErrorModel(magnitude_fraction=0.05, pointing_sigma=0.02),
+        )
+        assert sloppy.residual_miss > perfect.residual_miss
+
+    def test_miss_is_not_reported_without_a_covariance(self):
+        """Refusing to invent a number is the point: the maneuver is still
+        computed, but the miss it would leave is unknowable without a
+        navigation covariance."""
+        r0, v0, target = self._nominal()
+        r, v = self._state_at(r0, v0, 0.5 * self.T_ARC)
+        result = correction_maneuver(r, v, target, 0.5 * self.T_ARC)
+        assert np.isnan(result.residual_miss)
+        assert np.isfinite(result.cost)
+
+    def test_schedule_flies_the_plan_and_lands_on_the_target(self):
+        """Each burn is computed from the state actually reached, so a
+        multi-burn plan must still arrive."""
+        r0, v0, target = self._nominal()
+        perturbed = v0 + np.array([2.0, -1.5, 0.8])
+        plan = schedule_corrections(
+            r0, perturbed, target, self.T_ARC, [0.2 * self.T_ARC, 0.7 * self.T_ARC]
+        )
+        assert len(plan.corrections) == 2
+        assert plan.total_cost == pytest.approx(sum(c.cost for c in plan.corrections))
+        # The second burn cleans up almost nothing, because the first one
+        # already targeted the true dynamics.
+        assert plan.corrections[1].cost < 0.05 * plan.corrections[0].cost
+
+    def test_a_single_late_burn_costs_more_than_a_single_early_one(self):
+        r0, v0, target = self._nominal()
+        perturbed = v0 + np.array([2.0, -1.5, 0.8])
+        early = schedule_corrections(r0, perturbed, target, self.T_ARC, [0.1 * self.T_ARC])
+        late = schedule_corrections(r0, perturbed, target, self.T_ARC, [0.8 * self.T_ARC])
+        assert late.total_cost > 3.0 * early.total_cost
+
+    def test_schedule_rejects_out_of_order_or_out_of_range_burns(self):
+        r0, v0, target = self._nominal()
+        with pytest.raises(ValueError, match="strictly increasing"):
+            schedule_corrections(r0, v0, target, self.T_ARC, [900.0, 400.0])
+        with pytest.raises(ValueError, match="strictly inside"):
+            schedule_corrections(r0, v0, target, self.T_ARC, [0.0, 900.0])
+        with pytest.raises(ValueError, match="strictly inside"):
+            schedule_corrections(r0, v0, target, self.T_ARC, [900.0, self.T_ARC])
+
+    def test_rejects_degenerate_inputs(self):
+        r0, v0, target = self._nominal()
+        with pytest.raises(ValueError, match="time_of_flight"):
+            correction_maneuver(r0, v0, target, 0.0)
+        with pytest.raises(ValueError, match="3-vector"):
+            correction_maneuver([1.0, 2.0], v0, target, 100.0)
+        with pytest.raises(ValueError, match="state_covariance"):
+            correction_maneuver(r0, v0, target, 100.0, state_covariance=np.eye(3))
+        with pytest.raises(ValueError, match="must be finite"):
+            ExecutionErrorModel(magnitude_fraction=float("nan"))
+        with pytest.raises(ValueError, match="must be finite"):
+            ExecutionErrorModel(pointing_sigma=-1.0)
+
+    def test_execution_induced_miss_is_independent_of_burn_time(self):
+        """The counter-intuitive result, and the reason burning early is
+        not penalised for accuracy. Execution error scales with the
+        maneuver, the maneuver scales as 1/t_go, and terminal sensitivity
+        to a velocity change scales as t_go — so the two cancel. With the
+        navigation covariance zeroed to isolate the effect, the expected
+        miss is flat across a nineteen-fold range of time-to-go even though
+        the maneuver itself grows seventeen-fold."""
+        r0, v0, target = self._nominal()
+        perturbed = v0 + np.array([2.0, -1.5, 0.8])
+        no_knowledge_error = np.zeros((6, 6))
+        execution = ExecutionErrorModel(
+            magnitude_fraction=0.02, pointing_sigma=5.0e-3, fixed_sigma=0.0
+        )
+        misses, costs = [], []
+        for fraction in (0.05, 0.4, 0.8, 0.95):
+            burn = fraction * self.T_ARC
+            r, v = self._state_at(r0, perturbed, burn)
+            result = correction_maneuver(
+                r,
+                v,
+                target,
+                self.T_ARC - burn,
+                state_covariance=no_knowledge_error,
+                execution=execution,
+            )
+            misses.append(result.residual_miss)
+            costs.append(result.cost)
+        assert max(costs) / min(costs) > 15.0
+        assert max(misses) / min(misses) < 1.1
+
+    def test_accuracy_alone_always_favours_the_latest_burn(self):
+        """Given a covariance that improves along the arc, expected miss
+        falls monotonically, so there is no interior accuracy optimum — the
+        trade against fuel is genuinely two-objective."""
+        r0, v0, target = self._nominal()
+        perturbed = v0 + np.array([2.0, -1.5, 0.8])
+
+        def covariance(t):
+            remaining = max(1e-3, 1.0 - t / self.T_ARC)
+            sigma_r = 50.0 + 5000.0 * remaining**1.5
+            sigma_v = 0.05 + 5.0 * remaining**1.5
+            return np.diag([sigma_r**2] * 3 + [sigma_v**2] * 3)
+
+        execution = ExecutionErrorModel(
+            magnitude_fraction=0.02, pointing_sigma=5.0e-3, fixed_sigma=0.01
+        )
+        misses = []
+        for fraction in (0.05, 0.2, 0.4, 0.6, 0.8, 0.95):
+            burn = fraction * self.T_ARC
+            r, v = self._state_at(r0, perturbed, burn)
+            misses.append(
+                correction_maneuver(
+                    r,
+                    v,
+                    target,
+                    self.T_ARC - burn,
+                    state_covariance=covariance(burn),
+                    execution=execution,
+                ).residual_miss
+            )
+        assert misses == sorted(misses, reverse=True)
