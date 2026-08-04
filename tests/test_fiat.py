@@ -78,8 +78,10 @@ from passes.thermal.fiat.pica_kinetics import (
     ParallelReaction,
     advancement_to_fiat_rate,
     char_required_by_mass_balance,
+    char_yield_from_gas_composition,
     competitive_mass_fraction,
     parallel_pica_resin,
+    resin_carbon_mass_fraction,
 )
 from passes.thermal.fiat.pica_surface import QUINN_GAS_RATES, read_quinn_bprime
 from passes.thermal.fiat.quinn import CURVE_LOCATIONS, load_quinn_case
@@ -1884,6 +1886,45 @@ class TestPicaPyrolysisComposition:
             for e in PICA_RESIN_ELEMENTS
         )
         assert spread < 0.02
+
+    def test_resin_reproduces_scoggins_maximum_char_yields(self):
+        """[SCO2017] states the maximum char yield of a pure-carbon char is
+        the resin's carbon mass fraction, and reports 79.2% for the linear
+        polymer and 80.4% for the fully cross-linked one. Recovering those
+        from our stored compositions confirms them independently of the
+        source that supplied them."""
+        assert resin_carbon_mass_fraction() == pytest.approx(0.792, abs=0.002)
+        assert resin_carbon_mass_fraction(PICA_RESIN_ELEMENTS_CROSSLINKED) == pytest.approx(
+            0.804, abs=0.002
+        )
+
+    def test_char_yield_is_self_consistent_for_the_adopted_composition(self):
+        """[SCO2017] Eq. (12) leaves H and O untouched by pyrolysis, so the
+        char yield inferred through hydrogen and through oxygen must agree.
+        The spread grades a composition: Park 0.1 points, TACOT 0.5, the
+        adopted FIATv3 value 1.1, the superseded one 4.1."""
+        via_h, via_o = char_yield_from_gas_composition(PICA_PYROLYSIS_ELEMENTS)
+        assert abs(via_h - via_o) < 0.02
+        # And it lands in the 50-65% band [SCO2017] gives for real materials.
+        assert 0.50 <= via_h <= 0.65 and 0.50 <= via_o <= 0.65
+
+    def test_superseded_composition_is_the_least_self_consistent(self):
+        """The discriminator that condemned it, in [SCO2017]'s framing."""
+        spreads = {
+            name: abs(a - b)
+            for name, (a, b) in {
+                "adopted": char_yield_from_gas_composition(PICA_PYROLYSIS_ELEMENTS),
+                "park": char_yield_from_gas_composition({"C": 0.229, "H": 0.661, "O": 0.110}),
+                "tacot": char_yield_from_gas_composition({"C": 0.206, "H": 0.679, "O": 0.115}),
+                "superseded": char_yield_from_gas_composition(PICA_PYROLYSIS_ELEMENTS_MEASURED),
+            }.items()
+        }
+        assert spreads["superseded"] == max(spreads.values())
+        assert spreads["superseded"] > 3.0 * spreads["adopted"]
+
+    def test_char_yield_needs_positive_hydrogen_and_oxygen(self):
+        with pytest.raises(ValueError, match="positive H and O"):
+            char_yield_from_gas_composition({"C": 1.0, "H": 0.0, "O": 0.0})
 
     def test_mass_balance_rejects_a_degenerate_gas_fraction(self):
         with pytest.raises(ValueError, match="gas_mole_fraction"):

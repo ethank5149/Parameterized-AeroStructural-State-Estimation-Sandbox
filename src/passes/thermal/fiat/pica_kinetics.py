@@ -15,6 +15,14 @@ Sources, both in ``reference/``:
   Phenolic Impregnated Carbon Ablator (PICA) based on mass spectroscopy
   experiments," *J. Analytical and Applied Pyrolysis* **141** (2019)
   104625.
+* **[RAB2014]** Rabinovitch, Marx & Blanquart, "Pyrolysis Gas Composition
+  for a Phenolic Impregnated Carbon Ablator Heatshield," AIAA 2014-2246.
+  Source of the elemental bookkeeping below, including FIATv3's own
+  pyrolysis-gas composition.
+* **[SCO2017]** Scoggins, Leroy, Bellas-Chatzigeorgis, Dias & Magin,
+  "Thermodynamic properties of carbon-phenolic gas mixtures," *Aerospace
+  Science and Technology* **66** (2017) 177-192. Source of the single-step
+  pure-carbon-char pyrolysis relation used to audit those compositions.
 
 The structural finding
 ----------------------
@@ -82,8 +90,10 @@ __all__ = [
     "ParallelReaction",
     "advancement_to_fiat_rate",
     "char_required_by_mass_balance",
+    "char_yield_from_gas_composition",
     "competitive_mass_fraction",
     "parallel_pica_resin",
+    "resin_carbon_mass_fraction",
 ]
 
 _FloatArray = NDArray[np.float64]
@@ -502,6 +512,66 @@ PICA_PYROLYSIS_ELEMENTS_RANGE = {
     "H": (0.6613, 0.6782),
     "O": (0.1457, 0.1593),
 }
+
+
+_MOLAR_MASS = {"C": 12.011, "H": 1.008, "O": 15.999}
+
+
+def resin_carbon_mass_fraction(resin: dict[str, float] | None = None) -> float:
+    """Carbon mass fraction of the resin, [SCO2017] Eq. (13).
+
+    Scoggins, Leroy, Bellas-Chatzigeorgis, Dias & Magin, "Thermodynamic
+    properties of carbon-phenolic gas mixtures," *Aerospace Science and
+    Technology* **66** (2017) 177-192, notes that this is also the *maximum*
+    attainable char yield: a pure-carbon char cannot carry away more carbon
+    than the resin contains. It evaluates to 79.3% for the linear polymer and
+    80.3% for the fully cross-linked one, against the 79.2% and 80.4% the
+    paper reports — an independent confirmation of
+    :data:`PICA_RESIN_ELEMENTS`.
+    """
+    base = PICA_RESIN_ELEMENTS if resin is None else resin
+    masses = {e: base[e] * _MOLAR_MASS[e] for e in base}
+    return masses["C"] / sum(masses.values())
+
+
+def char_yield_from_gas_composition(
+    gas: dict[str, float],
+    resin: dict[str, float] | None = None,
+) -> tuple[float, float]:
+    """Char yield implied by a pyrolysis-gas composition, two ways.
+
+    [SCO2017] Eq. (12) treats pyrolysis as one step producing a pure-carbon
+    char, ``CaHbOc -> C(alpha)HbOc + C(a-alpha)``, so hydrogen and oxygen pass
+    through **unchanged** and Eq. (13) gives the char yield
+
+    .. math::
+
+        \\chi = y^{\\mathrm{resin}}_C \\left(1 - \\frac{\\alpha}{a}\\right).
+
+    Because H and O are untouched, :math:`\\alpha` can be recovered from the
+    gas either through hydrogen or through oxygen, and a self-consistent
+    composition gives the same answer both ways. The **spread between the two
+    is the diagnostic**: it is zero for a composition that conserves elements
+    and grows with whichever of H or O was mismeasured.
+
+    Returns
+    -------
+    tuple[float, float]
+        Char yield inferred via hydrogen and via oxygen, as mass fractions.
+    """
+    base = PICA_RESIN_ELEMENTS if resin is None else resin
+    total = sum(gas.values())
+    if not (np.isfinite(total) and total > 0.0):
+        raise ValueError("gas composition must have a finite positive sum")
+    fractions = {e: gas[e] / total for e in gas}
+    if fractions.get("H", 0.0) <= 0.0 or fractions.get("O", 0.0) <= 0.0:
+        raise ValueError("gas composition needs positive H and O to invert")
+    carbon_mass = resin_carbon_mass_fraction(base)
+    yields = []
+    for element in ("H", "O"):
+        alpha = fractions["C"] / fractions[element] * base[element]
+        yields.append(carbon_mass * (1.0 - alpha / base["C"]))
+    return yields[0], yields[1]
 
 
 def char_required_by_mass_balance(

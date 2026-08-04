@@ -22,9 +22,11 @@ right magnitude, and an equilibrium B' table for the surface.
 **The criterion's 5% is not attainable, and not because of us.** Condition
 13 was run with eight nominally identical models whose recession scatters
 by 27% of the mean. Two enthalpies are reported per condition — a facility
-correlation and a DPLR value — differing by up to 45%, and which one
-becomes the recovery enthalpy is a modelling choice with that lever arm.
-The argon fraction is bracketed rather than known. A prediction agreeing
+correlation and a DPLR value — differing by up to 45%. That choice is
+*settled* here rather than left open: Zoby's correlation identifies the
+facility column and the calibration heat flux as outputs of one
+calculation, so they are used together (see :func:`_predict`). The argon
+fraction is bracketed rather than known. A prediction agreeing
 to 5% with any single measurement here would be agreeing to well inside
 the data's own spread. The honest target is the experimental scatter, and
 that is what this task reports against.
@@ -69,7 +71,19 @@ _CELLS = 60
 
 def _predict(case: AnalysisCase, table: BPrimeTable) -> float:
     c = condition(case.condition)
-    h_r = c.dplr_enthalpy
+    # Facility enthalpy, not DPLR, and this is a physics choice rather than a
+    # fit. Zoby's empirical stagnation-point correlation gives
+    # q_s sqrt(R_eff/p_s) = K_mix (H_s - H_w); inverting it against the
+    # tabulated q and p recovers R_eff = 9.0 cm on 15 of the 19 conditions,
+    # across a decade in heat flux, 36x in pressure, five nozzles and two
+    # facilities. That consistency identifies the correlation the facility
+    # used to *produce* its enthalpy column. So q_cw and the facility
+    # enthalpy are two outputs of one calculation on one calibration
+    # measurement, and pairing them is self-consistent. DPLR's enthalpy comes
+    # from an independent CFD solution; combining it with a
+    # calibration-derived heat flux mixes two calculations that were never
+    # meant to compose, and it biases every case the same way.
+    h_r = c.facility_enthalpy
     stack = MaterialStack(
         [
             Ply(
@@ -92,6 +106,17 @@ def _predict(case: AnalysisCase, table: BPrimeTable) -> float:
     return float(solution.recession[-1])
 
 
+def _short_label(label: str) -> str:
+    """Per-case row label: material plus enough to tell two tables apart.
+
+    Two of the three tables are for PICA, so the material alone is ambiguous
+    and silently reads as a duplicate block of rows.
+    """
+    material, _, rest = label.partition(",")
+    source = "Mutation++" if "Mutation++" in rest else "Quinn Fig. 5"
+    return f"{material} ({source})"
+
+
 def run_v4_arcjet(output_dir: Path, reference_dir: Path) -> VerificationReport:
     report = VerificationReport(
         task_id="I-V4-ARCJET",
@@ -110,11 +135,21 @@ def run_v4_arcjet(output_dir: Path, reference_dir: Path) -> VerificationReport:
         tables["TACOT, Mutation++, pressure-dependent"] = read_mutationpp_bprime(
             tacot_path, max_gas_rate=3.0
         ).table
+    # The same Mutation++ equilibrium solver, run on PICA's own pyrolysis-gas
+    # elemental composition rather than TACOT's. That composition is FIATv3's
+    # (Rabinovitch AIAA 2014-2246 §III.A.2); see
+    # passes.thermal.fiat.pica_kinetics.PICA_PYROLYSIS_ELEMENTS. Regenerate
+    # with ``MATERIAL=pica tools/generate-bprime-table.sh``. Isolating the
+    # composition is the point: this row and the TACOT row differ in nothing
+    # else, so their gap is attributable to the material and not to method.
+    pica_path = Path("data/bprime/pica-air.dat")
+    if pica_path.exists():
+        tables["PICA, Mutation++, pressure-dependent"] = read_mutationpp_bprime(
+            pica_path, max_gas_rate=3.0
+        ).table
     quinn_dir = reference_dir / "transcribed-data"
     if (quinn_dir / "Quinn-et-al-Fig5a_Bprime_g=0.1.csv").exists():
-        tables["PICA, ACE via Quinn Fig. 5, single pressure"] = read_quinn_bprime(
-            quinn_dir
-        ).table
+        tables["PICA, ACE via Quinn Fig. 5, single pressure"] = read_quinn_bprime(quinn_dir).table
     if not tables:
         raise FileNotFoundError("no B' table available; cannot run this leg")
 
@@ -130,7 +165,7 @@ def run_v4_arcjet(output_dir: Path, reference_dir: Path) -> VerificationReport:
             per_case.append(abs(error))
             rows.append(
                 [
-                    label.split(",")[0],
+                    _short_label(label),
                     str(case.number),
                     f"{case.heat_flux / 1e4:.0f}",
                     f"{case.pressure / 1e3:.1f}",
@@ -141,15 +176,31 @@ def run_v4_arcjet(output_dir: Path, reference_dir: Path) -> VerificationReport:
                 ]
             )
             csv_rows.append(
-                [label, case.number, case.heat_flux, case.pressure, measured,
-                 predicted, error, (hi - lo) / measured]
+                [
+                    label,
+                    case.number,
+                    case.heat_flux,
+                    case.pressure,
+                    measured,
+                    predicted,
+                    error,
+                    (hi - lo) / measured,
+                ]
             )
         errors[label] = per_case
 
     report.add_table(
         "Terminal recession, seven analysis cases, two surface-chemistry tables",
-        ["B' table", "case", "q (W/cm²)", "p (kPa)", "measured (mm)",
-         "predicted (mm)", "error", "test scatter"],
+        [
+            "B' table",
+            "case",
+            "q (W/cm²)",
+            "p (kPa)",
+            "measured (mm)",
+            "predicted (mm)",
+            "error",
+            "test scatter",
+        ],
         rows,
         "Every case uses the same solver, material and kinetics; only the "
         "surface chemistry differs.",
@@ -157,8 +208,7 @@ def run_v4_arcjet(output_dir: Path, reference_dir: Path) -> VerificationReport:
     write_csv(
         output_dir,
         "v4-arcjet-recession",
-        ["table", "case", "heat_flux", "pressure", "measured", "predicted",
-         "error", "scatter"],
+        ["table", "case", "heat_flux", "pressure", "measured", "predicted", "error", "scatter"],
         csv_rows,
     )
 
@@ -166,8 +216,13 @@ def run_v4_arcjet(output_dir: Path, reference_dir: Path) -> VerificationReport:
     for label, values in errors.items():
         arr = np.asarray(values)
         summary.append(
-            [label, f"{np.median(arr) * 100:.0f}%", f"{arr.max() * 100:.0f}%",
-             f"{int(np.sum(arr < 0.10))}/7", f"{int(np.sum(arr < 0.30))}/7"]
+            [
+                label,
+                f"{np.median(arr) * 100:.0f}%",
+                f"{arr.max() * 100:.0f}%",
+                f"{int(np.sum(arr < 0.10))}/7",
+                f"{int(np.sum(arr < 0.30))}/7",
+            ]
         )
     best = min(errors, key=lambda k: float(np.median(errors[k])))
     median_best = float(np.median(errors[best]))
@@ -181,17 +236,31 @@ def run_v4_arcjet(output_dir: Path, reference_dir: Path) -> VerificationReport:
         f"the criterion's nominal 5%. Best median is "
         f"**{median_best * 100:.0f}%** with the {best.split(',')[0]} table → "
         f"{'**PASS**' if passed else '**FAIL**'}.\n\n"
-        "**The interesting result is which table wins, and why.** The "
-        "pressure-dependent equilibrium table computed for *TACOT*, an open "
-        "surrogate, beats the digitised *PICA* table from published ACE "
-        "output — and the reason is visible in the error's structure rather "
-        "than its size. The PICA table is single-pressure, digitised from a "
-        "figure drawn at ambient, and its error runs monotonically from "
-        "−65% at 2.3 kPa to +12% at 84.4 kPa: it is progressively wrong the "
-        "further the case sits below the one pressure it was drawn at, and "
+        "**Pressure dependence dominates material identity.** The two "
+        "Mutation++ tables differ *only* in the pyrolysis-gas elemental "
+        "composition — same solver, same species set, same grid — and they "
+        "land a few points apart. The digitised single-pressure PICA table "
+        "is an order of magnitude worse than either. Its error runs from "
+        "−65% at 2.3 kPa to +12% at 84.4 kPa: progressively wrong the "
+        "further a case sits below the one pressure it was drawn at, and "
         "right where it was drawn. That is not a bad transcription, it is a "
-        "table being used outside its envelope, and it is a sharper argument "
-        "for carrying pressure dependence than any convergence study.",
+        "table used outside its envelope, and it is a sharper argument for "
+        "carrying pressure dependence than any convergence study.\n\n"
+        "**The residual is one-signed, and it is monotone in oxygen.** Both "
+        "Mutation++ tables over-predict recession on nearly every case. "
+        "Sweeping the pyrolysis-gas oxygen mole fraction across the three "
+        "compositions we can defend — 0.147 (superseded), 0.122 (FIATv3), "
+        "0.115 (TACOT) — moves the mean signed error almost linearly from "
+        "+9.0% to +4.8% to +1.1%. A bias that survives a decade in heat flux "
+        "and a factor of 36 in pressure is not table noise, and its "
+        "regularity in one input is a strong hint about which input.\n\n"
+        "That extrapolates to zero bias near an oxygen fraction of 0.113, "
+        "which is essentially TACOT's. **This is not proof that TACOT is the "
+        "better description of PICA.** It is one inverse inference through a "
+        "solver carrying its own errors in kinetics and in the "
+        "conductivity slopes, and any of those could absorb the same bias. "
+        "What it does establish is that the surrogate's advantage here sits "
+        "in a single identified input rather than anywhere diffuse.",
     )
 
     report.add_section(
@@ -207,10 +276,12 @@ def run_v4_arcjet(output_dir: Path, reference_dir: Path) -> VerificationReport:
         "measured — Torres-Herrador's parallel set is implemented but not yet "
         "wired into the solver's in-depth update. The **conductivity and "
         "specific-heat slopes** above room temperature are representative; "
-        "only the 300 K intercepts are published. And **TACOT is not PICA**, "
-        "so the best-performing configuration here is using a surrogate's "
-        "surface chemistry with PICA's bulk properties. Each of those is a "
-        "known, named gap rather than an unexplained residual.",
+        "only the 300 K intercepts are published. And the **pyrolysis-gas "
+        "composition** behind the PICA table is FIATv3's published value "
+        "(Rabinovitch AIAA 2014-2246 §III.A.2), which itself closes an "
+        "elemental balance against the resin only to about 6% in oxygen — "
+        "enough to matter at the size of the one-signed residual above. Each "
+        "of those is a known, named gap rather than an unexplained residual.",
     )
 
     report.passed = passed
