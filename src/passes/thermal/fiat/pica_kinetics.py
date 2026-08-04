@@ -71,11 +71,17 @@ __all__ = [
     "COMPETITIVE_PICA_BAYESIAN",
     "COMPETITIVE_PICA_DETERMINISTIC",
     "PARALLEL_PICA_RESIN",
+    "PICA_CHAR_ELEMENTS",
     "PICA_PYROLYSIS_ELEMENTS",
+    "PICA_PYROLYSIS_ELEMENTS_FIATV3",
+    "PICA_PYROLYSIS_ELEMENTS_MEASURED",
     "PICA_PYROLYSIS_ELEMENTS_RANGE",
+    "PICA_RESIN_ELEMENTS",
+    "PICA_RESIN_ELEMENTS_CROSSLINKED",
     "CompetitivePica",
     "ParallelReaction",
     "advancement_to_fiat_rate",
+    "char_required_by_mass_balance",
     "competitive_mass_fraction",
     "parallel_pica_resin",
 ]
@@ -406,9 +412,7 @@ def parallel_pica_resin(
         char = virgin * (1.0 - total)
         components.append(
             ArrheniusComponent(
-                pre_exponential=advancement_to_fiat_rate(
-                    r.log10_a, r.order, virgin, char
-                ),
+                pre_exponential=advancement_to_fiat_rate(r.log10_a, r.order, virgin, char),
                 activation_energy=r.activation_energy_kj * 1.0e3,
                 reaction_order=r.order,
                 virgin_density=virgin,
@@ -418,31 +422,79 @@ def parallel_pica_resin(
     return components
 
 
+# --------------------------------------------------------------------------
+# Elemental bookkeeping  [RAB2014]
+# --------------------------------------------------------------------------
+#
+# Rabinovitch, Marx & Blanquart, "Pyrolysis Gas Composition for a Phenolic
+# Impregnated Carbon Ablator Heatshield," AIAA 2014-2246 (in ``reference/``)
+# compiles the solid-side numbers that close the elemental books on PICA.
+# They are what let a candidate pyrolysis-gas composition be *checked*
+# rather than merely quoted.
+
+#: Elemental composition of cured phenolic resin, mole fractions.
+#:
+#: [RAB2014] §II.B.1: the repeating unit of the idealised linear polymer is
+#: C₇H₆O. A fully cross-linked molecule gives 0.517:0.414:0.069 instead, and
+#: the paper offers the pair as "limiting idealized cases". Sykes' elemental
+#: analysis of a real cured novolac lands at 0.488:0.434:0.078 once trapped
+#: ammonia is removed, i.e. between them.
+PICA_RESIN_ELEMENTS = {"C": 0.500, "H": 0.429, "O": 0.071}
+
+#: Cross-linked limit of the resin composition, the other bracket.
+PICA_RESIN_ELEMENTS_CROSSLINKED = {"C": 0.517, "H": 0.414, "O": 0.069}
+
+#: Elemental composition of char, mole fractions — Sykes at 850 °C.
+#:
+#: [RAB2014] §II.C, from 92.6% C / 0.9% H / 6.5% O by mass. Tran's XPS of an
+#: arc-jet-tested PICA char instead gives 98% C with 1.7% O and no reported
+#: hydrogen; [RAB2014] attributes the gap to Tran's sample being fully
+#: pyrolysed and calls the discrepancy unresolved. Both chars are *oxygen*
+#: rich relative to hydrogen compared with the resin, which is the fact
+#: :func:`char_required_by_mass_balance` turns into a falsifiable test.
+PICA_CHAR_ELEMENTS = {"C": 0.856, "H": 0.099, "O": 0.045}
+
 #: Elemental composition of PICA pyrolysis gas, mole fractions.
 #:
-#: This is the number that separates a PICA surface-chemistry deck from a
-#: TACOT one, and it is confirmed by two independent routes.
+#: **This is FIAT's own value**, and using it is the point. [RAB2014] §III.A.2
+#: reports that Milos & Chen's FIATv3 PICA deck injects pyrolysis gas at
+#: C:H:N:O:Si = 0.18:0.68:0.014:0.12:0.006 by mole, essentially constant over
+#: a surface-temperature excursion from 200 °C to 3000 °C. Dropping the trace
+#: N and Si — which this solver's B′ tables do not carry — and renormalising
+#: gives the numbers below. It corresponds to a char yield near 65%.
 #:
-#: **Route 1** — weight [TH2019] Table 2's species yields ζ by their
-#: density-loss fractions F and sum over each species' formula. That gives
-#: C 0.1745, H 0.6785, O 0.1470.
+#: **It replaces a measurement-derived composition that could not be right.**
+#: Earlier revisions carried C 0.1745, H 0.6785, O 0.1470, obtained two ways:
+#: weighting [TH2019] Table 2's species yields by their density-loss
+#: fractions, and integrating Bessire & Minton Fig. 7's mass yields over
+#: temperature at four heating rates. The two agreed closely, which is why
+#: they were trusted. They agree because they share a bias, not because they
+#: are right: both are gas-phase speciation measurements, and both are
+#: subject to the same under-recovery of H₂ and over-recovery of desorbed
+#: water. :func:`char_required_by_mass_balance` shows the consequence — that
+#: composition demands a char with H/O ≈ 13, hydrogen-rich, and at any char
+#: yield above 50% it demands *negative* oxygen in the char. No char can do
+#: that. See :data:`PICA_PYROLYSIS_ELEMENTS_MEASURED`.
+PICA_PYROLYSIS_ELEMENTS = {"C": 0.183673, "H": 0.693878, "O": 0.122449}
+
+#: The unrenormalised FIATv3 composition, trace species included.
 #:
-#: **Route 2** — integrate Bessire & Minton Fig. 7's measured mass yields
-#: over temperature, species by species, at each of four heating rates.
-#: That gives C 0.167–0.187, H 0.661–0.678, O 0.146–0.159. Route 1 lands
-#: inside that band on carbon and oxygen, and misses on hydrogen by
-#: 0.0003 — 0.04%, far inside what a figure-traced ordinate supports.
+#: [RAB2014] attributes the nitrogen to resin-synthesis impurities and notes
+#: that the origin of the silicon is unclear even to its authors.
+PICA_PYROLYSIS_ELEMENTS_FIATV3 = {
+    "C": 0.18,
+    "H": 0.68,
+    "N": 0.014,
+    "O": 0.12,
+    "Si": 0.006,
+}
+
+#: The superseded speciation-derived composition, kept for the audit trail.
 #:
-#: The two share no methodology: one is a fitted kinetic mechanism, the
-#: other is raw integrated mass spectrometry. The composition is also
-#: nearly heating-rate independent, varying about 11% in carbon across a
-#: factor of eight in rate.
-#:
-#: **TACOT differs where it counts.** Its deck carries C 0.206, O 0.115 —
-#: 18% richer in carbon and 21% leaner in oxygen than PICA, while agreeing
-#: on hydrogen to 0.1%. TACOT is the open surrogate, not the material, and
-#: the carbon and oxygen are where the two part.
-PICA_PYROLYSIS_ELEMENTS = {"C": 0.1745, "H": 0.6785, "O": 0.1470}
+#: Retained so that :func:`char_required_by_mass_balance` can be exercised on
+#: a composition known to fail, and so the earlier arc-jet results remain
+#: reproducible. Do not use it to build a B′ table.
+PICA_PYROLYSIS_ELEMENTS_MEASURED = {"C": 0.1745, "H": 0.6785, "O": 0.1470}
 
 #: Range spanned by the four Bessire & Minton heating rates, for reference.
 PICA_PYROLYSIS_ELEMENTS_RANGE = {
@@ -450,3 +502,51 @@ PICA_PYROLYSIS_ELEMENTS_RANGE = {
     "H": (0.6613, 0.6782),
     "O": (0.1457, 0.1593),
 }
+
+
+def char_required_by_mass_balance(
+    gas: dict[str, float],
+    gas_mole_fraction: float,
+    resin: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """Char composition implied by a pyrolysis-gas composition.
+
+    One mole of resin atoms splits into ``gas_mole_fraction`` moles of gas
+    atoms and the remainder as char, so conservation of each element fixes
+    the char outright:
+
+    .. math::
+
+        x_{i,\\mathrm{char}} =
+            \\frac{x_{i,\\mathrm{resin}} - g\\,x_{i,\\mathrm{gas}}}{1 - g}
+
+    This is a *test*, not a model. A gas composition consistent with the
+    resin yields a char that is carbon-rich and has every mole fraction
+    non-negative. One that is not yields a char that is impossible, and the
+    sign of the violation says which element was mismeasured.
+
+    Parameters
+    ----------
+    gas:
+        Pyrolysis-gas mole fractions, keyed by element symbol.
+    gas_mole_fraction:
+        Moles of gas atoms per mole of resin atoms, in ``(0, 1)``.
+    resin:
+        Resin mole fractions; defaults to :data:`PICA_RESIN_ELEMENTS`.
+
+    Returns
+    -------
+    dict[str, float]
+        Char mole fractions, which are **not** clipped and may be negative
+        when the input gas composition violates the balance.
+    """
+    g = float(gas_mole_fraction)
+    if not (np.isfinite(g) and 0.0 < g < 1.0):
+        raise ValueError(f"gas_mole_fraction must be finite and in (0, 1), got {g}")
+    base = PICA_RESIN_ELEMENTS if resin is None else resin
+    total = sum(gas.values())
+    if not (np.isfinite(total) and total > 0.0):
+        raise ValueError("gas composition must have a finite positive sum")
+    return {
+        element: (base.get(element, 0.0) - g * gas[element] / total) / (1.0 - g) for element in gas
+    }

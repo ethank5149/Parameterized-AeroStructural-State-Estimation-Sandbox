@@ -68,11 +68,16 @@ from passes.thermal.fiat.pica_kinetics import (
     COMPETITIVE_PICA_BAYESIAN,
     COMPETITIVE_PICA_DETERMINISTIC,
     PARALLEL_PICA_RESIN,
+    PICA_CHAR_ELEMENTS,
     PICA_PYROLYSIS_ELEMENTS,
-    PICA_PYROLYSIS_ELEMENTS_RANGE,
+    PICA_PYROLYSIS_ELEMENTS_FIATV3,
+    PICA_PYROLYSIS_ELEMENTS_MEASURED,
+    PICA_RESIN_ELEMENTS,
+    PICA_RESIN_ELEMENTS_CROSSLINKED,
     CompetitivePica,
     ParallelReaction,
     advancement_to_fiat_rate,
+    char_required_by_mass_balance,
     competitive_mass_fraction,
     parallel_pica_resin,
 )
@@ -88,9 +93,7 @@ from passes.thermal.material import ArrheniusComponent, LinearBlendProperty
 from passes.thermal.surface import STEFAN_BOLTZMANN
 
 
-def make_table(
-    t_lo: float = 200.0, t_hi: float = 4500.0, b_hi: float = 6.0
-) -> BPrimeTable:
+def make_table(t_lo: float = 200.0, t_hi: float = 4500.0, b_hi: float = 6.0) -> BPrimeTable:
     """A smooth synthetic B' surface.
 
     Explicitly not a thermochemistry calculation: a logistic in wall
@@ -226,9 +229,7 @@ class TestBlowingCorrection:
         x = 2.0 * lam * b
         expected = 1.0 - 0.5 * x + x**2 / 3.0
         # The series is truncated at x^2, so it can only be trusted to O(x^3).
-        assert float(blowing_reduction(b, lam)) == pytest.approx(
-            expected, abs=max(x**3, 1e-15)
-        )
+        assert float(blowing_reduction(b, lam)) == pytest.approx(expected, abs=max(x**3, 1e-15))
 
     @pytest.mark.parametrize("b", [0.05, 0.5, 2.0, 10.0])
     @pytest.mark.parametrize("lam", [0.2, 0.4, 0.5])
@@ -267,8 +268,7 @@ class TestBPrimeTable:
         analytic = table.char_rate_derivative(5000.0, 0.5, 2800.0)
         h = 5.0
         fd = (
-            table.char_rate(5000.0, 0.5, 2800.0 + h)
-            - table.char_rate(5000.0, 0.5, 2800.0 - h)
+            table.char_rate(5000.0, 0.5, 2800.0 + h) - table.char_rate(5000.0, 0.5, 2800.0 - h)
         ) / (2.0 * h)
         # A spline derivative against a central difference agrees to the
         # difference's own O(h^2) truncation, not to round-off.
@@ -429,9 +429,9 @@ class TestJacobian:
             up, um = u.copy(), u.copy()
             up[i] += h
             um[i] -= h
-            numeric[:, i] = (
-                solver._residual(up, ctx)[0] - solver._residual(um, ctx)[0]
-            ) / (2.0 * h)
+            numeric[:, i] = (solver._residual(up, ctx)[0] - solver._residual(um, ctx)[0]) / (
+                2.0 * h
+            )
         scale = np.maximum(np.abs(numeric), 1e-6 * np.abs(numeric).max())
         assert np.max(np.abs(analytic - numeric) / scale) < 1e-4
 
@@ -564,9 +564,7 @@ class TestDiscretisation:
         results = []
         for n in (60, 120, 240):
             t, envs = pulse(n, 60.0)
-            results.append(
-                FiatSolver(stack).solve(t, envs, table, ADIABATIC, 300.0).recession[-1]
-            )
+            results.append(FiatSolver(stack).solve(t, envs, table, ADIABATIC, 300.0).recession[-1])
         first = abs(results[1] - results[0])
         second = abs(results[2] - results[1])
         assert second < 0.7 * first, f"not converging: {results}"
@@ -631,9 +629,7 @@ class TestSurfaceAndBackface:
 
     def test_radiating_backface_satisfies_its_own_balance(self):
         stack = make_stack(20)
-        backface = BackfaceCondition(
-            BackfaceKind.RADIATING, emissivity=0.8, sink_temperature=250.0
-        )
+        backface = BackfaceCondition(BackfaceKind.RADIATING, emissivity=0.8, sink_temperature=250.0)
         t, envs = pulse(120, 60.0, peak=6.0e6)
         solution = FiatSolver(stack).solve(t, envs, make_table(), backface, 300.0)
         step = solution.steps[-1]
@@ -641,8 +637,8 @@ class TestSurfaceAndBackface:
         k = FiatSolver(stack)._properties(
             step.temperature, FiatSolver(stack).bulk_density(step.component_density)
         )[0]
-        conduction = k[-1] * (step.temperature[-1] - step.backface_temperature) / (
-            0.5 * grid.widths[-1]
+        conduction = (
+            k[-1] * (step.temperature[-1] - step.backface_temperature) / (0.5 * grid.widths[-1])
         )
         radiated = 0.8 * STEFAN_BOLTZMANN * (step.backface_temperature**4 - 250.0**4)
         assert conduction == pytest.approx(radiated, rel=1e-6)
@@ -712,24 +708,18 @@ class TestSolverContract:
         """An inexact or wrong Jacobian shows up here before it shows up
         anywhere else."""
         t, envs = pulse(240, 60.0)
-        solution = FiatSolver(make_stack(40)).solve(
-            t, envs, make_table(), ADIABATIC, 300.0
-        )
+        solution = FiatSolver(make_stack(40)).solve(t, envs, make_table(), ADIABATIC, 300.0)
         worst = max(s.newton_iterations for s in solution.steps)
         assert worst <= 20, f"worst step took {worst} Newton iterations"
 
     def test_recession_outer_loop_converges(self):
         t, envs = pulse(240, 60.0)
-        solution = FiatSolver(make_stack(40)).solve(
-            t, envs, make_table(), ADIABATIC, 300.0
-        )
+        solution = FiatSolver(make_stack(40)).solve(t, envs, make_table(), ADIABATIC, 300.0)
         assert max(s.recession_iterations for s in solution.steps) < 20
 
     def test_recession_is_monotone(self):
         t, envs = pulse(240, 60.0)
-        solution = FiatSolver(make_stack(40)).solve(
-            t, envs, make_table(), ADIABATIC, 300.0
-        )
+        solution = FiatSolver(make_stack(40)).solve(t, envs, make_table(), ADIABATIC, 300.0)
         assert np.all(np.diff(solution.recession) >= -1e-15)
 
 
@@ -893,9 +883,7 @@ class TestKinetics:
                 continue
             assert got.pre_exponential == pytest.approx(want.pre_exponential, rel=1e-2)
             assert got.activation_energy == pytest.approx(want.activation_energy, rel=1e-3)
-        assert np.max(
-            np.abs(tga_mass_fraction(recovered, w, t, rate) - mass)
-        ) < 1e-6
+        assert np.max(np.abs(tga_mass_fraction(recovered, w, t, rate) - mass)) < 1e-6
 
     def test_fit_holds_inert_components(self):
         comps, w = self._components()
@@ -908,9 +896,7 @@ class TestKinetics:
     def test_fit_refuses_an_all_inert_template(self):
         inert = [ArrheniusComponent(0.0, 1e5, 1.0, 100.0, 99.0)]
         with pytest.raises(ValueError, match="no decomposing components"):
-            fit_arrhenius(
-                np.linspace(300.0, 1000.0, 10), np.ones(10), 0.3, inert, np.array([1.0])
-            )
+            fit_arrhenius(np.linspace(300.0, 1000.0, 10), np.ones(10), 0.3, inert, np.array([1.0]))
 
     def test_calibration_refuses_to_move_a_published_char_yield(self):
         comps, w = self._components()
@@ -1094,14 +1080,19 @@ class TestPublishedPicaKinetics:
         climbs. A set violating it is not this mechanism."""
         with pytest.raises(ValueError, match="E11 < E12"):
             CompetitivePica(
-                log10_a11=5.0, e11=2.0e5, log10_a12=5.0, e12=1.0e5,
-                log10_a21=1.0, e21=5.0e4, log10_a31=1.0, e31=3.0e4,
-                gamma_gas_2=0.16, gamma_gas_3=0.24,
+                log10_a11=5.0,
+                e11=2.0e5,
+                log10_a12=5.0,
+                e12=1.0e5,
+                log10_a21=1.0,
+                e21=5.0e4,
+                log10_a31=1.0,
+                e31=3.0e4,
+                gamma_gas_2=0.16,
+                gamma_gas_3=0.24,
             )
 
-    @pytest.mark.parametrize(
-        "model", [COMPETITIVE_PICA_DETERMINISTIC, COMPETITIVE_PICA_BAYESIAN]
-    )
+    @pytest.mark.parametrize("model", [COMPETITIVE_PICA_DETERMINISTIC, COMPETITIVE_PICA_BAYESIAN])
     def test_competitive_peak_shifts_down_with_heating_rate(self, model):
         """The published anomaly, at the two rates the model was calibrated
         against: Wong et al. at 10 K/min and Bessire & Minton at 366 K/min."""
@@ -1136,15 +1127,11 @@ class TestPublishedPicaKinetics:
         """Independent cross-check between two unrelated sources: the
         competitive model's slow-branch limit against PICA's published
         virgin and char bulk densities."""
-        mass = competitive_mass_fraction(
-            COMPETITIVE_PICA_DETERMINISTIC, self.SCAN, 10.0 / 60.0
-        )
+        mass = competitive_mass_fraction(COMPETITIVE_PICA_DETERMINISTIC, self.SCAN, 10.0 / 60.0)
         assert float(mass[-1]) == pytest.approx(227.0 / 274.0, rel=0.02)
 
     def test_solid_mass_is_monotone_and_bounded(self):
-        mass = competitive_mass_fraction(
-            COMPETITIVE_PICA_DETERMINISTIC, self.SCAN, 100.0 / 60.0
-        )
+        mass = competitive_mass_fraction(COMPETITIVE_PICA_DETERMINISTIC, self.SCAN, 100.0 / 60.0)
         assert mass[0] == pytest.approx(1.0, abs=1e-9)
         assert np.all(np.diff(mass) <= 1e-10)
         assert np.all(mass >= 0.0)
@@ -1191,8 +1178,13 @@ class TestPublishedPicaKinetics:
             return k * max(1.0 - chi[0], 0.0) ** order / (10.0 / 60.0)
 
         sol = scipy.integrate.solve_ivp(
-            rhs, (300.0, 2000.0), [0.0], t_eval=t, method="LSODA",
-            rtol=1e-11, atol=1e-13,
+            rhs,
+            (300.0, 2000.0),
+            [0.0],
+            t_eval=t,
+            method="LSODA",
+            rtol=1e-11,
+            atol=1e-13,
         )
         rho_adv = rho_v - sol.y[0] * (rho_v - rho_r)
         assert np.max(np.abs(rho - rho_adv)) < 1e-6 * rho_v
@@ -1277,8 +1269,14 @@ class TestMutationppTable:
     def test_refuses_a_file_without_the_carbon_indicator(self, tmp_path):
         bad = tmp_path / "bad.dat"
         rows = np.column_stack(
-            [np.ones(8), np.zeros(8), np.linspace(300.0, 1000.0, 8),
-             np.zeros(8), np.zeros(8), np.full(8, 0.5)]
+            [
+                np.ones(8),
+                np.zeros(8),
+                np.linspace(300.0, 1000.0, 8),
+                np.zeros(8),
+                np.zeros(8),
+                np.full(8, 0.5),
+            ]
         )
         with bad.open("w") as fh:
             fh.write("header\n")
@@ -1378,9 +1376,7 @@ class TestPicaSurfaceTable:
     def test_more_pyrolysis_gas_raises_the_sublimation_branch(self):
         """At high temperature the blown gas carries carbon off faster."""
         p = self._read()
-        rates = np.array(
-            [p.table.char_rate(101325.0, g, 3500.0) for g in QUINN_GAS_RATES]
-        )
+        rates = np.array([p.table.char_rate(101325.0, g, 3500.0) for g in QUINN_GAS_RATES])
         # The 0 and 0.01 nodes carry the same coalesced curve, so they tie to
         # within round-off; everything above must strictly increase.
         assert np.all(np.diff(rates) >= -1e-12), f"not increasing: {rates}"
@@ -1512,8 +1508,7 @@ class TestQuinnTorchData:
 
     def test_peak_surface_temperature_rises_with_heat_flux(self):
         peaks = [
-            load_quinn_case(QUINN_DIR, q).measured("surface").temperature.max()
-            for q in self.FLUXES
+            load_quinn_case(QUINN_DIR, q).measured("surface").temperature.max() for q in self.FLUXES
         ]
         assert peaks == sorted(peaks), f"expected monotone in heat flux: {peaks}"
 
@@ -1604,9 +1599,7 @@ class TestMeasuredPyrolysis:
         assert fast == pytest.approx(686.0, abs=15.0)
         assert fast < slow - 100.0
 
-    @pytest.mark.parametrize(
-        "model", [COMPETITIVE_PICA_DETERMINISTIC, COMPETITIVE_PICA_BAYESIAN]
-    )
+    @pytest.mark.parametrize("model", [COMPETITIVE_PICA_DETERMINISTIC, COMPETITIVE_PICA_BAYESIAN])
     def test_competitive_model_matches_measured_peaks(self, model):
         """Absolute peak temperature to better than 20 K at both rates."""
         for label, rate in (("10Kmin^-1", 10.0), ("366Kmin^-1", 366.0)):
@@ -1614,9 +1607,7 @@ class TestMeasuredPyrolysis:
                 self._measured_peak(label), abs=25.0
             )
 
-    @pytest.mark.parametrize(
-        "model", [COMPETITIVE_PICA_DETERMINISTIC, COMPETITIVE_PICA_BAYESIAN]
-    )
+    @pytest.mark.parametrize("model", [COMPETITIVE_PICA_DETERMINISTIC, COMPETITIVE_PICA_BAYESIAN])
     def test_competitive_model_matches_the_measured_shift(self, model):
         """The shift itself, which is the quantity the model form exists to
         capture and the one FIAT Eq. (8) cannot produce at all. Reproduced
@@ -1633,8 +1624,17 @@ class TestMeasuredPyrolysis:
         comps = parallel_pica_resin(94.0)
         w = np.ones(len(comps))
         peaks = [
-            float(self.SCAN[int(np.argmax(-np.gradient(
-                tga_mass_fraction(comps, w, self.SCAN, r / 60.0), self.SCAN)))])
+            float(
+                self.SCAN[
+                    int(
+                        np.argmax(
+                            -np.gradient(
+                                tga_mass_fraction(comps, w, self.SCAN, r / 60.0), self.SCAN
+                            )
+                        )
+                    )
+                ]
+            )
             for r in (10.0, 366.0)
         ]
         assert measured < 0.0
@@ -1644,9 +1644,7 @@ class TestMeasuredPyrolysis:
         """Two unrelated measurements of the same material: a TGA balance at
         10 K/min, and the virgin and char bulk densities from MEDLI2."""
         d = np.loadtxt(REF / "Wong2016-Fig4.csv", delimiter=",")
-        assert float(d[:, 1].max()) == pytest.approx(
-            100.0 * (274.0 - 227.0) / 274.0, abs=1.0
-        )
+        assert float(d[:, 1].max()) == pytest.approx(100.0 * (274.0 - 227.0) / 274.0, abs=1.0)
 
     def test_char_yield_depends_on_heating_rate(self):
         """Measured confirmation of the structural point. Mass loss is ~17%
@@ -1655,9 +1653,7 @@ class TestMeasuredPyrolysis:
         material and the competitive mechanism does not."""
         slow = float(np.loadtxt(REF / "Wong2016-Fig4.csv", delimiter=",")[:, 1].max())
         fast = [
-            100.0 - float(np.loadtxt(
-                REF / f"BM2017-Fig8_{r}Cs^-1.csv", delimiter=","
-            )[:, 1].min())
+            100.0 - float(np.loadtxt(REF / f"BM2017-Fig8_{r}Cs^-1.csv", delimiter=",")[:, 1].min())
             for r in ("3.1", "6.1", "12.7")
         ]
         assert slow < 18.0
@@ -1709,8 +1705,7 @@ class TestArcjetDataset:
         enthalpy is a modelling choice with a 45% lever arm, so both are
         carried and neither is chosen in the data layer."""
         worst = max(
-            c.enthalpy_disagreement
-            for c in (*ARC_CONDITIONS.values(), *JSC_CONDITIONS.values())
+            c.enthalpy_disagreement for c in (*ARC_CONDITIONS.values(), *JSC_CONDITIONS.values())
         )
         assert worst > 0.4
 
@@ -1761,9 +1756,7 @@ class TestArcjetDataset:
         """Table 4 reports it as not measured there; None rather than a
         sentinel, so a comparison cannot quietly use zero."""
         assert all(
-            m.peak_surface_temperature is None
-            for m in MODELS
-            if m.condition in JSC_CONDITIONS
+            m.peak_surface_temperature is None for m in MODELS if m.condition in JSC_CONDITIONS
         )
 
     @pytest.mark.skipif(
@@ -1814,39 +1807,84 @@ class TestArcjetDataset:
 class TestPicaPyrolysisComposition:
     """The elemental composition that makes a PICA deck rather than TACOT."""
 
-    def test_two_independent_routes_agree(self):
-        """Route 1 is a fitted kinetic mechanism (TH2019 Table 2 species
-        yields weighted by F); route 2 is raw integrated mass spectrometry
-        (Bessire & Minton Fig. 7). They share no methodology, and route 1
-        lands inside route 2's band on every element."""
-        # A 0.5% tolerance on the band, which is well inside the several
-        # percent a figure-traced ordinate carries. Hydrogen misses the
-        # literal band by 0.0003 — 0.04% — and claiming a strict inclusion
-        # would be reading the digitisation more finely than it supports.
-        for element, (lo, hi) in PICA_PYROLYSIS_ELEMENTS_RANGE.items():
-            value = PICA_PYROLYSIS_ELEMENTS[element]
-            assert lo - 0.005 <= value <= hi + 0.005, element
-
     def test_composition_is_normalised(self):
         assert sum(PICA_PYROLYSIS_ELEMENTS.values()) == pytest.approx(1.0, abs=1e-3)
-
-    def test_tacot_is_outside_the_measured_band(self):
-        """The surrogate is genuinely a different material here, which is
-        why using its surface chemistry for PICA is a modelling choice and
-        not a neutral substitution."""
-        tacot = {"C": 0.206, "H": 0.679, "O": 0.115}
-        # What matters is the size of the miss, not its existence: carbon
-        # and oxygen are out by 10% and 24% of their own values, hydrogen by
-        # 0.1%. Only the first two are modelling-relevant.
-        gaps = {
-            e: abs(tacot[e] - PICA_PYROLYSIS_ELEMENTS[e]) / PICA_PYROLYSIS_ELEMENTS[e]
-            for e in tacot
-        }
-        assert gaps["C"] > 0.10
-        assert gaps["O"] > 0.20
-        assert gaps["H"] < 0.01
 
     def test_hydrogen_dominates_by_mole(self):
         """Pyrolysis gas is mostly hydrogen atoms by count — a sanity check
         that the formulas were applied per atom and not per molecule."""
         assert PICA_PYROLYSIS_ELEMENTS["H"] > 0.6
+
+    def test_matches_fiatv3_once_trace_species_are_dropped(self):
+        """The adopted composition is Milos & Chen's FIATv3 deck value
+        (RAB2014 §III.A.2) renormalised off its trace N and Si, which this
+        solver's B' tables do not carry."""
+        trace = PICA_PYROLYSIS_ELEMENTS_FIATV3
+        kept = {e: trace[e] for e in ("C", "H", "O")}
+        total = sum(kept.values())
+        for element, value in kept.items():
+            assert PICA_PYROLYSIS_ELEMENTS[element] == pytest.approx(value / total, rel=1e-4), (
+                element
+            )
+        # The dropped species are trace: 2% of the mixture between them.
+        assert total == pytest.approx(0.98, abs=1e-9)
+
+    def test_implies_a_physically_possible_char(self):
+        """Conservation of elements across resin -> gas + char must yield a
+        char that is carbon-rich with no negative mole fraction. This is the
+        check that condemned the earlier speciation-derived composition."""
+        for gas_fraction in (0.45, 0.50, 0.55):
+            char = char_required_by_mass_balance(PICA_PYROLYSIS_ELEMENTS, gas_fraction)
+            assert all(v >= 0.0 for v in char.values()), (gas_fraction, char)
+            assert char["C"] > 0.7, (gas_fraction, char)
+
+    def test_implied_char_resembles_the_measured_one(self):
+        """Stronger than non-negativity: at a representative gas fraction the
+        implied char should look like Sykes' 850 C elemental analysis. The
+        adopted composition lands within a factor of three on oxygen; the
+        superseded one is short by a factor of five and heading negative."""
+        adopted = char_required_by_mass_balance(PICA_PYROLYSIS_ELEMENTS, 0.50)
+        measured = char_required_by_mass_balance(PICA_PYROLYSIS_ELEMENTS_MEASURED, 0.50)
+        target = PICA_CHAR_ELEMENTS["O"]
+        assert target / 3.0 <= adopted["O"] <= target * 3.0, adopted
+        assert measured["O"] < target / 3.0, measured
+        # Carbon is the bulk of the char either way; oxygen is the discriminator.
+        assert adopted["C"] == pytest.approx(PICA_CHAR_ELEMENTS["C"], rel=0.10)
+
+    def test_measured_composition_demands_an_impossible_char(self):
+        """The superseded route-1/route-2 composition is not merely uncertain
+        — it is unphysical. Above a 50% gas fraction it requires negative
+        oxygen in the char, and below that a char with H/O near 13. Every
+        measured char (Sykes 2.2, Tran ~0) is oxygen-rich by comparison, so
+        removing char can only drive the gas H/O *up* from the resin's 6.04,
+        never down to this composition's 4.62."""
+        char = char_required_by_mass_balance(PICA_PYROLYSIS_ELEMENTS_MEASURED, 0.60)
+        assert char["O"] < 0.0, char
+        # And the direction of the failure identifies the culprit as oxygen.
+        resin_ratio = PICA_RESIN_ELEMENTS["H"] / PICA_RESIN_ELEMENTS["O"]
+        measured_ratio = (
+            PICA_PYROLYSIS_ELEMENTS_MEASURED["H"] / PICA_PYROLYSIS_ELEMENTS_MEASURED["O"]
+        )
+        assert measured_ratio < 0.8 * resin_ratio
+        assert PICA_CHAR_ELEMENTS["H"] / PICA_CHAR_ELEMENTS["O"] < resin_ratio
+
+    def test_resin_idealisation_is_close_to_sykes_measurement(self):
+        """RAB2014 calls the two idealised polymers "limiting idealized
+        cases", but Sykes' cured novolac is not literally between them — its
+        carbon sits 2.4% below both. The defensible claim is closeness, which
+        is all the paper asserts ("extremely close to the expected value")."""
+        sykes = {"C": 0.488, "H": 0.434, "O": 0.078}
+        for element, value in sykes.items():
+            assert value == pytest.approx(PICA_RESIN_ELEMENTS[element], rel=0.10), element
+        # The two idealisations differ from each other far less than either
+        # differs from the measurement, which is why the choice between them
+        # does not matter downstream.
+        spread = max(
+            abs(PICA_RESIN_ELEMENTS[e] - PICA_RESIN_ELEMENTS_CROSSLINKED[e])
+            for e in PICA_RESIN_ELEMENTS
+        )
+        assert spread < 0.02
+
+    def test_mass_balance_rejects_a_degenerate_gas_fraction(self):
+        with pytest.raises(ValueError, match="gas_mole_fraction"):
+            char_required_by_mass_balance(PICA_PYROLYSIS_ELEMENTS, 1.0)
