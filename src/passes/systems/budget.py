@@ -59,8 +59,10 @@ from passes.guidance.entry import EntryVehicle
 from passes.orbital.fobs import deorbit_burn
 from passes.orbital.gravity import EARTH
 from passes.systems.architecture import Architecture, Phase
+from passes.systems.dispersion import AccuracyStatistics, accuracy_statistics
 
 __all__ = [
+    "DISPERSION_SOURCES",
     "LegBudget",
     "MissionBudget",
     "MissionRequest",
@@ -75,6 +77,26 @@ _FloatArray = NDArray[np.float64]
 _BALLISTIC_ENTRY_RANGE = 300.0e3
 #: Terminal homing is a correction, not a transport leg.
 _TERMINAL_RANGE = 0.0
+
+#: Representative one-sigma error contributions (m), downrange and
+#: crossrange, keyed by the phase that produces them.
+#:
+#: **These are parametric inputs, not derived results**, and the defaults
+#: are order-of-magnitude figures chosen to exercise the accounting. The
+#: one exception is dispensing, which is scaled from the bus execution
+#: model. Anyone quoting a CEP from this module is quoting these numbers
+#: plus arithmetic, and the honest thing is to say so rather than let a
+#: computed-looking figure imply a computed provenance.
+DISPERSION_SOURCES: dict[Phase, tuple[float, float]] = {
+    Phase.BOOST: (1200.0, 900.0),
+    Phase.MIDCOURSE: (-0.90, -0.90),
+    Phase.DISPENSE: (400.0, 250.0),
+    Phase.DEORBIT: (600.0, 300.0),
+    Phase.GLIDE: (800.0, 250.0),
+    Phase.CRUISE: (500.0, 500.0),
+    Phase.BALLISTIC: (350.0, 350.0),
+    Phase.TERMINAL: (-0.85, -0.85),
+}
 
 
 @dataclass(frozen=True)
@@ -170,8 +192,13 @@ class MissionBudget:
     steeper deorbit, not a bigger booster. Naming the failure is the
     difference between a number and a diagnosis.
     """
-    dispersion: float = float("nan")
-    """One-sigma terminal dispersion (m) where a model exists, else ``nan``."""
+    accuracy: AccuracyStatistics | None = None
+    """Terminal accuracy: principal sigmas, CEP and 95% radius.
+
+    ``None`` only if the architecture contributes no dispersion at all,
+    which cannot happen for any admissible sequence since boost always
+    contributes.
+    """
 
     @property
     def total_delta_v(self) -> float:
@@ -188,6 +215,11 @@ class MissionBudget:
             f"{self.total_range / 1e3:.0f} km against "
             f"{self.request.required_range / 1e3:.0f} km required, "
             f"{self.total_delta_v:.0f} m/s, slack in {self.slack_phase.value}"
+            + (
+                f", CEP {self.accuracy.cep:.0f} m / R95 {self.accuracy.r95:.0f} m"
+                if self.accuracy is not None
+                else ""
+            )
             + (f" — {self.reason}" if self.reason else "")
         )
 
@@ -417,6 +449,25 @@ def evaluate(
             is_slack=True,
         )
 
+    # Error budget. Reducing phases (guidance) multiply what is already
+    # accumulated; contributing phases add in quadrature. Order matters,
+    # so the ledger is walked in phase order rather than summed blindly:
+    # a correction cannot remove an error injected after it.
+    down = 0.0
+    cross = 0.0
+    for leg in sorted(legs, key=lambda item: architecture.phases.index(item.phase)):
+        source = DISPERSION_SOURCES.get(leg.phase)
+        if source is None:
+            continue
+        d, c = source
+        if d < 0.0:
+            down *= -d
+            cross *= -c
+        else:
+            down = float(np.hypot(down, d))
+            cross = float(np.hypot(cross, c))
+    accuracy = accuracy_statistics(down, cross) if max(down, cross) > 0.0 else None
+
     return MissionBudget(
         architecture=architecture,
         request=request,
@@ -425,4 +476,5 @@ def evaluate(
         closes=closes,
         shortfall=float(shortfall),
         reason=reason,
+        accuracy=accuracy,
     )

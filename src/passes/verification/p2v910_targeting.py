@@ -43,6 +43,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from passes.geodesy import GeodeticPosition
 from passes.guidance.bus import (
     Aimpoint,
     optimize_deployment_order,
@@ -65,6 +66,17 @@ from passes.orbital.coast import propagate_coast
 from passes.orbital.fobs import deorbit_burn, fobs_profile, ground_track_shift
 from passes.orbital.gravity import EARTH
 from passes.orbital.lambert import lambert, minimum_energy_transfer
+from passes.systems import (
+    CEP_OVER_SIGMA,
+    NAMED_ARCHITECTURES,
+    R95_OVER_SIGMA,
+    MissionRequest,
+    accuracy_statistics,
+    containment_probability,
+    containment_radius,
+    containment_ratio,
+    evaluate,
+)
 from passes.verification.common import VerificationReport, write_csv
 
 __all__ = ["run_p2v910"]
@@ -788,10 +800,135 @@ def _v13_cruise(report: VerificationReport) -> bool:
     return passed
 
 
+def _v14_budget(report: VerificationReport) -> bool:
+    """II-V14: containment statistics and end-to-end ledger closure."""
+    # 1. The elliptical integral against its two closed-form limits.
+    circular = accuracy_statistics(100.0, 100.0)
+    circular_error = max(
+        abs(circular.cep / (100.0 * CEP_OVER_SIGMA) - 1.0),
+        abs(circular.r95 / (100.0 * R95_OVER_SIGMA) - 1.0),
+    )
+    degenerate_error = max(
+        abs(containment_radius(0.95, 100.0, 0.0) / 195.9964 - 1.0),
+        abs(containment_radius(0.5, 100.0, 0.0) / 67.449 - 1.0),
+    )
+
+    # 2. Radius/probability round-trip at several aspect ratios.
+    round_trip = 0.0
+    for major, minor in ((100.0, 100.0), (300.0, 100.0), (500.0, 50.0)):
+        for p in (0.3, 0.5, 0.95, 0.99):
+            radius = containment_radius(p, major, minor)
+            round_trip = max(round_trip, abs(containment_probability(radius, major, minor) - p))
+
+    ratios = [containment_ratio(100.0, 100.0 * f) for f in (1.0, 0.5, 0.3, 0.1, 0.02)]
+    monotone = ratios == sorted(ratios)
+
+    # 3. Every named architecture produces a ledger, a verdict, and stats.
+    request = MissionRequest(
+        launch_site=GeodeticPosition.from_degrees(45.0, 60.0, label="launch"),
+        aimpoints=(
+            GeodeticPosition.from_degrees(38.0, -100.0, label="T1"),
+            GeodeticPosition.from_degrees(40.0, -95.0, label="T2"),
+        ),
+        arrival_time=3000.0,
+    )
+    entry = EntryVehicle(ballistic_coefficient=200.0, lift_to_drag=2.0)
+    cruise = CruiseVehicle(
+        wing_loading=400.0,
+        lift_to_drag=4.0,
+        lift_coefficient=0.1,
+        fuel_fraction=0.30,
+    )
+    rows: list[list[str]] = []
+    all_costed = True
+    understated = True
+    for name, architecture in NAMED_ARCHITECTURES.items():
+        budget = evaluate(
+            architecture,
+            request,
+            entry_vehicle=entry,
+            cruise_vehicle=cruise,
+            glide_range=3.0e6,
+        )
+        stats = budget.accuracy
+        if stats is None or budget.total_delta_v <= 0.0:
+            all_costed = False
+            continue
+        if stats.cep * (R95_OVER_SIGMA / CEP_OVER_SIGMA) >= stats.r95:
+            understated = False
+        rows.append(
+            [
+                name,
+                "yes" if budget.closes else "no",
+                f"{budget.total_range / 1e3:.0f}",
+                f"{budget.total_delta_v:.0f}",
+                f"{stats.cep:.0f}",
+                f"{stats.r95:.0f}",
+                f"{stats.ratio:.3f}",
+            ]
+        )
+
+    limits_ok = circular_error <= 1e-4 and degenerate_error <= 1e-4
+    round_trip_ok = round_trip <= 1e-8
+    passed = limits_ok and round_trip_ok and monotone and all_costed and understated
+
+    report.add_table(
+        "V14 — containment statistics against their closed-form limits",
+        ["property", "measured", "criterion", "verdict"],
+        [
+            [
+                "elliptical integral at unit aspect ratio vs Rayleigh",
+                f"{circular_error:.3e} rel",
+                "< 1e-4",
+                "PASS" if circular_error <= 1e-4 else "FAIL",
+            ],
+            [
+                "degenerate axis vs the normal quantile",
+                f"{degenerate_error:.3e} rel",
+                "< 1e-4",
+                "PASS" if degenerate_error <= 1e-4 else "FAIL",
+            ],
+            [
+                "radius/probability round-trip",
+                f"{round_trip:.3e}",
+                "< 1e-8",
+                "PASS" if round_trip_ok else "FAIL",
+            ],
+            [
+                "R95/CEP ratio monotone in elongation",
+                f"{ratios[0]:.3f} -> {ratios[-1]:.3f}",
+                "non-decreasing",
+                "PASS" if monotone else "FAIL",
+            ],
+        ],
+        "The radial part of the containment integral is analytic, leaving a "
+        "one-dimensional quadrature, so the elliptical answers are exact "
+        "rather than a fitted correction to the circular ones. The ratio "
+        "rises with elongation towards the one-dimensional value 1.96/0.6745 "
+        "= 2.906, which means scaling a CEP by the circular 2.079 "
+        "under-states the 95% radius for every real dispersion.",
+    )
+    report.add_table(
+        "V14 — end-to-end budget over every named architecture",
+        ["architecture", "closes", "range (km)", "ΔV (m/s)", "CEP (m)", "R95 (m)", "R95/CEP"],
+        rows,
+        "Range, propellant and accuracy for one launch site and two "
+        "aimpoints. Which leg absorbs the range remainder differs by family "
+        "— parking arc for fractional-orbital profiles, which costs time and "
+        "no propellant, and boost for suborbital ones, which costs both — so "
+        "a 'does not close' verdict means different things in the two cases "
+        "and the budget names which. Every ratio exceeds the circular 2.079, "
+        "confirming that no architecture here has an isotropic dispersion. "
+        "The per-phase error contributions are parametric inputs; the "
+        "arithmetic over them is what this task verifies.",
+    )
+    return passed
+
+
 def run_p2v910(output_dir: Path) -> VerificationReport:
     """Execute II-V9 and II-V10 and write the report."""
     report = VerificationReport(
-        task_id="II-V9-V13",
+        task_id="II-V9-V14",
         title="Lambert targeting, bus dispensing, glide guidance, fractional orbital profiles",
         criterion=(
             "V9: relative arrival error > 1e-7 on any physically flyable "
@@ -804,7 +941,10 @@ def run_p2v910(output_dir: Path) -> VerificationReport:
             "differing from the integrated trajectory beyond tolerance, or the "
             "three-leg range accounting failing to close. V13: Breguet range "
             "not linear in L/D, mass-ratio doublings not adding equal range, "
-            "or the cruise-climb differing between vehicles"
+            "or the cruise-climb differing between vehicles. V14: containment "
+            "radii disagreeing with their closed-form limits, a failed "
+            "radius/probability round-trip, or any architecture without a "
+            "ledger, verdict and CEP/R95 pair"
         ),
         passed=True,
     )
@@ -815,6 +955,7 @@ def run_p2v910(output_dir: Path) -> VerificationReport:
         _v11_glide(report),
         _v12_fobs(report),
         _v13_cruise(report),
+        _v14_budget(report),
     ]
     report.passed = all(results)
 

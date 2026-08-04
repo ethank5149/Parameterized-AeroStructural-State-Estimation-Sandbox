@@ -1,8 +1,8 @@
-# II-V9-V13: Lambert targeting, bus dispensing, glide guidance, fractional orbital profiles
+# II-V9-V14: Lambert targeting, bus dispensing, glide guidance, fractional orbital profiles
 
-- **Failure criterion (stated in advance, Paper II §8):** V9: relative arrival error > 1e-7 on any physically flyable transfer, or endpoint energy/angular-momentum mismatch > 1e-9. V10: any released vehicle missing its aimpoint by > 1 m, or the ordering search returning a cost above the exhaustive optimum. V11: range integral differing from its closed form by > 1e-9, flown range not monotone in commanded drag, or reversals failing to reduce crossrange by 10x. V12: the Kepler deorbit solve differing from the integrated trajectory beyond tolerance, or the three-leg range accounting failing to close. V13: Breguet range not linear in L/D, mass-ratio doublings not adding equal range, or the cruise-climb differing between vehicles
+- **Failure criterion (stated in advance, Paper II §8):** V9: relative arrival error > 1e-7 on any physically flyable transfer, or endpoint energy/angular-momentum mismatch > 1e-9. V10: any released vehicle missing its aimpoint by > 1 m, or the ordering search returning a cost above the exhaustive optimum. V11: range integral differing from its closed form by > 1e-9, flown range not monotone in commanded drag, or reversals failing to reduce crossrange by 10x. V12: the Kepler deorbit solve differing from the integrated trajectory beyond tolerance, or the three-leg range accounting failing to close. V13: Breguet range not linear in L/D, mass-ratio doublings not adding equal range, or the cruise-climb differing between vehicles. V14: containment radii disagreeing with their closed-form limits, a failed radius/probability round-trip, or any architecture without a ledger, verdict and CEP/R95 pair
 - **Verdict:** **PASS**
-- **Generated:** 2026-08-04 22:40 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.14.6 (x86_64)
+- **Generated:** 2026-08-04 23:25 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.14.6 (x86_64)
 
 ## V9 — Lambert transfer envelope
 
@@ -120,6 +120,35 @@ Each doubling of mass ratio adds the same absolute range regardless of where it 
 | fuel fraction doubled, 0.30 -> 0.60 | 2.569 |
 
 Fuel is commonly said to show diminishing returns while L/D does not. Over this range the opposite holds, because ln(1/(1-f)) is *convex* in fuel fraction: its derivative 1/(1-f) grows, so doubling f more than doubles the logarithm. The diminishing return is in mass ratio, not in fuel fraction — the row above measures that one directly — and the two are statements about different variables.
+
+## V14 — containment statistics against their closed-form limits
+
+| property | measured | criterion | verdict |
+|---|---|---|---|
+| elliptical integral at unit aspect ratio vs Rayleigh | 2.220e-16 rel | < 1e-4 | PASS |
+| degenerate axis vs the normal quantile | 3.703e-07 rel | < 1e-4 | PASS |
+| radius/probability round-trip | 6.467e-11 | < 1e-8 | PASS |
+| R95/CEP ratio monotone in elongation | 2.079 -> 2.905 | non-decreasing | PASS |
+
+The radial part of the containment integral is analytic, leaving a one-dimensional quadrature, so the elliptical answers are exact rather than a fitted correction to the circular ones. The ratio rises with elongation towards the one-dimensional value 1.96/0.6745 = 2.906, which means scaling a CEP by the circular 2.079 under-states the 95% radius for every real dispersion.
+
+## V14 — end-to-end budget over every named architecture
+
+| architecture | closes | range (km) | ΔV (m/s) | CEP (m) | R95 (m) | R95/CEP |
+|---|---|---|---|---|---|---|
+| ballistic-single | no | 2300 | 6030 | 1007 | 2132 | 2.117 |
+| ballistic-multiple | no | 2300 | 6180 | 1058 | 2247 | 2.123 |
+| boost-glide | no | 5000 | 6000 | 1181 | 2586 | 2.189 |
+| boost-glide-multiple | no | 5000 | 6180 | 1136 | 2502 | 2.203 |
+| fractional-orbital-single | yes | 10571 | 6188 | 1195 | 2556 | 2.138 |
+| fractional-orbital-glide | yes | 10571 | 6188 | 1263 | 2785 | 2.205 |
+| fractional-orbital-multiple | yes | 10571 | 6338 | 1239 | 2653 | 2.142 |
+| fractional-orbital-multiple-glide | yes | 10571 | 6338 | 1304 | 2875 | 2.205 |
+| ballistic-mixed | no | 5000 | 6180 | 1191 | 2600 | 2.182 |
+| fractional-orbital-mixed | yes | 10571 | 6338 | 1353 | 2960 | 2.188 |
+| powered-cruise | no | 6040 | 6000 | 1163 | 2456 | 2.111 |
+
+Range, propellant and accuracy for one launch site and two aimpoints. Which leg absorbs the range remainder differs by family — parking arc for fractional-orbital profiles, which costs time and no propellant, and boost for suborbital ones, which costs both — so a 'does not close' verdict means different things in the two cases and the budget names which. Every ratio exceeds the circular 2.079, confirming that no architecture here has an isotropic dispersion. The per-phase error contributions are parametric inputs; the arithmetic over them is what this task verifies.
 
 ## What these tasks establish, and what they do not
 

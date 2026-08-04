@@ -1,16 +1,23 @@
 """System-level composition: which phase sequences form admissible systems."""
 
+import numpy as np
 import pytest
 
 from passes.geodesy import GeodeticPosition, great_circle_range
 from passes.guidance import CruiseVehicle, EntryVehicle
 from passes.systems import (
+    CEP_OVER_SIGMA,
     NAMED_ARCHITECTURES,
+    R95_OVER_SIGMA,
     Architecture,
     MissionRequest,
     Payload,
     Phase,
     PhaseRegime,
+    accuracy_statistics,
+    containment_probability,
+    containment_radius,
+    containment_ratio,
     describe,
     enumerate_architectures,
     evaluate,
@@ -449,3 +456,136 @@ class TestMissionBudget:
             assert budget.total_delta_v > 0.0, name
             assert budget.summary(), name
             assert (budget.reason == "") is budget.closes, name
+
+
+class TestAccuracyStatistics:
+    """CEP and the 95% radius, and why the usual conversion factor is wrong."""
+
+    def test_circular_constants_are_exact(self):
+        assert pytest.approx(np.sqrt(2.0 * np.log(2.0)), rel=1e-15) == CEP_OVER_SIGMA
+        assert pytest.approx(np.sqrt(2.0 * np.log(20.0)), rel=1e-15) == R95_OVER_SIGMA
+        assert (
+            pytest.approx(np.sqrt(np.log(20.0) / np.log(2.0)), rel=1e-15)
+            == R95_OVER_SIGMA / CEP_OVER_SIGMA
+        )
+        # And the decimal values usually quoted, to the precision quoted.
+        assert pytest.approx(1.1774, abs=5e-5) == CEP_OVER_SIGMA
+        assert pytest.approx(2.4477, abs=5e-5) == R95_OVER_SIGMA
+
+    def test_general_path_reproduces_the_closed_form_when_circular(self):
+        """The elliptical quadrature must agree with the Rayleigh closed
+        form at unit aspect ratio, or the two disagree everywhere."""
+        stats = accuracy_statistics(100.0, 100.0)
+        assert stats.cep == pytest.approx(100.0 * CEP_OVER_SIGMA, rel=1e-9)
+        assert stats.r95 == pytest.approx(100.0 * R95_OVER_SIGMA, rel=1e-9)
+        assert stats.is_circular
+
+    def test_containment_probability_is_consistent_with_its_own_radius(self):
+        """Round-trip: the radius containing p must contain p."""
+        for major, minor in ((100.0, 100.0), (300.0, 100.0), (500.0, 50.0)):
+            for p in (0.3, 0.5, 0.95, 0.99):
+                r = containment_radius(p, major, minor)
+                assert containment_probability(r, major, minor) == pytest.approx(p, abs=1e-8)
+
+    def test_the_ratio_rises_as_the_ellipse_elongates(self):
+        """The measured behaviour, and the reason a computed ratio beats an
+        assumed one. Scaling a CEP by the circular 2.079 *under-states* the
+        95% radius for any real dispersion."""
+        ratios = [containment_ratio(100.0, 100.0 * f) for f in (1.0, 0.5, 0.3, 0.1, 0.02)]
+        assert ratios == sorted(ratios)
+        assert ratios[0] == pytest.approx(2.0789, abs=1e-3)
+        # The one-dimensional limit is the normal-distribution equivalent,
+        # 1.96 / 0.6745.
+        assert ratios[-1] == pytest.approx(1.959964 / 0.674490, rel=2e-3)
+
+    def test_a_degenerate_axis_reduces_to_the_normal_distribution(self):
+        """With one sigma zero the disc becomes an interval, and the
+        containment radius must be the ordinary normal quantile."""
+        assert containment_radius(0.95, 100.0, 0.0) == pytest.approx(195.9964, rel=1e-4)
+        assert containment_radius(0.5, 100.0, 0.0) == pytest.approx(67.449, rel=1e-4)
+
+    def test_sigmas_are_ordered_and_validated(self):
+        """Passing them the other way round must give the same answer."""
+        a = accuracy_statistics(100.0, 400.0)
+        b = accuracy_statistics(400.0, 100.0)
+        assert a.cep == pytest.approx(b.cep)
+        assert a.sigma_major == pytest.approx(400.0)
+        with pytest.raises(ValueError, match="at least one sigma"):
+            accuracy_statistics(0.0, 0.0)
+        with pytest.raises(ValueError, match="must be finite"):
+            accuracy_statistics(-1.0, 100.0)
+        with pytest.raises(ValueError, match="probability must lie"):
+            containment_radius(1.0, 100.0)
+
+
+class TestBudgetDispersion:
+    def _setup(self):
+        site = GeodeticPosition.from_degrees(45.0, 60.0)
+        request = MissionRequest(
+            launch_site=site,
+            aimpoints=(
+                GeodeticPosition.from_degrees(38.0, -100.0),
+                GeodeticPosition.from_degrees(40.0, -95.0),
+            ),
+            arrival_time=3000.0,
+        )
+        return request, EntryVehicle(200.0, 2.0), CruiseVehicle(400.0, 4.0, 0.1, 0.3)
+
+    def test_every_architecture_reports_cep_and_r95(self):
+        """The accuracy column must span the whole taxonomy, mixed payloads
+        included."""
+        request, entry, cruise = self._setup()
+        for name, architecture in NAMED_ARCHITECTURES.items():
+            budget = evaluate(
+                architecture,
+                request,
+                entry_vehicle=entry,
+                cruise_vehicle=cruise,
+                glide_range=3.0e6,
+            )
+            assert budget.accuracy is not None, name
+            assert budget.accuracy.cep > 0.0, name
+            assert budget.accuracy.r95 > budget.accuracy.cep, name
+            assert "CEP" in budget.summary(), name
+
+    def test_dispersions_are_elliptical_so_the_naive_factor_understates(self):
+        """Every architecture's dispersion is elongated, so scaling CEP by
+        the circular 2.079 gives a 95% radius that is too small."""
+        request, entry, cruise = self._setup()
+        for architecture in NAMED_ARCHITECTURES.values():
+            stats = evaluate(
+                architecture,
+                request,
+                entry_vehicle=entry,
+                cruise_vehicle=cruise,
+                glide_range=3.0e6,
+            ).accuracy
+            assert stats.ratio > 2.078
+            assert stats.cep * 2.078922 < stats.r95
+
+    def test_guidance_phases_reduce_the_accumulated_error(self):
+        """A correction multiplies what is already accumulated, so removing
+        terminal homing must make the answer worse."""
+        request, entry, _ = self._setup()
+        with_homing = NAMED_ARCHITECTURES["fractional-orbital-single"]
+        without = Architecture(
+            phases=tuple(p for p in with_homing.phases if p is not Phase.TERMINAL),
+            payload=with_homing.payload,
+        )
+        guided = evaluate(with_homing, request, entry_vehicle=entry)
+        unguided = evaluate(without, request, entry_vehicle=entry)
+        assert unguided.accuracy.cep > guided.accuracy.cep
+
+    def test_dispensing_degrades_accuracy_relative_to_a_single_body(self):
+        request, entry, _ = self._setup()
+        single = evaluate(
+            NAMED_ARCHITECTURES["fractional-orbital-single"],
+            request,
+            entry_vehicle=entry,
+        )
+        multiple = evaluate(
+            NAMED_ARCHITECTURES["fractional-orbital-multiple"],
+            request,
+            entry_vehicle=entry,
+        )
+        assert multiple.accuracy.cep > single.accuracy.cep
