@@ -158,9 +158,7 @@ def time_to_go(r_los: ArrayLike, v_c: ArrayLike, a_c: ArrayLike) -> TgoResult:
 
         denom = v + sqrt_d
         conj = np.where(denom > zero, two * r / np.where(denom > zero, denom, 1), np.inf)
-        direct = np.where(
-            opening_accel, (-v + sqrt_d) / np.where(opening_accel, a, 1), np.inf
-        )
+        direct = np.where(opening_accel, (-v + sqrt_d) / np.where(opening_accel, a, 1), np.inf)
         linear = np.where(closing, r / np.where(closing, v, 1), np.inf)
 
     invalid = ~(np.isfinite(r) & np.isfinite(v) & np.isfinite(a))
@@ -201,6 +199,4 @@ def time_to_go_naive(r_los: ArrayLike, v_c: ArrayLike, a_c: ArrayLike) -> NDArra
     """
     r, v, a = _prepare(r_los, v_c, a_c)
     with np.errstate(invalid="ignore", divide="ignore"):
-        return cast(
-            NDArray[np.floating], (-v + np.sqrt(v * v + r.dtype.type(2.0) * a * r)) / a
-        )
+        return cast(NDArray[np.floating], (-v + np.sqrt(v * v + r.dtype.type(2.0) * a * r)) / a)

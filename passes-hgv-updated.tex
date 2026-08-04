@@ -721,6 +721,33 @@ For a mixed payload the glide and ballistic arcs are flown concurrently by diffe
 
 Alongside range and $\Delta v$, every architecture reports terminal accuracy as both a circular error probable and a $95\%$ radius. Converting between those two by the circular constant $R_{95}/\mathrm{CEP} = \sqrt{\ln 20 / \ln 2} \approx 2.0789$ is standard practice and is only valid for an isotropic dispersion, which a terminal error ellipse is not: downrange and crossrange errors arise from different mechanisms. Computing the containment radii from the exact elliptical integral rather than from that factor, we find the ratio \emph{rises} with elongation --- $2.079$ at unit aspect ratio, $2.339$ at $2\!:\!1$, $2.646$ at $3.3\!:\!1$, approaching $2.906$ in the one-dimensional limit, which is exactly the normal-distribution value $1.96/0.6745$. Scaling a CEP by the circular constant therefore \emph{under-states} the $95\%$ radius for any real dispersion, by $1.5$ to $5\%$ across the architectures tabulated here and by up to $40\%$ at the limit. The containment probability reduces to a one-dimensional quadrature after the radial integral is done analytically, so the elliptical answers are exact rather than a fitted correction to the circular ones.
 
+\paragraph{Reaching a small CEP is not a guidance problem for most of its range.} A kilometre-class inertial error cannot be refined away, because it is an error in knowing where the target is relative to the vehicle rather than in flying the trajectory. Closing it needs a terminal sensor, and then enough control authority to act on what the sensor reports. The instinct is that the seeker's angular accuracy sets the answer; usually it does not. Acquiring at range $R$ with one-sigma $\sigma_\theta$ gives a lateral uncertainty $\sigma_\theta R$ --- $20$~m for a $1$~mrad seeker at $20$~km, already adequate --- while nulling a $1200$~m handover error in the $3.3$~s that $20$~km buys at $6$~km/s demands $N'\Delta/t_{go}^2 \approx 33$~g of lateral acceleration, which a glide vehicle does not have. Acquisition range enters through $t_{go}^2$ and seeker accuracy only linearly, so doubling the former is worth more than a tenfold improvement in the latter, which our model measures directly.
+
+Four floors can bind, and the achievable miss is the largest; naming which one is the actionable part, because the remedies do not overlap. \emph{Divert-limited} is fixed by reducing the handover error, acquiring earlier, or buying lateral acceleration. \emph{Seeker-limited} is fixed with a better sensor --- and the floor is evaluated at the range where the loop stops responding, about one time constant of closing distance, not at acquisition, since taking it at acquisition range is badly optimistic. \emph{Loop-limited} means too few time constants remain for convergence. \emph{Target-location-limited} means the aimpoint's own coordinates are not known better than that, and no sensor or manoeuvre beats it because the vehicle would be flying accurately to the wrong place.
+
+For the fractional-orbital glide architecture, a $1200$~m handover error and the following sequence of changes gives:
+
+\begin{center}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Configuration} & \textbf{CEP (m)} & \textbf{$R_{95}$ (m)} & \textbf{Binding floor} \\
+\midrule
+inertial only & $1263$ & $2785$ & --- \\
+$1$~mrad seeker at $20$~km, $5$~g, TLE $50$~m & $1958$ & $4070$ & divert \\
+$+$ divert to $20$~g & $1316$ & $2736$ & divert \\
+$+$ acquire at $50$~km & $58.9$ & $122$ & target location \\
+$+$ target location to $10$~m & $11.8$ & $24.5$ & target location \\
+$+$ decelerate to $2$~km/s, TLE $3$~m & $3.5$ & $7.3$ & target location \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two things are worth reading off that table. The first seeker row is \emph{worse} than inertial-only, because the fallback multiplier the inertial case uses is optimistic and the computed divert-limited answer is not; adding a sensor a vehicle cannot exploit does not help. And past the third row every remaining improvement is in \emph{survey and timekeeping} rather than in guidance --- a $10$~m CEP is a statement about knowing where the target is, and \cref{sec:geodesy} shows how easily that is lost, since confusing geodetic with geocentric latitude displaces an aimpoint by $21.4$~km and a one-minute epoch error by $27.9$~km.
+
+\begin{remark}[The homing model is a scaling, not an adjoint]
+The loop is represented by a single time constant and a navigation ratio. A design study would run the adjoint miss-distance analysis and carry glint, radome refraction and target motion separately. What this is good for is sizing --- identifying which of the four floors binds, and by how much --- and it is deliberately not presented as more.
+\end{remark}
+
 \begin{remark}[The error budget is parametric, and says so]
 The per-phase dispersion contributions are stated inputs, not derived quantities --- order-of-magnitude figures chosen to exercise the accounting, with the exception of dispensing, which is scaled from the bus execution model of \cref{sec:bus}. A CEP produced here is those numbers plus arithmetic. The arithmetic is verified; the inputs are assumptions, and a computed-looking figure should not be allowed to imply a computed provenance.
 \end{remark}

@@ -56,6 +56,7 @@ from passes.geodesy import (
 )
 from passes.guidance.cruise import CruiseVehicle, cruise_range
 from passes.guidance.entry import EntryVehicle
+from passes.guidance.terminal import Seeker, TerminalEngagement, terminal_homing
 from passes.orbital.fobs import deorbit_burn
 from passes.orbital.gravity import EARTH
 from passes.systems.architecture import Architecture, Phase
@@ -95,6 +96,10 @@ DISPERSION_SOURCES: dict[Phase, tuple[float, float]] = {
     Phase.GLIDE: (800.0, 250.0),
     Phase.CRUISE: (500.0, 500.0),
     Phase.BALLISTIC: (350.0, 350.0),
+    # Terminal homing is *computed* by passes.guidance.terminal when a
+    # seeker is supplied; this fallback applies only when one is not, and
+    # is deliberately unambitious because inertial-only terminal guidance
+    # is not what reaches a small CEP.
     Phase.TERMINAL: (-0.85, -0.85),
 }
 
@@ -193,6 +198,13 @@ class MissionBudget:
     difference between a number and a diagnosis.
     """
     accuracy: AccuracyStatistics | None = None
+    engagement: TerminalEngagement | None = None
+    """Terminal homing solution, when a seeker was supplied.
+
+    Its ``limited_by`` names which floor sets the achievable CEP, which is
+    the actionable part: divert, seeker, loop convergence and target
+    location each have a different remedy.
+    """
     """Terminal accuracy: principal sigmas, CEP and 95% radius.
 
     ``None`` only if the architecture contributes no dispersion at all,
@@ -220,6 +232,7 @@ class MissionBudget:
                 if self.accuracy is not None
                 else ""
             )
+            + (f" [{self.engagement.limited_by.value}]" if self.engagement is not None else "")
             + (f" — {self.reason}" if self.reason else "")
         )
 
@@ -239,6 +252,10 @@ def evaluate(
     dispense_delta_v_per_body: float = 150.0,
     cruise_speed: float = 8.0 * 295.0,
     cruise_specific_impulse: float = 1200.0,
+    seeker: Seeker | None = None,
+    terminal_closing_speed: float = 2000.0,
+    terminal_lateral_acceleration: float = 20.0 * 9.80665,
+    target_location_sigma: float = 0.0,
 ) -> MissionBudget:
     """Charge each phase and test whether the architecture closes.
 
@@ -466,6 +483,25 @@ def evaluate(
         else:
             down = float(np.hypot(down, d))
             cross = float(np.hypot(cross, c))
+    # Terminal homing, when a seeker is supplied, *replaces* the fallback
+    # multiplier with a computed engagement. It takes the error accumulated
+    # up to that point as its handover, and leaves a nearly isotropic
+    # residual, because the loop acts equally in both lateral axes.
+    engagement: TerminalEngagement | None = None
+    if seeker is not None and Phase.TERMINAL in architecture.phases:
+        handover = float(np.hypot(down, cross))
+        # Undo the fallback multiplier applied in the walk above.
+        reducer = DISPERSION_SOURCES[Phase.TERMINAL][0]
+        handover /= -reducer
+        engagement = terminal_homing(
+            seeker,
+            handover_sigma=handover,
+            closing_speed=terminal_closing_speed,
+            lateral_acceleration=terminal_lateral_acceleration,
+            target_location_sigma=target_location_sigma,
+        )
+        down = cross = engagement.sigma
+
     accuracy = accuracy_statistics(down, cross) if max(down, cross) > 0.0 else None
 
     return MissionBudget(
@@ -477,4 +513,5 @@ def evaluate(
         shortfall=float(shortfall),
         reason=reason,
         accuracy=accuracy,
+        engagement=engagement,
     )

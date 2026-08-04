@@ -171,8 +171,14 @@ def _build_lp(
     penalty_weight: float,
     trust_radius: float,
 ) -> tuple[
-    _FloatArray, _FloatArray, _FloatArray, list[tuple[float | None, float | None]],
-    int, int, _FloatArray, _FloatArray,
+    _FloatArray,
+    _FloatArray,
+    _FloatArray,
+    list[tuple[float | None, float | None]],
+    int,
+    int,
+    _FloatArray,
+    _FloatArray,
 ]:
     """Assemble the penalized subproblem as a linear program.
 
@@ -267,8 +273,15 @@ def solve_subproblem(
     x_end = np.asarray(x_target, dtype=np.float64)
     n_steps, n_x, n_u = b_mats.shape
     cost, a_eq, b_eq, bounds, offs_u, offs_nu_p, a_ub, b_ub = _build_lp(
-        a_mats, b_mats, z_vecs, x_init, x_end, reference_states,
-        control_limit, penalty_weight, trust_radius,
+        a_mats,
+        b_mats,
+        z_vecs,
+        x_init,
+        x_end,
+        reference_states,
+        control_limit,
+        penalty_weight,
+        trust_radius,
     )
     res = scipy.optimize.linprog(
         cost, A_ub=a_ub, b_ub=b_ub, A_eq=a_eq, b_eq=b_eq, bounds=bounds, method="highs"
@@ -348,15 +361,18 @@ def solve_subproblem_l2(
         {"type": "eq", "fun": lambda v: unpack(v)[0][-1] - x_end},
     ]
     bounds = [
-        (float(reference_states[i, k] - trust_radius),
-         float(reference_states[i, k] + trust_radius))
+        (float(reference_states[i, k] - trust_radius), float(reference_states[i, k] + trust_radius))
         for i in range(n_nodes)
         for k in range(n_x)
     ] + [(-control_limit, control_limit)] * (n_steps * n_u)
 
     v0 = np.concatenate([reference_states.reshape(-1), np.zeros(n_steps * n_u)])
     res = scipy.optimize.minimize(
-        objective, v0, method="SLSQP", bounds=bounds, constraints=constraints,
+        objective,
+        v0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
         options={"maxiter": 400, "ftol": 1e-14},
     )
     x, u = unpack(np.asarray(res.x))
@@ -426,12 +442,17 @@ def solve_scvx(
 
     for iteration in range(1, cfg.max_iterations + 1):
         iterations = iteration
-        a_mats, b_mats, z_vecs = linearize_trajectory(
-            dynamics, jacobians, states, controls, dt
-        )
+        a_mats, b_mats, z_vecs = linearize_trajectory(dynamics, jacobians, states, controls, dt)
         sub = solve_subproblem(
-            a_mats, b_mats, z_vecs, x_init, x_end, states,
-            control_limit, cfg.penalty_weight, radius,
+            a_mats,
+            b_mats,
+            z_vecs,
+            x_init,
+            x_end,
+            states,
+            control_limit,
+            cfg.penalty_weight,
+            radius,
         )
         if not sub.success:
             radius *= cfg.contract_factor
@@ -448,8 +469,13 @@ def solve_scvx(
         predicted_reduction = model_current - sub.model_cost
         if predicted_reduction <= 0.0:
             history.append(
-                {"iteration": iteration, "rho": float("nan"), "radius": radius,
-                 "virtual_norm": sub.virtual_norm, "stagnated": 1.0}
+                {
+                    "iteration": iteration,
+                    "rho": float("nan"),
+                    "radius": radius,
+                    "virtual_norm": sub.virtual_norm,
+                    "stagnated": 1.0,
+                }
             )
             virtual_norm = sub.virtual_norm
             converged = sub.virtual_norm <= cfg.virtual_control_tol
@@ -467,9 +493,14 @@ def solve_scvx(
         elif rho >= cfg.rho_expand:
             radius = min(cfg.trust_max, radius * cfg.expand_factor)
         history.append(
-            {"iteration": iteration, "rho": float(rho), "radius": float(radius),
-             "virtual_norm": float(sub.virtual_norm), "step": step,
-             "accepted": float(accepted)}
+            {
+                "iteration": iteration,
+                "rho": float(rho),
+                "radius": float(radius),
+                "virtual_norm": float(sub.virtual_norm),
+                "step": step,
+                "accepted": float(accepted),
+            }
         )
         # Converged when the virtual controls have vanished — the exact
         # penalty makes that an equality, not a limit — and the iteration

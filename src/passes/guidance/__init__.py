@@ -50,6 +50,14 @@ from passes.guidance.scvx import (
     solve_subproblem,
     solve_subproblem_l2,
 )
+from passes.guidance.terminal import (
+    MissLimit,
+    Seeker,
+    TerminalEngagement,
+    achievable_cep,
+    required_lateral_acceleration,
+    terminal_homing,
+)
 from passes.guidance.tgo import TgoResult, TgoStatus, time_to_go, time_to_go_naive
 
 __all__ = [
@@ -64,12 +72,16 @@ __all__ = [
     "ExecutionErrorModel",
     "GlideResult",
     "GlideState",
+    "MissLimit",
     "Release",
     "SCvxConfig",
     "SCvxResult",
+    "Seeker",
     "SubproblemSolution",
+    "TerminalEngagement",
     "TgoResult",
     "TgoStatus",
+    "achievable_cep",
     "apn_acceleration",
     "atmospheric_density",
     "bank_reversal_needed",
@@ -88,12 +100,14 @@ __all__ = [
     "plan_deployment",
     "range_to_go",
     "reachable_aimpoints",
+    "required_lateral_acceleration",
     "schedule_corrections",
     "scramjet_specific_impulse",
     "simulate_glide",
     "solve_scvx",
     "solve_subproblem",
     "solve_subproblem_l2",
+    "terminal_homing",
     "time_to_go",
     "time_to_go_naive",
 ]

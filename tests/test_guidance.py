@@ -10,7 +10,10 @@ from passes.guidance import (
     Aimpoint,
     CruiseVehicle,
     ExecutionErrorModel,
+    MissLimit,
+    Seeker,
     TgoStatus,
+    achievable_cep,
     apn_acceleration,
     correction_maneuver,
     crossover_mach,
@@ -24,8 +27,10 @@ from passes.guidance import (
     optimize_deployment_order,
     plan_deployment,
     reachable_aimpoints,
+    required_lateral_acceleration,
     schedule_corrections,
     scramjet_specific_impulse,
+    terminal_homing,
     time_to_go,
     time_to_go_naive,
 )
@@ -1153,3 +1158,124 @@ class TestHypersonicCruise:
         a = Aimpoint.from_geodetic(pole, 600.0)
         b = Aimpoint.from_geodetic(pole, 1200.0)
         assert float(np.linalg.norm(b.position - a.position)) < 1.0e4
+
+
+class TestTerminalHoming:
+    """What actually sets a small CEP, and which floor binds."""
+
+    def test_required_acceleration_grows_as_the_inverse_square_of_time(self):
+        """Why terminal accuracy is a vehicle problem before it is a sensor
+        one: halving the acquisition range quadruples the demand."""
+        far = required_lateral_acceleration(1200.0, 8.0)
+        near = required_lateral_acceleration(1200.0, 4.0)
+        assert near == pytest.approx(4.0 * far, rel=1e-12)
+        # The headline number: 1200 m in 3.3 s needs about 34 g.
+        demand = required_lateral_acceleration(1200.0, 20e3 / 6000.0)
+        assert demand / 9.80665 == pytest.approx(33.0, rel=0.05)
+
+    def test_a_fast_vehicle_acquiring_late_is_divert_limited(self):
+        """The as-built case: 6 km/s, 20 km acquisition, 5 g. The seeker is
+        irrelevant here because the vehicle cannot pull the error out."""
+        engagement = terminal_homing(
+            Seeker(1e-3, 20e3),
+            handover_sigma=1200.0,
+            closing_speed=6000.0,
+            lateral_acceleration=5.0 * 9.80665,
+        )
+        assert engagement.limited_by is MissLimit.DIVERT
+        assert engagement.acceleration_margin < 1.0
+        assert achievable_cep(engagement) > 500.0
+
+    def test_acquiring_earlier_is_worth_more_than_a_better_seeker(self):
+        """Acquisition range enters through t_go squared; seeker angular
+        accuracy enters linearly and only at the freeze range. Doubling the
+        first beats a tenfold improvement in the second."""
+        sharper = Seeker(1e-4, 20e3)
+        earlier = Seeker(1e-3, 50e3)
+        common = {
+            "handover_sigma": 1200.0,
+            "closing_speed": 6000.0,
+            "lateral_acceleration": 20.0 * 9.80665,
+        }
+        assert achievable_cep(terminal_homing(earlier, **common)) < achievable_cep(
+            terminal_homing(sharper, **common)
+        )
+
+    def test_target_location_error_is_a_floor_no_sensor_beats(self):
+        """The floor most often left out of an accuracy budget. A vehicle
+        cannot be more accurate than the coordinates it was given."""
+        common = {
+            "handover_sigma": 1200.0,
+            "closing_speed": 2000.0,
+            "lateral_acceleration": 20.0 * 9.80665,
+        }
+        engagement = terminal_homing(Seeker(1e-4, 50e3), target_location_sigma=50.0, **common)
+        assert engagement.limited_by is MissLimit.TARGET_LOCATION
+        assert engagement.sigma == pytest.approx(50.0)
+        # An excellent seeker does not help while this floor binds.
+        better = terminal_homing(Seeker(1e-6, 50e3), target_location_sigma=50.0, **common)
+        assert better.sigma == pytest.approx(engagement.sigma)
+
+    def test_too_few_time_constants_leaves_the_handover_error_intact(self):
+        engagement = terminal_homing(
+            Seeker(1e-3, 3e3),
+            handover_sigma=1200.0,
+            closing_speed=6000.0,
+            lateral_acceleration=50.0 * 9.80665,
+            guidance_time_constant=0.5,
+        )
+        assert engagement.limited_by is MissLimit.LOOP
+        assert engagement.time_constants < 5.0
+
+    def test_the_seeker_floor_is_taken_at_the_freeze_range(self):
+        """Evaluating it at acquisition range is a common and badly
+        optimistic error: the seeker is far more accurate in linear terms
+        once it is close."""
+        seeker = Seeker(1e-3, 50e3)
+        engagement = terminal_homing(
+            seeker,
+            handover_sigma=100.0,
+            closing_speed=2000.0,
+            lateral_acceleration=20.0 * 9.80665,
+            guidance_time_constant=0.5,
+        )
+        assert engagement.limited_by is MissLimit.SEEKER
+        assert engagement.seeker_floor == pytest.approx(1e-3 * 2000.0 * 0.5)
+        assert engagement.seeker_floor < seeker.lateral_sigma_at(seeker.acquisition_range)
+
+    def test_the_hundred_metre_and_ten_metre_requirements(self):
+        """The design question stated as a test. Reaching 100 m needs
+        acquisition at 50 km, 20 g of divert and target location to 50 m;
+        reaching 10 m needs target location to 10 m on top. Beyond that
+        point every improvement is in survey, not in guidance."""
+        common = {
+            "handover_sigma": 1200.0,
+            "closing_speed": 6000.0,
+            "lateral_acceleration": 20.0 * 9.80665,
+        }
+        hundred = terminal_homing(Seeker(1e-3, 50e3), target_location_sigma=50.0, **common)
+        assert achievable_cep(hundred) < 100.0
+        assert hundred.limited_by is MissLimit.TARGET_LOCATION
+
+        ten = terminal_homing(Seeker(1e-3, 50e3), target_location_sigma=10.0, **common)
+        assert achievable_cep(ten) < 15.0
+        assert ten.limited_by is MissLimit.TARGET_LOCATION
+
+    def test_inputs_are_validated(self):
+        with pytest.raises(ValueError, match="angular_sigma"):
+            Seeker(0.0, 20e3)
+        with pytest.raises(ValueError, match="closing_speed"):
+            terminal_homing(
+                Seeker(1e-3, 20e3),
+                handover_sigma=100.0,
+                closing_speed=0.0,
+                lateral_acceleration=100.0,
+            )
+        with pytest.raises(ValueError, match="target_location_sigma"):
+            terminal_homing(
+                Seeker(1e-3, 20e3),
+                handover_sigma=100.0,
+                closing_speed=2000.0,
+                lateral_acceleration=100.0,
+                target_location_sigma=-1.0,
+            )
