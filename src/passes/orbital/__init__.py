@@ -12,6 +12,17 @@ from passes.orbital.coast import (
     regime_transition_profile,
     secular_rates,
 )
+from passes.orbital.fobs import (
+    EARTH_ROTATION_RATE,
+    DeorbitBurn,
+    FobsProfile,
+    approach_azimuth,
+    azimuth_envelope,
+    deorbit_burn,
+    fobs_profile,
+    ground_track,
+    ground_track_shift,
+)
 from passes.orbital.gravity import (
     EARTH,
     GravityModel,
@@ -30,14 +41,23 @@ from passes.orbital.lambert import (
 
 __all__ = [
     "EARTH",
+    "EARTH_ROTATION_RATE",
     "CoastResult",
+    "DeorbitBurn",
+    "FobsProfile",
     "GravityModel",
     "LambertSolution",
     "RegimeTransition",
     "StrategyComparison",
+    "approach_azimuth",
+    "azimuth_envelope",
     "compare_coast_strategies",
+    "deorbit_burn",
+    "fobs_profile",
     "gravitational_acceleration",
     "gravitational_potential",
+    "ground_track",
+    "ground_track_shift",
     "j2_acceleration",
     "lambert",
     "minimum_energy_transfer",

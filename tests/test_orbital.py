@@ -5,9 +5,16 @@ import pytest
 
 from passes.orbital import (
     EARTH,
+    EARTH_ROTATION_RATE,
+    approach_azimuth,
+    azimuth_envelope,
     compare_coast_strategies,
+    deorbit_burn,
+    fobs_profile,
     gravitational_acceleration,
     gravitational_potential,
+    ground_track,
+    ground_track_shift,
     j2_acceleration,
     lambert,
     minimum_energy_transfer,
@@ -359,3 +366,205 @@ class TestLambert:
     def test_refuses_multi_revolution_rather_than_guessing_a_branch(self):
         with pytest.raises(ValueError, match="zero-revolution"):
             lambert([7.0e6, 0.0, 0.0], [0.0, 7.0e6, 0.0], 3000.0, n_revolutions=1)
+
+
+class TestFobs:
+    """Fractional orbital profiles: ground track, deorbit, range accounting."""
+
+    RE = EARTH.radius
+    MU = EARTH.mu
+
+    def test_ground_track_walks_west_at_the_rotation_rate(self):
+        """An inertially fixed point must appear to move west at exactly
+        the sidereal rate. This is the whole content of the frame change,
+        and getting its sign wrong is the classic way to build a ground
+        track that is right in magnitude and mirrored."""
+        fixed = np.array([self.RE + 400e3, 0.0, 0.0])
+        times = np.array([0.0, 3600.0])
+        lon, lat = ground_track(np.column_stack([fixed, fixed]), times)
+        assert lat == pytest.approx([0.0, 0.0], abs=1e-12)
+        assert lon[0] == pytest.approx(0.0, abs=1e-12)
+        assert lon[1] == pytest.approx(-EARTH_ROTATION_RATE * 3600.0, rel=1e-12)
+
+    def test_ground_track_latitude_is_geocentric(self):
+        position = np.array([0.0, 0.0, self.RE + 500e3])
+        _lon, lat = ground_track(position, 0.0)
+        assert lat[0] == pytest.approx(np.pi / 2.0, abs=1e-12)
+
+    def test_ground_track_shift_matches_a_low_orbit(self):
+        """A 200 km orbit walks about 22 degrees per revolution, which is
+        why waiting a revolution repositions the whole profile."""
+        radius = self.RE + 200e3
+        period = 2.0 * np.pi * np.sqrt(radius**3 / self.MU)
+        assert period == pytest.approx(5310.0, rel=0.01)
+        assert np.rad2deg(ground_track_shift(period)) == pytest.approx(22.2, rel=0.02)
+
+    def test_ground_track_rejects_mismatched_lengths(self):
+        with pytest.raises(ValueError, match="time must be scalar or match"):
+            ground_track(np.zeros((3, 4)) + self.RE, np.zeros(3))
+
+    def test_deorbit_delta_v_matches_vis_viva(self):
+        """The burn is the difference of two speeds both given in closed
+        form, so it can be checked exactly rather than approximately."""
+        parking = self.RE + 200e3
+        perigee = self.RE + 50e3
+        burn = deorbit_burn(parking, self.RE + 100e3, perigee)
+        sma = 0.5 * (parking + perigee)
+        expected = np.sqrt(self.MU / parking) - np.sqrt(self.MU * (2.0 / parking - 1.0 / sma))
+        assert burn.delta_v == pytest.approx(expected, rel=1e-12)
+        assert burn.transfer_semi_major_axis == pytest.approx(sma, rel=1e-12)
+
+    def test_deorbit_is_cheap_relative_to_orbital_speed(self):
+        """The property that makes the profile viable: what the burn buys
+        is timing, not energy. Under one percent of orbital speed."""
+        parking = self.RE + 200e3
+        burn = deorbit_burn(parking, self.RE + 100e3, self.RE + 50e3)
+        assert burn.delta_v / np.sqrt(self.MU / parking) < 0.01
+
+    def test_perigee_depth_trades_delta_v_against_transfer_arc(self):
+        """The design curve. Dropping perigee deeper costs more burn but
+        buys a shorter, steeper transfer — an order of magnitude in delta-v
+        for roughly a factor of four in arc."""
+        parking, entry = self.RE + 200e3, self.RE + 100e3
+        burns = [
+            deorbit_burn(parking, entry, self.RE + h)
+            for h in (80e3, 50e3, 0.0, -100e3, -400e3, -1000e3)
+        ]
+        costs = [b.delta_v for b in burns]
+        arcs = [b.transfer_angle for b in burns]
+        gammas = [b.entry_flight_path_angle for b in burns]
+        assert costs == sorted(costs)
+        assert arcs == sorted(arcs, reverse=True)
+        # Steeper entry means a more negative flight-path angle.
+        assert gammas == sorted(gammas, reverse=True)
+        assert costs[-1] / costs[0] > 10.0
+        assert arcs[0] / arcs[-1] > 4.0
+
+    def test_entry_is_shallow_for_a_grazing_perigee(self):
+        """A perigee just below the interface gives a nearly horizontal
+        entry, which is what makes a glide establishable at all."""
+        burn = deorbit_burn(self.RE + 200e3, self.RE + 100e3, self.RE + 80e3)
+        assert -1.0 < np.rad2deg(burn.entry_flight_path_angle) < 0.0
+
+    def test_entry_speed_matches_vis_viva_on_the_transfer(self):
+        parking, entry, perigee = self.RE + 200e3, self.RE + 100e3, self.RE + 50e3
+        burn = deorbit_burn(parking, entry, perigee)
+        sma = 0.5 * (parking + perigee)
+        assert burn.entry_speed == pytest.approx(
+            np.sqrt(self.MU * (2.0 / entry - 1.0 / sma)), rel=1e-12
+        )
+
+    def test_deorbit_refuses_a_perigee_above_the_interface(self):
+        """Not an expensive request but an impossible one: that ellipse
+        never crosses the entry interface."""
+        with pytest.raises(ValueError, match="perigee < entry < parking"):
+            deorbit_burn(self.RE + 200e3, self.RE + 100e3, self.RE + 150e3)
+
+    def test_approach_azimuth_satisfies_the_spherical_relation(self):
+        """cos i = sin A cos phi, which is the geometric statement that the
+        arrival heading is set by the orbit plane and not by where the
+        vehicle started."""
+        for inc_deg in (45.0, 60.0, 98.0):
+            for lat_deg in (0.0, 20.0, 40.0):
+                inc, lat = np.deg2rad(inc_deg), np.deg2rad(lat_deg)
+                azimuth = approach_azimuth(lat, inc)
+                assert np.sin(azimuth) * np.cos(lat) == pytest.approx(np.cos(inc), abs=1e-12)
+
+    def test_polar_orbit_arrives_due_north_and_retrograde_mirrors_it(self):
+        polar = approach_azimuth(np.deg2rad(40.0), np.pi / 2.0)
+        assert polar == pytest.approx(0.0, abs=1e-12)
+        direct = approach_azimuth(np.deg2rad(40.0), np.deg2rad(60.0))
+        retro = approach_azimuth(np.deg2rad(40.0), np.deg2rad(120.0))
+        assert retro == pytest.approx(-direct, abs=1e-12)
+
+    def test_descending_pass_is_the_supplementary_azimuth(self):
+        lat, inc = np.deg2rad(30.0), np.deg2rad(55.0)
+        up = approach_azimuth(lat, inc, ascending=True)
+        down = approach_azimuth(lat, inc, ascending=False)
+        assert up + down == pytest.approx(np.pi, abs=1e-12)
+
+    def test_orbit_cannot_reach_above_its_inclination(self):
+        """A real geometric limit, not a numerical one."""
+        with pytest.raises(ValueError, match="never reaches latitude"):
+            approach_azimuth(np.deg2rad(60.0), np.deg2rad(45.0))
+
+    def test_azimuth_envelope_marks_unreachable_inclinations(self):
+        """Returned as nan rather than dropped, so the array stays aligned
+        with its input and the unreachable region is visible."""
+        envelope = azimuth_envelope(np.deg2rad(50.0), np.deg2rad([30.0, 45.0, 60.0, 90.0]))
+        assert np.isnan(envelope[0])
+        assert np.isnan(envelope[1])
+        assert np.all(np.isfinite(envelope[2:]))
+
+    def test_profile_accounting_closes_exactly(self):
+        """Parking arc plus transfer arc plus glide must equal the angle to
+        the target, with no slack anywhere."""
+        profile = fobs_profile(
+            np.deg2rad(200.0),
+            np.deg2rad(60.0),
+            self.RE + 200e3,
+            self.RE + 100e3,
+            self.RE - 400e3,
+        )
+        assert (profile.parking_arc + profile.transfer_arc + profile.glide_arc) == pytest.approx(
+            profile.total_arc, rel=1e-12
+        )
+        parking, transfer, glide = profile.ranges()
+        assert parking + transfer + glide == pytest.approx(self.RE * profile.total_arc, rel=1e-12)
+
+    def test_a_longer_glide_shortens_the_parking_arc(self):
+        """The trade the accounting exists to expose: glide range is bought
+        from orbital arc one-for-one."""
+        common = (self.RE + 200e3, self.RE + 100e3, self.RE - 400e3)
+        short = fobs_profile(np.deg2rad(200.0), np.deg2rad(40.0), *common)
+        long_glide = fobs_profile(np.deg2rad(200.0), np.deg2rad(70.0), *common)
+        assert long_glide.parking_arc < short.parking_arc
+        assert short.parking_arc - long_glide.parking_arc == pytest.approx(
+            np.deg2rad(30.0), rel=1e-9
+        )
+
+    def test_profile_refuses_to_return_a_negative_parking_arc(self):
+        """A profile that overshoots does not close, and saying so beats
+        reporting a negative range."""
+        with pytest.raises(ValueError, match="does not close"):
+            fobs_profile(
+                np.deg2rad(120.0),
+                np.deg2rad(60.0),
+                self.RE + 200e3,
+                self.RE + 100e3,
+                self.RE + 50e3,
+            )
+
+    def test_kepler_transfer_agrees_with_the_integrator(self):
+        """The strongest check available without external data. The deorbit
+        solve is closed-form Kepler; `propagate_coast` integrates the
+        equations of motion. Flying the post-burn state for the predicted
+        transfer time must reproduce the predicted radius, swept angle,
+        speed and flight-path angle — and the two share no code."""
+        parking, entry = self.RE + 200e3, self.RE + 100e3
+        for perigee_altitude in (50e3, 0.0, -400e3):
+            burn = deorbit_burn(parking, entry, self.RE + perigee_altitude)
+            apogee_speed = np.sqrt(
+                self.MU * (2.0 / parking - 1.0 / burn.transfer_semi_major_axis)
+            )
+            flown = propagate_coast(
+                np.array([parking, 0.0, 0.0]),
+                np.array([0.0, apogee_speed, 0.0]),
+                burn.transfer_time,
+                include_j2=False,
+                rtol=1e-13,
+                atol=1e-6,
+                n_output=2,
+            )
+            r = np.asarray(flown.states[:3, -1])
+            v = np.asarray(flown.states[3:, -1])
+            radius = float(np.linalg.norm(r))
+            assert radius == pytest.approx(entry, abs=1e-3)
+            assert float(np.arctan2(r[1], r[0])) == pytest.approx(
+                burn.transfer_angle, abs=1e-12
+            )
+            assert float(np.linalg.norm(v)) == pytest.approx(
+                burn.entry_speed, abs=1e-6
+            )
+            gamma = float(np.arcsin(np.dot(r, v) / (radius * np.linalg.norm(v))))
+            assert gamma == pytest.approx(burn.entry_flight_path_angle, abs=1e-12)

@@ -588,6 +588,40 @@ The mechanism is that the atmospheric terms are not switched off at the Kármán
 This choice is not free, and the trade should be stated honestly rather than presented as a pure gain. Continuing to integrate the full structural state through a coast phase in which it carries no meaningful energy means the step-size controller remains subject to the structural stability constraint --- the $\mathcal{O}(N^{-4})$ bound of \cite{knox2026passes} --- during a phase whose rigid-body dynamics would otherwise permit steps orders of magnitude larger. A pragmatic mitigation is to freeze the structural block once its modal energy falls below a threshold and reactivate it on atmospheric re-entry, which reintroduces a switch but confines it to a regime where the frozen state is provably quiescent. Which approach is preferable is verification task V5. Measured over a $300$~s coast carrying a $100$~rad/s structural mode, freezing the block once its modal energy has decayed to $10^{-6}$ of its initial value costs $15\times$ fewer right-hand-side evaluations and $15\times$ less wall-clock time, with both strategies conserving specific orbital energy to better than $10^{-8}$ per orbit. The measurement settles the trade in favor of freezing for coasts of this length, and the margin grows with coast duration because the ring-down time is fixed while the coast is not. The switch is defensible only because the freeze condition is checked rather than assumed.
 \end{remark}
 
+\subsection{Fractional orbital profiles}
+\label{sec:fobs}
+
+A fractional orbital profile inserts into a low parking orbit, coasts through part of one revolution, and deorbits onto an entry interface from which the vehicle glides by \cref{sec:glide}. Three things appear here that a single ballistic arc does not have.
+
+\paragraph{The Earth turns underneath.} Every other element of this framework works in an inertial frame, where that is irrelevant. A ground track is not: over one low-Earth revolution of roughly $88$~minutes the planet rotates about $22^\circ$, so the parking orbit's track walks steadily westward and repeats only after many revolutions. This is what lets the entry interface be placed almost anywhere by waiting rather than by manoeuvring. We compute latitude geocentrically, which coincides with geodetic on the spherical Earth used here but differs by up to $0.19^\circ$ --- some $21$~km on the ground --- once an ellipsoid is introduced; that conversion belongs at the point the ellipsoid enters and not earlier.
+
+\paragraph{The approach azimuth is a free variable.} A direct ballistic arc between two points lies in the plane containing them and the Earth's centre, so its arrival heading is fixed by its endpoints. An orbital profile chooses its own plane, and the spherical-triangle relation $\cos i = \sin A \cos\phi$ then fixes the arrival azimuth from the inclination alone --- independent of where the trajectory began. At $40^\circ$ latitude an inclination of $60^\circ$ arrives on $40.7^\circ$ ascending or $139.3^\circ$ descending; a polar orbit arrives due north. The constraint is only that an orbit never reaches latitudes above its inclination.
+
+\paragraph{Perigee depth sets the character of the entry, and it is the dominant design choice.} The deorbit burn itself is cheap: from a $200$~km circular orbit, dropping perigee to $50$~km costs $45$~m/s against an orbital speed of $7784$~m/s, under $0.6\%$. What the burn buys is timing rather than energy. But how deep the perigee is placed governs everything downstream, and the trade is steep:
+
+\begin{center}
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+perigee (km) & $\Delta v$ (m/s) & transfer arc (deg) & arc (km) & $\gamma_{\text{entry}}$ (deg) \\
+\midrule
+$80$ & $35.9$ & $131.4$ & $14\,629$ & $-0.393$ \\
+$50$ & $45.0$ & $108.8$ & $12\,117$ & $-0.623$ \\
+$0$ & $60.3$ & $89.1$ & $9\,920$ & $-0.884$ \\
+$-100$ & $91.4$ & $69.3$ & $7\,711$ & $-1.261$ \\
+$-400$ & $188.3$ & $46.2$ & $5\,141$ & $-2.042$ \\
+$-1000$ & $401.0$ & $30.5$ & $3\,395$ & $-3.192$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A negative perigee is virtual --- the vehicle never reaches it --- and is simply how a steep entry is specified. An order of magnitude in $\Delta v$ buys roughly a factor of four in transfer arc. The shallow end is not a free choice either: a grazing perigee gives an entry flight-path angle under half a degree and a transfer arc of $14\,600$~km, which is most of a hemisphere spent descending.
+
+Total ground range is then the parking arc plus the transfer arc plus the glide, and \texttt{fobs\_profile} closes that accounting exactly. The three legs trade one-for-one: a glide lengthened by $30^\circ$ shortens the parking arc by precisely $30^\circ$, and a profile whose glide and transfer already overshoot the target is reported as not closing rather than returned with a negative parking arc.
+
+\begin{remark}[Coplanar deorbit is the only sensible option]
+The burn is taken coplanar throughout. This is not a simplification of convenience: a plane change at orbital speed costs kilometres per second, against tens of metres per second for the entire deorbit. Any azimuth freedom worth having is therefore bought at insertion, by choosing the parking orbit's inclination, and not later.
+\end{remark}
+
 \subsection{Midcourse trajectory correction}
 \label{sec:midcourse}
 
