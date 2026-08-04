@@ -593,7 +593,7 @@ A bus carrying $n$ independently targeted vehicles must place each on a ballisti
 \section{Verification and Validation Plan}
 \label{sec:vandv}
 
-This section states what is measured, against what reference, and what constitutes failure. The plan was written before any implementation existed, so it is falsifiable in advance rather than reported selectively afterward. Tasks V1--V7 have since been executed against the reference implementation; V8 is executed for the radiative correlation and its implementation properties, with the convective reference-case comparison outstanding. Measured values appear in the relevant sections above and in the companion repository's verification reports.
+This section states what is measured, against what reference, and what constitutes failure. The plan was written before any implementation existed, so it is falsifiable in advance rather than reported selectively afterward. Tasks V1--V7 have since been executed against the reference implementation; V8 is executed for the radiative correlation and its implementation properties, with the convective reference-case comparison outstanding. V9 and V10 were added after \cref{sec:midcourse} and \cref{sec:bus} were written, and are stated in the same spirit: both are checkable without external reference data, because the reference is an independent numerical path through the same physics rather than a published number. That is a weaker claim than validation against measurement and is labelled as such. Measured values appear in the relevant sections above and in the companion repository's verification reports.
 
 \begin{center}
 \begin{longtable}{@{}llp{5.4cm}p{3.4cm}@{}}
@@ -616,11 +616,15 @@ V6 & Blackout navigation & Covariance growth against \cref{eq:growth}; SCvx pull
 V7 & SCvx convergence & Iteration count and virtual control norm at convergence versus $w_\nu$; verification that $\bm{\nu}_i \to \mathbf{0}$ exactly & $\|\bm{\nu}_i\|$ not reaching zero for finite $w_\nu$ \\
 \addlinespace
 V8 & Aerothermal & Stagnation heating against Fay--Riddell reference cases; recession against a FIAT \cite{chen1999} comparison & heating disagreement $> 5\%$ on reference conditions \\
+\addlinespace
+V9 & Lambert targeting & Terminal arrival error of the solved transfer, propagated through the independent $J_2$ integrator of \cref{sec:j2}, over a randomized envelope of geometries, times of flight and both directions of motion; conic invariance checked at both endpoints & relative arrival error $> 10^{-7}$ on any physically flyable transfer; energy or angular momentum differing between the two endpoints by $> 10^{-9}$ relative \\
+\addlinespace
+V10 & Bus dispensing & Every released vehicle propagated to its own aimpoint; ordering search checked against exhaustive enumeration; accumulated-covariance monotonicity checked against reported dispersion & any released vehicle missing its aimpoint by $> 1$~m; the ordering search returning a cost above the exhaustive optimum where enumeration is affordable \\
 \bottomrule
 \end{longtable}
 \end{center}
 
-\emph{Status.} V1--V7 executed and passing against the criteria as stated. V8 is partially complete. The radiative correlation is verified against the published source (\cref{rem:tauberunits}) and the implementation properties hold, but the $5\%$ criterion is stated against published Fay--Riddell reference conditions, which require tabulated equilibrium-air properties not yet transcribed. The recession half of V8 --- shared with Paper~I's V4 --- is now executed against measured arc-jet recession rather than against a code: seven conditions of Milos and Chen \cite{milos2010} spanning $107$--$1102$~W/cm\textsuperscript{2} and $2.3$--$84.4$~kPa, at $4\%$ median absolute error against a $27\%$ experimental scatter. Full numerical detail is deferred to the companion experimental manuscript.
+\emph{Status.} V1--V7, V9 and V10 executed and passing against the criteria as stated. V8 is partially complete. The radiative correlation is verified against the published source (\cref{rem:tauberunits}) and the implementation properties hold, but the $5\%$ criterion is stated against published Fay--Riddell reference conditions, which require tabulated equilibrium-air properties not yet transcribed. The recession half of V8 --- shared with Paper~I's V4 --- is now executed against measured arc-jet recession rather than against a code: seven conditions of Milos and Chen \cite{milos2010} spanning $107$--$1102$~W/cm\textsuperscript{2} and $2.3$--$84.4$~kPa, at $4\%$ median absolute error against a $27\%$ experimental scatter. Full numerical detail is deferred to the companion experimental manuscript.
 
 \section{Limitations}
 \label{sec:limitations}

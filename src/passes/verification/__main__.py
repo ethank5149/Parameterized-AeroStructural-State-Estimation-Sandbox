@@ -13,6 +13,7 @@ from passes.verification.p2v5_coast import run_p2v5
 from passes.verification.p2v8_aerothermal import run_p2v8
 from passes.verification.p2v67_gnc import run_p2v67
 from passes.verification.p2v123_plates import run_p2v123
+from passes.verification.p2v910_targeting import run_p2v910
 from passes.verification.v1_structural import run_v1
 from passes.verification.v2_slosh import run_v2
 from passes.verification.v3_integrators import run_v3
@@ -44,6 +45,7 @@ def main() -> int:
         (run_p2v5, "p2v5-coast"),
         (run_p2v67, "p2v67-gnc"),
         (run_p2v8, "p2v8-aerothermal"),
+        (run_p2v910, "p2v910-targeting"),
         (run_integration, "int-coupled"),
     ):
         report = runner(args.output)

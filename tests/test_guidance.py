@@ -20,6 +20,18 @@ from passes.guidance import (
     time_to_go,
     time_to_go_naive,
 )
+from passes.guidance.entry import _MU as MU
+from passes.guidance.entry import _R_EARTH as R_EARTH
+from passes.guidance.entry import (
+    DragTracker,
+    EntryVehicle,
+    GlideState,
+    atmospheric_density,
+    bank_reversal_needed,
+    crossrange_deadband,
+    range_to_go,
+    simulate_glide,
+)
 from passes.orbital import EARTH, lambert, propagate_coast
 
 
@@ -741,3 +753,177 @@ class TestBusDeployment:
             Aimpoint(position=np.zeros(3), arrival_time=-1.0)
         with pytest.raises(ValueError, match="must be finite"):
             Aimpoint(position=np.array([np.nan, 0.0, 0.0]), arrival_time=100.0)
+
+
+class TestGlideGuidance:
+    """Hypersonic glide: drag tracking and bank-angle modulation."""
+
+    def _vehicle(self):
+        return EntryVehicle(ballistic_coefficient=200.0, lift_to_drag=2.0)
+
+    def _entry(self):
+        return GlideState(
+            radius=R_EARTH + 80e3,
+            longitude=0.0,
+            latitude=0.0,
+            speed=7000.0,
+            flight_path_angle=np.deg2rad(-1.0),
+            heading=np.deg2rad(90.0),
+        )
+
+    def test_range_integral_is_exact_for_constant_drag(self):
+        """The range-energy relation dR/de = -1/D is exact, so at constant
+        drag the integral must reproduce the closed form to quadrature
+        precision. This pins the quantity the whole architecture rests on:
+        commanding a drag profile is commanding a range."""
+        entry = self._entry()
+        final = 0.5 * 1000.0**2 - MU / (R_EARTH + 30e3)
+        for drag in (5.0, 20.0, 80.0):
+            predicted = range_to_go(lambda _e, d=drag: d, entry.specific_energy, final)
+            assert predicted == pytest.approx((entry.specific_energy - final) / drag, rel=1e-12)
+
+    def test_range_falls_as_commanded_drag_rises(self):
+        """Higher drag sheds the same energy over less ground. This is the
+        lever the tracker actually pulls."""
+        entry = self._entry()
+        final = 0.5 * 1000.0**2 - MU / (R_EARTH + 30e3)
+        ranges = [
+            range_to_go(lambda _e, d=drag: d, entry.specific_energy, final)
+            for drag in (5.0, 20.0, 80.0)
+        ]
+        assert ranges[0] > ranges[1] > ranges[2]
+
+    def test_range_rejects_a_profile_that_would_diverge(self):
+        entry = self._entry()
+        final = 0.5 * 1000.0**2 - MU / (R_EARTH + 30e3)
+        with pytest.raises(ValueError, match="strictly positive"):
+            range_to_go(lambda _e: 0.0, entry.specific_energy, final)
+        with pytest.raises(ValueError, match="energy must exceed"):
+            range_to_go(lambda _e: 20.0, final, entry.specific_energy)
+
+    def test_deadband_is_wide_when_fast_and_tight_when_slow(self):
+        """Scheduling direction is the whole point: a constant deadband
+        either reverses constantly at entry or stops correcting at
+        handover."""
+        high, low = np.deg2rad(12.0), np.deg2rad(2.0)
+        assert crossrange_deadband(7000.0, high, low) == pytest.approx(high)
+        assert crossrange_deadband(1000.0, high, low) == pytest.approx(low)
+        assert low < crossrange_deadband(4000.0, high, low) < high
+        # Clamped outside the scheduled range rather than extrapolated.
+        assert crossrange_deadband(9000.0, high, low) == pytest.approx(high)
+        assert crossrange_deadband(300.0, high, low) == pytest.approx(low)
+
+    def test_deadband_refuses_an_inverted_schedule(self):
+        with pytest.raises(ValueError, match="0 < low < high"):
+            crossrange_deadband(5000.0, np.deg2rad(2.0), np.deg2rad(12.0))
+
+    def test_reversal_triggers_only_outside_the_deadband(self):
+        high, low = np.deg2rad(12.0), np.deg2rad(2.0)
+        assert not bank_reversal_needed(np.deg2rad(5.0), 7000.0, high, low)
+        assert bank_reversal_needed(np.deg2rad(5.0), 1000.0, high, low)
+        assert bank_reversal_needed(np.deg2rad(20.0), 7000.0, high, low)
+
+    def test_tracker_reduces_vertical_lift_when_flying_too_much_drag(self):
+        """The sign that reads backwards until you notice why. Above the
+        reference drag the vehicle is too deep, so the command must raise
+        it — which means *more* vertical lift, hence a smaller bank."""
+        tracker = DragTracker(gain_proportional=0.02, gain_derivative=0.0)
+        on_profile = tracker.command(20.0, 20.0)
+        too_much_drag = tracker.command(30.0, 20.0)
+        too_little_drag = tracker.command(10.0, 20.0)
+        assert too_much_drag < on_profile < too_little_drag
+
+    def test_tracker_saturates_on_bank_angle_not_on_cosine(self):
+        """A saturated command must still be a physically meaningful
+        attitude. Clipping the cosine instead would let the loop ask for a
+        bank with no vertical lift at all."""
+        tracker = DragTracker(gain_proportional=10.0, gain_derivative=0.0)
+        limit = np.deg2rad(60.0)
+        # Far below the reference drag: bank all the way over to the limit,
+        # spilling vertical lift so the vehicle descends into denser air.
+        assert tracker.command(0.0, 100.0, max_bank=limit) == pytest.approx(limit)
+        # Far above it: wings level, all lift vertical, climb out. The
+        # command saturates at zero bank rather than at a clipped cosine.
+        assert tracker.command(1000.0, 0.0, max_bank=limit) == pytest.approx(0.0)
+        for drag in (0.0, 5.0, 50.0, 1000.0):
+            assert 0.0 <= tracker.command(drag, 20.0, max_bank=limit) <= limit
+
+    def test_bank_reversals_bound_the_crossrange(self):
+        """The result the lateral logic exists to produce. Holding a single
+        bank sign the whole way accumulates over a thousand kilometres of
+        crossrange; reversing on the scheduled deadband cuts it by more
+        than an order of magnitude."""
+        vehicle, entry = self._vehicle(), self._entry()
+        reference = lambda _e: 20.0  # noqa: E731
+        drifting = simulate_glide(vehicle, entry, reference, target=None)
+        corrected = simulate_glide(vehicle, entry, reference, target=(np.deg2rad(60.0), 0.0))
+        assert drifting.reversals == 0
+        assert abs(drifting.crossrange) > 1.0e6
+        assert corrected.reversals > 0
+        assert abs(corrected.crossrange) < 0.1 * abs(drifting.crossrange)
+
+    def test_glide_terminates_on_the_speed_gate_and_stays_airborne(self):
+        vehicle, entry = self._vehicle(), self._entry()
+        result = simulate_glide(vehicle, entry, lambda _e: 20.0, target=(np.deg2rad(60.0), 0.0))
+        assert result.terminal_speed == pytest.approx(1000.0, abs=25.0)
+        assert np.all(result.altitudes > 0.0)
+        assert result.times[-1] < 3000.0
+        assert result.downrange > 1.0e6
+
+    def test_higher_commanded_drag_shortens_the_flown_range(self):
+        """The prediction of `range_to_go`, checked against a flown
+        trajectory rather than against itself."""
+        vehicle, entry = self._vehicle(), self._entry()
+        target = (np.deg2rad(60.0), 0.0)
+        shallow = simulate_glide(vehicle, entry, lambda _e: 12.0, target=target)
+        steep = simulate_glide(vehicle, entry, lambda _e: 40.0, target=target)
+        assert shallow.downrange > steep.downrange
+
+    def test_lift_to_drag_sets_crossrange_capability(self):
+        """Crossrange is what lift buys, so a higher-L/D vehicle flown with
+        the bank sign held must drift further off its initial great
+        circle."""
+        entry = self._entry()
+        reference = lambda _e: 20.0  # noqa: E731
+        low = simulate_glide(
+            EntryVehicle(ballistic_coefficient=200.0, lift_to_drag=1.0),
+            entry,
+            reference,
+            target=None,
+        )
+        high = simulate_glide(
+            EntryVehicle(ballistic_coefficient=200.0, lift_to_drag=2.5),
+            entry,
+            reference,
+            target=None,
+        )
+        assert abs(high.crossrange) > abs(low.crossrange)
+
+    def test_density_is_clamped_at_the_surface(self):
+        """Below the surface the model has no meaning, and extrapolating it
+        keeps a diverging trajectory numerically alive long past the point
+        where it stopped describing anything."""
+        assert float(atmospheric_density(0.0)) == pytest.approx(1.225)
+        assert float(atmospheric_density(-5000.0)) == pytest.approx(1.225)
+        assert float(atmospheric_density(8500.0)) == pytest.approx(1.225 / np.e)
+
+    def test_vehicle_rejects_a_bank_limit_with_no_vertical_authority(self):
+        with pytest.raises(ValueError, match="max_bank"):
+            EntryVehicle(ballistic_coefficient=200.0, lift_to_drag=2.0, max_bank=np.pi / 2.0)
+        with pytest.raises(ValueError, match="lift_to_drag"):
+            EntryVehicle(ballistic_coefficient=200.0, lift_to_drag=0.0)
+        with pytest.raises(ValueError, match="ballistic_coefficient"):
+            EntryVehicle(ballistic_coefficient=-1.0, lift_to_drag=2.0)
+
+    def test_refuses_a_glide_that_is_already_over(self):
+        vehicle = self._vehicle()
+        slow = GlideState(
+            radius=R_EARTH + 80e3,
+            longitude=0.0,
+            latitude=0.0,
+            speed=800.0,
+            flight_path_angle=0.0,
+            heading=0.0,
+        )
+        with pytest.raises(ValueError, match="no glide to fly"):
+            simulate_glide(vehicle, slow, lambda _e: 20.0)
