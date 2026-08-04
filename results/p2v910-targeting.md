@@ -1,8 +1,8 @@
-# II-V9-V11: Lambert targeting, bus dispensing, and glide guidance
+# II-V9-V12: Lambert targeting, bus dispensing, glide guidance, fractional orbital profiles
 
-- **Failure criterion (stated in advance, Paper II §8):** V9: relative arrival error > 1e-7 on any physically flyable transfer, or endpoint energy/angular-momentum mismatch > 1e-9. V10: any released vehicle missing its aimpoint by > 1 m, or the ordering search returning a cost above the exhaustive optimum. V11: range integral differing from its closed form by > 1e-9, flown range not monotone in commanded drag, or reversals failing to reduce crossrange by 10x
+- **Failure criterion (stated in advance, Paper II §8):** V9: relative arrival error > 1e-7 on any physically flyable transfer, or endpoint energy/angular-momentum mismatch > 1e-9. V10: any released vehicle missing its aimpoint by > 1 m, or the ordering search returning a cost above the exhaustive optimum. V11: range integral differing from its closed form by > 1e-9, flown range not monotone in commanded drag, or reversals failing to reduce crossrange by 10x. V12: the Kepler deorbit solve differing from the integrated trajectory beyond tolerance, or the three-leg range accounting failing to close
 - **Verdict:** **PASS**
-- **Generated:** 2026-08-04 22:01 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.14.6 (x86_64)
+- **Generated:** 2026-08-04 22:32 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.14.6 (x86_64)
 
 ## V9 — Lambert transfer envelope
 
@@ -74,6 +74,32 @@ Each reference is the equilibrium-glide drag profile at the stated nominal bank,
 Reversals reduce terminal crossrange by a factor of 39, against a criterion of 10. The uncorrected case is the honest baseline: it is not a failure mode but the natural behaviour of a lifting vehicle holding one bank sign, and it is what the lateral logic exists to remove.
 
 The target here is placed at the range the longitudinal profile actually delivers. That is load-bearing rather than tidy: the lateral logic steers on bearing to the target, so a profile that overflies inverts the bearing part-way through and the deadband stops meaning what it should. Placing the target 1000 km short of the delivered range degrades the benefit from 39x to 4x — which is how this criterion first failed. Range matching is a precondition for the lateral channel, not an independent concern.
+
+## V12 — deorbit design curve from a 200 km circular parking orbit
+
+| perigee (km) | ΔV (m/s) | of orbital speed | transfer arc (deg) | arc (km) | entry γ (deg) |
+|---|---|---|---|---|---|
+| +80 | 35.9 | 0.46% | 131.4 | 14629 | -0.393 |
+| +50 | 45.0 | 0.58% | 108.8 | 12117 | -0.623 |
+| +0 | 60.3 | 0.77% | 89.1 | 9920 | -0.884 |
+| -100 | 91.4 | 1.17% | 69.3 | 7711 | -1.261 |
+| -400 | 188.3 | 2.42% | 46.2 | 5141 | -2.042 |
+| -1000 | 401.0 | 5.15% | 30.5 | 3395 | -3.192 |
+
+A negative perigee is virtual — the vehicle never reaches it — and is simply how a steep entry is specified. The burn is cheap in every case: what it buys is timing, not energy. Perigee depth is the dominant choice, trading an order of magnitude in ΔV for roughly a factor of four in transfer arc. Monotonicity of ΔV, arc and entry angle across the sweep: satisfied.
+
+## V12 — closed-form solve against the independent integrator
+
+| quantity | worst discrepancy | criterion | verdict |
+|---|---|---|---|
+| entry radius | 4.731e-07 m | < 1e-3 m | PASS |
+| swept angle | 1.403e-13 rad | < 1e-10 rad | PASS |
+| entry speed | 6.312e-10 m/s | < 1e-6 m/s | PASS |
+| flight-path angle | 4.775e-14 rad | < 1e-10 rad | PASS |
+| ΔV vs vis-viva | 0.000e+00 | < 1e-12 rel | PASS |
+| three-leg range closure | 1.110e-16 | < 1e-12 rel | PASS |
+
+The deorbit solve is closed-form Kepler; the reference is the coast integrator advancing the equations of motion from the post-burn state. The two share no code, so agreement at this level is a real check on both. Ground-track walk for this orbit is 22.2 deg per revolution, which is what allows the entry interface to be repositioned by waiting rather than by manoeuvring.
 
 ## What these tasks establish, and what they do not
 

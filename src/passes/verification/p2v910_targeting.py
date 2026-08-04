@@ -57,6 +57,7 @@ from passes.guidance.entry import (
 )
 from passes.guidance.midcourse import ExecutionErrorModel, correction_maneuver
 from passes.orbital.coast import propagate_coast
+from passes.orbital.fobs import deorbit_burn, fobs_profile, ground_track_shift
 from passes.orbital.gravity import EARTH
 from passes.orbital.lambert import lambert, minimum_energy_transfer
 from passes.verification.common import VerificationReport, write_csv
@@ -529,11 +530,167 @@ def _v11_glide(report: VerificationReport) -> bool:
     return passed
 
 
+def _v12_fobs(report: VerificationReport) -> bool:
+    """II-V12: the deorbit solve against an independent integration."""
+    parking = _R_EARTH + 200e3
+    entry_radius = _R_EARTH + 100e3
+    circular = float(np.sqrt(_MU / parking))
+
+    rows: list[list[str]] = []
+    worst_radius = 0.0
+    worst_arc = 0.0
+    worst_speed = 0.0
+    worst_gamma = 0.0
+    worst_visviva = 0.0
+    costs: list[float] = []
+    arcs: list[float] = []
+    gammas: list[float] = []
+
+    for altitude in (80e3, 50e3, 0.0, -100e3, -400e3, -1000e3):
+        perigee = _R_EARTH + altitude
+        burn = deorbit_burn(parking, entry_radius, perigee)
+        costs.append(burn.delta_v)
+        arcs.append(burn.transfer_angle)
+        gammas.append(burn.entry_flight_path_angle)
+
+        sma = 0.5 * (parking + perigee)
+        expected = np.sqrt(_MU / parking) - np.sqrt(_MU * (2.0 / parking - 1.0 / sma))
+        worst_visviva = max(worst_visviva, abs(burn.delta_v / expected - 1.0))
+
+        apogee_speed = np.sqrt(_MU * (2.0 / parking - 1.0 / sma))
+        flown = propagate_coast(
+            np.array([parking, 0.0, 0.0]),
+            np.array([0.0, apogee_speed, 0.0]),
+            burn.transfer_time,
+            include_j2=False,
+            rtol=1e-13,
+            atol=1e-6,
+            n_output=2,
+        )
+        r = np.asarray(flown.states[:3, -1])
+        v = np.asarray(flown.states[3:, -1])
+        radius = float(np.linalg.norm(r))
+        arc = float(np.arctan2(r[1], r[0]))
+        speed = float(np.linalg.norm(v))
+        gamma = float(np.arcsin(np.dot(r, v) / (radius * speed)))
+
+        worst_radius = max(worst_radius, abs(radius - entry_radius))
+        worst_arc = max(worst_arc, abs(arc - burn.transfer_angle))
+        worst_speed = max(worst_speed, abs(speed - burn.entry_speed))
+        worst_gamma = max(worst_gamma, abs(gamma - burn.entry_flight_path_angle))
+
+        rows.append(
+            [
+                f"{altitude / 1e3:+.0f}",
+                f"{burn.delta_v:.1f}",
+                f"{100 * burn.delta_v / circular:.2f}%",
+                f"{np.rad2deg(burn.transfer_angle):.1f}",
+                f"{_R_EARTH * burn.transfer_angle / 1e3:.0f}",
+                f"{np.rad2deg(burn.entry_flight_path_angle):.3f}",
+            ]
+        )
+
+    # Three-leg accounting.
+    profile = fobs_profile(
+        np.deg2rad(200.0),
+        np.deg2rad(60.0),
+        parking,
+        entry_radius,
+        _R_EARTH - 400e3,
+    )
+    closure = abs(
+        (profile.parking_arc + profile.transfer_arc + profile.glide_arc) / profile.total_arc - 1.0
+    )
+
+    integrator_ok = (
+        worst_radius <= 1e-3 and worst_arc <= 1e-10 and worst_speed <= 1e-6 and worst_gamma <= 1e-10
+    )
+    visviva_ok = worst_visviva <= 1e-12
+    accounting_ok = closure <= 1e-12
+    monotone = (
+        costs == sorted(costs)
+        and arcs == sorted(arcs, reverse=True)
+        and gammas == sorted(gammas, reverse=True)
+    )
+    passed = integrator_ok and visviva_ok and accounting_ok and monotone
+
+    period = 2.0 * np.pi * np.sqrt(parking**3 / _MU)
+    report.add_table(
+        "V12 — deorbit design curve from a 200 km circular parking orbit",
+        [
+            "perigee (km)",
+            "ΔV (m/s)",
+            "of orbital speed",
+            "transfer arc (deg)",
+            "arc (km)",
+            "entry γ (deg)",
+        ],
+        rows,
+        "A negative perigee is virtual — the vehicle never reaches it — and "
+        "is simply how a steep entry is specified. The burn is cheap in "
+        "every case: what it buys is timing, not energy. Perigee depth is "
+        "the dominant choice, trading an order of magnitude in ΔV for "
+        "roughly a factor of four in transfer arc. Monotonicity of ΔV, arc "
+        f"and entry angle across the sweep: "
+        f"{'satisfied' if monotone else 'VIOLATED'}.",
+    )
+    report.add_table(
+        "V12 — closed-form solve against the independent integrator",
+        ["quantity", "worst discrepancy", "criterion", "verdict"],
+        [
+            [
+                "entry radius",
+                f"{worst_radius:.3e} m",
+                "< 1e-3 m",
+                "PASS" if worst_radius <= 1e-3 else "FAIL",
+            ],
+            [
+                "swept angle",
+                f"{worst_arc:.3e} rad",
+                "< 1e-10 rad",
+                "PASS" if worst_arc <= 1e-10 else "FAIL",
+            ],
+            [
+                "entry speed",
+                f"{worst_speed:.3e} m/s",
+                "< 1e-6 m/s",
+                "PASS" if worst_speed <= 1e-6 else "FAIL",
+            ],
+            [
+                "flight-path angle",
+                f"{worst_gamma:.3e} rad",
+                "< 1e-10 rad",
+                "PASS" if worst_gamma <= 1e-10 else "FAIL",
+            ],
+            [
+                "ΔV vs vis-viva",
+                f"{worst_visviva:.3e}",
+                "< 1e-12 rel",
+                "PASS" if visviva_ok else "FAIL",
+            ],
+            [
+                "three-leg range closure",
+                f"{closure:.3e}",
+                "< 1e-12 rel",
+                "PASS" if accounting_ok else "FAIL",
+            ],
+        ],
+        "The deorbit solve is closed-form Kepler; the reference is the coast "
+        "integrator advancing the equations of motion from the post-burn "
+        "state. The two share no code, so agreement at this level is a real "
+        "check on both. Ground-track walk for this orbit is "
+        f"{np.rad2deg(ground_track_shift(period)):.1f} deg per revolution, "
+        "which is what allows the entry interface to be repositioned by "
+        "waiting rather than by manoeuvring.",
+    )
+    return passed
+
+
 def run_p2v910(output_dir: Path) -> VerificationReport:
     """Execute II-V9 and II-V10 and write the report."""
     report = VerificationReport(
-        task_id="II-V9-V11",
-        title="Lambert targeting, bus dispensing, and glide guidance",
+        task_id="II-V9-V12",
+        title="Lambert targeting, bus dispensing, glide guidance, fractional orbital profiles",
         criterion=(
             "V9: relative arrival error > 1e-7 on any physically flyable "
             "transfer, or endpoint energy/angular-momentum mismatch > 1e-9. "
@@ -541,7 +698,9 @@ def run_p2v910(output_dir: Path) -> VerificationReport:
             "ordering search returning a cost above the exhaustive optimum. "
             "V11: range integral differing from its closed form by > 1e-9, "
             "flown range not monotone in commanded drag, or reversals failing "
-            "to reduce crossrange by 10x"
+            "to reduce crossrange by 10x. V12: the Kepler deorbit solve "
+            "differing from the integrated trajectory beyond tolerance, or the "
+            "three-leg range accounting failing to close"
         ),
         passed=True,
     )
@@ -550,6 +709,7 @@ def run_p2v910(output_dir: Path) -> VerificationReport:
         _v9_correction(report),
         _v10_dispensing(report),
         _v11_glide(report),
+        _v12_fobs(report),
     ]
     report.passed = all(results)
 

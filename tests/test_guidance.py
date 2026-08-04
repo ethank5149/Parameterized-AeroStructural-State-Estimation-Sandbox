@@ -7,16 +7,24 @@ import pytest
 
 from passes.guidance import (
     Aimpoint,
+    CruiseVehicle,
     ExecutionErrorModel,
     TgoStatus,
     apn_acceleration,
     correction_maneuver,
+    crossover_mach,
+    cruise_altitude,
+    cruise_climb_altitude,
+    cruise_dynamic_pressure,
+    cruise_range,
+    cruise_versus_glide,
     los_rate,
     miss_sensitivity,
     optimize_deployment_order,
     plan_deployment,
     reachable_aimpoints,
     schedule_corrections,
+    scramjet_specific_impulse,
     time_to_go,
     time_to_go_naive,
 )
@@ -965,3 +973,158 @@ class TestGlideGuidance:
         )
         with pytest.raises(ValueError, match="no glide to fly"):
             simulate_glide(vehicle, slow, self._flyable(vehicle))
+
+
+class TestHypersonicCruise:
+    """Powered cruise: Bréguet range, the cruise-climb, and the trades."""
+
+    def _vehicle(self, lift_to_drag=4.0, fuel_fraction=0.30):
+        return CruiseVehicle(
+            wing_loading=400.0,
+            lift_to_drag=lift_to_drag,
+            lift_coefficient=0.1,
+            fuel_fraction=fuel_fraction,
+        )
+
+    SOUND = 295.0
+
+    def test_range_is_linear_in_lift_to_drag(self):
+        """L/D enters the range equation linearly, so this must be exact
+        rather than approximate."""
+        speed = 8.0 * self.SOUND
+        base = cruise_range(self._vehicle(4.0), speed, 1200.0)
+        doubled = cruise_range(self._vehicle(8.0), speed, 1200.0)
+        assert doubled == pytest.approx(2.0 * base, rel=1e-12)
+
+    def test_range_is_logarithmic_in_mass_ratio_not_in_fuel_fraction(self):
+        """The claim that fuel has diminishing returns and L/D does not is
+        backwards over the interesting range, and this pins which variable
+        the logarithm actually acts on.
+
+        ln(1/(1-f)) is *convex* in fuel fraction — its derivative 1/(1-f)
+        grows — so doubling f more than doubles the logarithm. The
+        diminishing return lives in mass ratio: doubling m_i/m_f adds
+        exactly ln 2 whatever it was before."""
+        speed = 8.0 * self.SOUND
+        base = self._vehicle(4.0, 0.30)
+        by_ld = cruise_range(self._vehicle(8.0, 0.30), speed, 1200.0)
+        by_fuel = cruise_range(self._vehicle(4.0, 0.60), speed, 1200.0)
+        reference = cruise_range(base, speed, 1200.0)
+        assert by_ld / reference == pytest.approx(2.0, rel=1e-12)
+        assert by_fuel / reference == pytest.approx(2.57, rel=0.01)
+        assert by_fuel > by_ld
+        # And the genuine diminishing return, stated on mass ratio.
+        for ratio in (1.5, 2.0, 4.0):
+            f_low = 1.0 - 1.0 / ratio
+            f_high = 1.0 - 1.0 / (2.0 * ratio)
+            low = cruise_range(self._vehicle(4.0, f_low), speed, 1200.0)
+            high = cruise_range(self._vehicle(4.0, f_high), speed, 1200.0)
+            assert high - low == pytest.approx(
+                cruise_range(self._vehicle(4.0, 0.5), speed, 1200.0), rel=1e-9
+            )
+
+    def test_cruise_climb_is_vehicle_independent(self):
+        """Holding aerodynamic state as fuel burns forces a climb of
+        exactly H ln(m_i/m_f) in an exponential atmosphere — independent of
+        wing loading, L/D and lift coefficient. That independence is what
+        makes the number quotable."""
+        expected = 8500.0 * np.log(1.0 / 0.7)
+        assert cruise_climb_altitude(self._vehicle(4.0, 0.30)) == pytest.approx(expected, rel=1e-12)
+        odd = CruiseVehicle(
+            wing_loading=900.0,
+            lift_to_drag=1.5,
+            lift_coefficient=0.4,
+            fuel_fraction=0.30,
+        )
+        assert cruise_climb_altitude(odd) == pytest.approx(expected, rel=1e-12)
+        assert expected == pytest.approx(3032.0, abs=5.0)
+
+    def test_unfuelled_vehicle_has_no_cruise_range_or_climb(self):
+        empty = self._vehicle(4.0, 0.0)
+        assert cruise_range(empty, 8.0 * self.SOUND, 1200.0) == pytest.approx(0.0)
+        assert cruise_climb_altitude(empty) == pytest.approx(0.0)
+
+    def test_level_flight_ties_the_vehicle_to_an_altitude_band(self):
+        """Dynamic pressure is fixed by wing loading and lift coefficient,
+        so faster cruise means higher, and the corridor is narrow."""
+        vehicle = self._vehicle()
+        assert cruise_dynamic_pressure(vehicle) == pytest.approx(400.0 * 9.80665 / 0.1, rel=1e-12)
+        altitudes = [cruise_altitude(vehicle, m * self.SOUND) for m in (5, 8, 12)]
+        assert altitudes == sorted(altitudes)
+        assert 25e3 < altitudes[0] < 35e3
+        assert 40e3 < altitudes[-1] < 50e3
+
+    def test_altitude_is_zero_when_level_flight_cannot_close(self):
+        """A slow, heavily loaded vehicle would need denser air than exists
+        at sea level. Reporting zero is the honest floor."""
+        heavy = CruiseVehicle(
+            wing_loading=5000.0,
+            lift_to_drag=4.0,
+            lift_coefficient=0.05,
+            fuel_fraction=0.3,
+        )
+        assert cruise_altitude(heavy, 50.0) == 0.0
+
+    def test_scramjet_impulse_decays_and_clips_at_zero(self):
+        """The shape that drives the airbreather/rocket trade. Never
+        negative, which a bare linear decay would give above the decay
+        Mach."""
+        impulse = scramjet_specific_impulse(np.array([0.0, 6.0, 12.0, 20.0]))
+        assert impulse[0] > impulse[1] > impulse[2]
+        assert impulse[2] == pytest.approx(0.0)
+        assert impulse[3] == pytest.approx(0.0)
+        with pytest.raises(ValueError, match="non-negative"):
+            scramjet_specific_impulse(-1.0)
+
+    def test_airbreather_wins_low_and_rocket_wins_high(self):
+        """The crossover exists and sits where the decaying airbreathing
+        impulse falls past the rocket's constant value."""
+        vehicle = self._vehicle()
+        mach = crossover_mach(vehicle, rocket_isp=450.0)
+        assert mach is not None
+        assert 8.0 < mach < 13.0
+        below, above = mach - 2.0, mach + 1.0
+        for m, airbreather_better in ((below, True), (above, False)):
+            air = cruise_range(vehicle, m * self.SOUND, scramjet_specific_impulse)
+            rocket = cruise_range(vehicle, m * self.SOUND, 450.0)
+            assert (air > rocket) is airbreather_better
+
+    def test_crossover_reports_absence_rather_than_inventing_a_root(self):
+        """With a rocket impulse the airbreather never reaches, there is no
+        crossover, and None is the correct answer."""
+        assert crossover_mach(self._vehicle(), rocket_isp=1e6) is None
+        with pytest.raises(ValueError, match="bracket must be increasing"):
+            crossover_mach(self._vehicle(), bracket=(12.0, 3.0))
+
+    def test_break_even_fuel_fraction_is_the_comparable_quantity(self):
+        """Comparing absolute ranges between a cruiser and a glider is
+        close to meaningless — they buy range with different currencies.
+        The break-even fuel fraction states the price of matching the glide
+        in the only unit that transfers."""
+        vehicle = self._vehicle()
+        comparison = cruise_versus_glide(
+            vehicle, 8.0 * self.SOUND, scramjet_specific_impulse, 7.7e6
+        )
+        assert comparison.breakeven_fuel_fraction is not None
+        assert 0.3 < comparison.breakeven_fuel_fraction < 0.8
+        # At the break-even fraction the two ranges genuinely coincide.
+        matched = self._vehicle(4.0, comparison.breakeven_fuel_fraction)
+        assert cruise_range(matched, 8.0 * self.SOUND, scramjet_specific_impulse) == pytest.approx(
+            7.7e6, rel=1e-6
+        )
+        # And the vehicle as specified falls short of the glide.
+        assert comparison.cruise_range_at_fraction < comparison.glide_range
+
+    def test_break_even_reports_unreachable_rather_than_clipping(self):
+        """A glide long enough that no admissible fuel fraction matches it
+        must be reported as unreachable, not clipped to 0.95."""
+        comparison = cruise_versus_glide(self._vehicle(1.0), 5.0 * self.SOUND, 300.0, 5.0e7)
+        assert comparison.breakeven_fuel_fraction is None
+
+    def test_vehicle_rejects_impossible_mass_fractions(self):
+        with pytest.raises(ValueError, match="fuel_fraction"):
+            self._vehicle(4.0, 1.0)
+        with pytest.raises(ValueError, match="fuel_fraction"):
+            self._vehicle(4.0, -0.1)
+        with pytest.raises(ValueError, match="lift_to_drag"):
+            CruiseVehicle(400.0, 0.0, 0.1, 0.3)
