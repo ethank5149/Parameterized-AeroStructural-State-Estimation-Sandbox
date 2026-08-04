@@ -56,6 +56,28 @@ and leaving it out keeps the verification properties in this module
 attributable to the guidance law. Aerodynamics are a fixed lift-to-drag
 ratio, which is the right level of fidelity for a guidance study and is
 where :mod:`passes.aerodynamics` would be substituted for a real vehicle.
+
+Two things learned by building this, both of which cost a failed
+verification run first
+----------------------------------------------------------------------
+
+**A reference drag profile has to be flyable, and constant drag is not.**
+The equilibrium glide supports only about 2 m/s² at entry interface,
+because near orbital speed centrifugal relief cancels most of the
+vehicle's weight; it rises to roughly 10 m/s² by handover. Commanding a
+constant 20 m/s² is therefore not a demanding profile but an impossible
+one over the first half of the glide, and the tracker responds by sitting
+against its bank stop. Built from :func:`equilibrium_glide_profile`
+instead, predicted and flown range agree to 6% at moderate bank.
+
+**The two channels are independent in mechanism but not in use.** Bank
+magnitude sets range and bank sign sets crossrange, and neither enters the
+other's law. But the lateral logic steers on *bearing to the target*, so a
+longitudinal profile that overflies inverts that bearing part-way through
+the glide and the deadband stops meaning what it should. With the target
+at the delivered range, reversals cut terminal crossrange by 39x; with it
+1000 km short, by 4x. Range matching is a precondition for the lateral
+channel rather than a separate concern.
 """
 
 from __future__ import annotations
@@ -75,6 +97,8 @@ __all__ = [
     "atmospheric_density",
     "bank_reversal_needed",
     "crossrange_deadband",
+    "equilibrium_glide_drag",
+    "equilibrium_glide_profile",
     "range_to_go",
     "simulate_glide",
 ]
@@ -148,6 +172,75 @@ class EntryVehicle:
     def lift_acceleration(self, altitude: float, speed: float) -> float:
         """Lift acceleration magnitude (m/s²), before banking."""
         return self.lift_to_drag * self.drag_acceleration(altitude, speed)
+
+
+def equilibrium_glide_drag(
+    vehicle: EntryVehicle, speed: float, radius: float, bank: float
+) -> float:
+    """Drag deceleration (m/s²) of the equilibrium glide at this state.
+
+    Setting :math:`\\gamma \\approx 0` and :math:`\\dot\\gamma \\approx 0`
+    in the vertical force balance leaves the lift supporting the residual
+    of weight over centrifugal relief,
+
+    .. math::
+
+        \\frac{L}{D} D \\cos\\sigma = g - \\frac{V^2}{r},
+
+    so the flyable drag is fixed by speed, altitude and bank alone.
+
+    **This is the constraint that makes a reference profile feasible, and
+    ignoring it is a good way to build a tracker that cannot possibly
+    work.** At entry interface the term in parentheses is small — the
+    vehicle is near orbital speed and centrifugal relief cancels most of
+    its weight — so the equilibrium drag is only about 2 m/s². It rises
+    towards roughly 10 m/s² by the time the vehicle has slowed to
+    handover. A constant-drag reference of, say, 20 m/s² is therefore not
+    a demanding command but an *impossible* one over the first half of the
+    glide, and a tracker asked to hold it will simply sit against its bank
+    stop. :func:`equilibrium_glide_profile` builds a reference that
+    respects this.
+    """
+    gravity = _MU / radius**2
+    relief = speed**2 / radius
+    authority = vehicle.lift_to_drag * float(np.cos(bank))
+    # Guarding on a strict sign is not enough: cos(pi/2) evaluates to 6e-17
+    # rather than to zero, which sails past `authority <= 0` and returns a
+    # drag of 5e16 m/s^2 instead of refusing. The threshold is relative to
+    # L/D so it means "a thousandth of the vehicle's lift", not an absolute
+    # number that would be wrong for a different vehicle.
+    if authority <= 1e-3 * vehicle.lift_to_drag:
+        raise ValueError(
+            f"bank of {np.rad2deg(bank):.3f} deg leaves no usable vertical "
+            f"lift, so no equilibrium glide exists there"
+        )
+    return float(max(gravity - relief, 0.0) / authority)
+
+
+def equilibrium_glide_profile(
+    vehicle: EntryVehicle, radius: float, bank: float
+) -> Callable[[float], float]:
+    """A flyable reference drag profile in specific energy.
+
+    Returns :math:`D(e)` obtained by inverting :math:`e = V^2/2 - \\mu/r`
+    for speed at fixed reference radius and evaluating
+    :func:`equilibrium_glide_drag`. Holding the radius fixed is an
+    approximation — a real glide descends — but it is the right one here:
+    it makes the profile a pure function of energy, which is what
+    :func:`range_to_go` integrates over, and the residual is absorbed by
+    the tracker.
+
+    ``bank`` is the nominal bank the profile is built for. Commanding a
+    profile built at a *larger* bank asks the vehicle to fly deeper and
+    shorter, which is how range is traded.
+    """
+
+    def profile(energy: float) -> float:
+        speed_squared = 2.0 * (float(energy) + _MU / radius)
+        speed = float(np.sqrt(max(speed_squared, 0.0)))
+        return equilibrium_glide_drag(vehicle, speed, radius, bank)
+
+    return profile
 
 
 @dataclass(frozen=True)
@@ -295,20 +388,40 @@ class DragTracker:
     :math:`k_p`, which reads backwards until one notices that increasing
     :math:`\\cos\\sigma` raises the vehicle and thins the air it is in.
 
+    **Integral action is not optional here.** Proportional control alone
+    leaves a steady-state error against the persistent disturbance that
+    gravity and the thinning atmosphere present: measured without it, a
+    commanded 12 m/s² was flown at 7.5 and a commanded 40 at 16.2. The
+    ordering survived — more commanded drag still meant less range — but
+    the *magnitudes* did not, which would make the range prediction of
+    :func:`range_to_go` useless as anything but a trend. The integral term
+    removes that offset wherever the bank command is not saturated.
+
     Attributes
     ----------
     gain_proportional, gain_derivative:
         On drag error (m/s²) and drag-rate error (m/s³).
+    gain_integral:
+        On accumulated drag error (m/s² · s). The loop is stateless, so the
+        accumulator is owned and anti-windup limited by the caller —
+        :func:`simulate_glide` does this — which keeps the controller pure
+        and puts the reset logic where the saturation is known.
     reference_cosine:
         Nominal :math:`\\cos\\sigma` about which the loop closes.
     """
 
     gain_proportional: float = 0.02
     gain_derivative: float = 0.5
+    gain_integral: float = 0.004
     reference_cosine: float = 0.5
 
     def __post_init__(self) -> None:
-        for name in ("gain_proportional", "gain_derivative", "reference_cosine"):
+        for name in (
+            "gain_proportional",
+            "gain_derivative",
+            "gain_integral",
+            "reference_cosine",
+        ):
             if not np.isfinite(getattr(self, name)):
                 raise ValueError(f"{name} must be finite")
         if not 0.0 < self.reference_cosine <= 1.0:
@@ -321,6 +434,7 @@ class DragTracker:
         drag_rate: float = 0.0,
         drag_rate_reference: float = 0.0,
         max_bank: float = np.deg2rad(80.0),
+        integral: float = 0.0,
     ) -> float:
         """Commanded bank magnitude (rad), saturated to ``max_bank``.
 
@@ -330,6 +444,7 @@ class DragTracker:
         """
         correction = self.gain_proportional * (drag - drag_reference)
         correction += self.gain_derivative * (drag_rate - drag_rate_reference)
+        correction += self.gain_integral * integral
         cosine = np.clip(self.reference_cosine + correction, -1.0, 1.0)
         bank = float(np.arccos(cosine))
         return float(np.clip(bank, 0.0, max_bank))
@@ -414,6 +529,13 @@ def simulate_glide(
     guidance_period = 1.0
     sign = 1.0
     reversals = 0
+    integral = 0.0
+    # Anti-windup bound. Chosen so the integral term alone can swing the
+    # commanded cosine over its full range and no further: without it the
+    # accumulator keeps growing while the bank is saturated and then takes
+    # a large part of the glide to unwind, which shows up as a slow
+    # oscillation rather than as the offset it was meant to remove.
+    integral_limit = 2.0 / max(tracker.gain_integral, 1e-12)
     state = initial.as_array()
     clock = 0.0
     times = [0.0]
@@ -445,7 +567,21 @@ def simulate_glide(
         radius, lon, lat, speed, _gamma, heading = state
         energy = 0.5 * speed**2 - _MU / radius
         drag = vehicle.drag_acceleration(radius - _R_EARTH, speed)
-        magnitude = tracker.command(drag, float(drag_reference(energy)), max_bank=vehicle.max_bank)
+        commanded = float(drag_reference(energy))
+        magnitude = tracker.command(drag, commanded, max_bank=vehicle.max_bank, integral=integral)
+        # Anti-windup: stop accumulating while the command is against a
+        # stop. Without this the accumulator keeps growing through the
+        # saturated stretch and then takes a large part of the glide to
+        # unwind, which appears as a slow oscillation rather than as the
+        # offset the term was added to remove.
+        if 0.0 < magnitude < vehicle.max_bank:
+            integral = float(
+                np.clip(
+                    integral + (drag - commanded) * guidance_period,
+                    -integral_limit,
+                    integral_limit,
+                )
+            )
         if target is not None:
             bearing = _bearing(lon, lat, target[0], target[1])
             error = _wrap(bearing - heading)

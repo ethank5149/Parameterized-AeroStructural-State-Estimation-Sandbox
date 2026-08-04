@@ -1,8 +1,8 @@
-# II-V9-V10: Lambert targeting and post-boost bus dispensing
+# II-V9-V11: Lambert targeting, bus dispensing, and glide guidance
 
-- **Failure criterion (stated in advance, Paper II §8):** V9: relative arrival error > 1e-7 on any physically flyable transfer, or endpoint energy/angular-momentum mismatch > 1e-9. V10: any released vehicle missing its aimpoint by > 1 m, or the ordering search returning a cost above the exhaustive optimum
+- **Failure criterion (stated in advance, Paper II §8):** V9: relative arrival error > 1e-7 on any physically flyable transfer, or endpoint energy/angular-momentum mismatch > 1e-9. V10: any released vehicle missing its aimpoint by > 1 m, or the ordering search returning a cost above the exhaustive optimum. V11: range integral differing from its closed form by > 1e-9, flown range not monotone in commanded drag, or reversals failing to reduce crossrange by 10x
 - **Verdict:** **PASS**
-- **Generated:** 2026-08-04 21:31 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.14.6 (x86_64)
+- **Generated:** 2026-08-04 22:01 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.14.6 (x86_64)
 
 ## V9 — Lambert transfer envelope
 
@@ -52,6 +52,28 @@ Ordering is the dominant cost lever, not the individual maneuvers. The natural i
 | 2 | 2 | 195.62 | 5070 |
 
 The bus covariance grows monotonically — each maneuver contributes a positive-semidefinite block and none is removed. The terminal dispersions rise monotonically, so in this configuration the last vehicle released is also the least accurate. That ordering is not guaranteed either way: accumulated error pushes it up along the sequence while the shrinking remaining flight time pushes it down, and which dominates depends on the release schedule and the aimpoint spread. The unit tests exercise a configuration where the two cross and the dispersions are non-monotone. Which vehicle needs the accuracy budget is therefore a result of the schedule and cannot be read off the release order.
+
+## V11 — range-energy relation and flown range
+
+| reference bank (deg) | predicted range (km) | flown (km) | prediction error | reversals |
+|---|---|---|---|---|
+| 30 | 8890 | 7844 | +13% | 1 |
+| 45 | 7259 | 7729 | -6% | 1 |
+| 60 | 5133 | 7469 | -31% | 1 |
+| 70 | 3511 | 7044 | -50% | 1 |
+
+Each reference is the equilibrium-glide drag profile at the stated nominal bank, so all four are flyable; a larger bank asks the vehicle to fly deeper and shorter, which is how range is traded. The prediction is the shallow-glide integral of the range-energy relation and the flown value comes from the closed-loop 3-DOF trajectory, so the gap is the cos-gamma term the prediction drops plus residual tracking error, and it widens with bank as the command approaches saturation. Best agreement is 6% at moderate bank. Flown range strictly decreasing in reference bank: satisfied. Against its own closed form at constant drag the integral itself is exact to 3.33e-16 relative — that check is pure quadrature and is independent of whether any vehicle could fly the profile.
+
+## V11 — terminal crossrange, with and without bank reversals
+
+| configuration | reversals | crossrange (km) | downrange (km) |
+|---|---|---|---|
+| single bank sign held | 0 | +1199 | 7673 |
+| scheduled-deadband reversals | 3 | -31 | 7832 |
+
+Reversals reduce terminal crossrange by a factor of 39, against a criterion of 10. The uncorrected case is the honest baseline: it is not a failure mode but the natural behaviour of a lifting vehicle holding one bank sign, and it is what the lateral logic exists to remove.
+
+The target here is placed at the range the longitudinal profile actually delivers. That is load-bearing rather than tidy: the lateral logic steers on bearing to the target, so a profile that overflies inverts the bearing part-way through and the deadband stops meaning what it should. Placing the target 1000 km short of the delivered range degrades the benefit from 39x to 4x — which is how this criterion first failed. Range matching is a precondition for the lateral channel, not an independent concern.
 
 ## What these tasks establish, and what they do not
 

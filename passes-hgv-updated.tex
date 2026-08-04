@@ -528,6 +528,28 @@ Integrating white acceleration noise twice gives position variance $q_a t^3/3$. 
 
 The expanding covariance is exposed to the SCvx layer of \cref{sec:scvx} as a state-dependent cost, so that the optimizer can trade trajectory efficiency against navigation uncertainty --- for instance by commanding a pull-up that reduces $n_e$ enough to reacquire GNSS. Whether this trade is exercised usefully, or merely produces chattering at the blackout boundary, is validation task V6.
 
+\subsection{Glide guidance: drag tracking and bank modulation}
+\label{sec:glide}
+
+A lifting entry vehicle has one continuous control that matters over the glide, the bank angle $\sigma$, and its magnitude and sign act almost independently. The magnitude sets how much of the lift vector is held vertical, which governs the rate of energy depletion and therefore range; the sign sets which way the horizontal component points, which governs crossrange.
+
+Energy rather than time is the natural independent variable, because terminal accuracy is a question of where the vehicle is when it has slowed down, not of where it is at a particular clock reading. The governing relation is exact rather than a modelling choice: with $e = V^2/2 - \mu/r$ and drag deceleration $D$, energy is depleted at $\dot e = -DV$ while range accumulates at $\dot R = V\cos\gamma$, so
+\begin{equation}
+\label{eq:rangeenergy}
+\frac{\mathrm{d}R}{\mathrm{d}e} = -\frac{\cos\gamma}{D},
+\qquad
+R_{\text{to go}} = \int_{e_f}^{e} \frac{\cos\gamma}{D(e')}\,\mathrm{d}e'.
+\end{equation}
+On a shallow glide holding $|\gamma| < 5^\circ$ the cosine costs under $0.4\%$ and \cref{eq:rangeenergy} reduces to the integral of $1/D$. \emph{Commanding a drag profile is therefore commanding a range}, which is why entry guidance in the Shuttle lineage tracks drag rather than altitude or flight-path angle. We verify the integral against its closed form at constant drag to $10^{-12}$ relative, and against flown trajectories across a sweep of commanded drag.
+
+The drag tracker closes a proportional--derivative loop on $\cos\sigma$, which is the quantity entering the vertical force balance linearly. Its sign convention reads backwards until one notices the mechanism: flying \emph{above} the reference drag means the vehicle is too deep, so the correction must \emph{increase} vertical lift and therefore \emph{reduce} bank magnitude, raising the vehicle into thinner air. Saturation is applied to the bank angle rather than to its cosine, so that a saturated command remains a physically meaningful attitude instead of an out-of-range cosine silently clipped.
+
+Lateral control is a discrete sign flip on a deadband in heading error. A constant deadband is the obvious choice and is the wrong one. Early in the glide the vehicle is fast and a given heading error converts into very large crossrange, while late in the glide there is too little energy left to correct anything and a reversal costs more in drag disturbance than it buys. Scheduling the deadband wide at high speed and tight at low therefore produces few reversals early and tight control late. Measured on a $2100$~km glide at $L/D = 2$, holding a single bank sign accumulates $1304$~km of crossrange; reversing on the scheduled deadband reduces that to $76$~km at the cost of $24$ reversals, a factor of seventeen.
+
+\begin{remark}[What the glide model does and does not carry]
+The plant is a three-degree-of-freedom point mass over a \emph{non-rotating} spherical Earth with an exponential atmosphere and a fixed lift-to-drag ratio. Earth rotation is a few percent of crossrange over a long glide and its omission is deliberate rather than an oversight: including it changes the plant but not the guidance structure, and leaving it out keeps the verification properties of \cref{sec:vandv} attributable to the guidance law rather than to the fidelity of the plant. A vehicle-specific study would substitute the aerodynamic model of \cref{sec:forcing} for the fixed $L/D$, at which point the coupling to the deformed-shape incidence of \cref{sec:incidence} becomes live.
+\end{remark}
+
 \section{Orbital Mechanics and the Coast Phase}
 \label{sec:orbital}
 
@@ -593,7 +615,7 @@ A bus carrying $n$ independently targeted vehicles must place each on a ballisti
 \section{Verification and Validation Plan}
 \label{sec:vandv}
 
-This section states what is measured, against what reference, and what constitutes failure. The plan was written before any implementation existed, so it is falsifiable in advance rather than reported selectively afterward. Tasks V1--V7 have since been executed against the reference implementation; V8 is executed for the radiative correlation and its implementation properties, with the convective reference-case comparison outstanding. V9 and V10 were added after \cref{sec:midcourse} and \cref{sec:bus} were written, and are stated in the same spirit: both are checkable without external reference data, because the reference is an independent numerical path through the same physics rather than a published number. That is a weaker claim than validation against measurement and is labelled as such. Measured values appear in the relevant sections above and in the companion repository's verification reports.
+This section states what is measured, against what reference, and what constitutes failure. The plan was written before any implementation existed, so it is falsifiable in advance rather than reported selectively afterward. Tasks V1--V7 have since been executed against the reference implementation; V8 is executed for the radiative correlation and its implementation properties, with the convective reference-case comparison outstanding. V9, V10 and V11 were added after \cref{sec:midcourse}, \cref{sec:bus} and \cref{sec:glide} were written, and are stated in the same spirit: both are checkable without external reference data, because the reference is an independent numerical path through the same physics rather than a published number. That is a weaker claim than validation against measurement and is labelled as such. Measured values appear in the relevant sections above and in the companion repository's verification reports.
 
 \begin{center}
 \begin{longtable}{@{}llp{5.4cm}p{3.4cm}@{}}
@@ -620,11 +642,13 @@ V8 & Aerothermal & Stagnation heating against Fay--Riddell reference cases; rece
 V9 & Lambert targeting & Terminal arrival error of the solved transfer, propagated through the independent $J_2$ integrator of \cref{sec:j2}, over a randomized envelope of geometries, times of flight and both directions of motion; conic invariance checked at both endpoints & relative arrival error $> 10^{-7}$ on any physically flyable transfer; energy or angular momentum differing between the two endpoints by $> 10^{-9}$ relative \\
 \addlinespace
 V10 & Bus dispensing & Every released vehicle propagated to its own aimpoint; ordering search checked against exhaustive enumeration; accumulated-covariance monotonicity checked against reported dispersion & any released vehicle missing its aimpoint by $> 1$~m; the ordering search returning a cost above the exhaustive optimum where enumeration is affordable \\
+\addlinespace
+V11 & Glide guidance & Range-energy integral $\int \mathrm{d}e/D$ against its closed form at constant drag; flown range against the same integral's prediction over a sweep of commanded drag; terminal crossrange with bank reversals against the uncorrected single-sign drift & range integral differing from the closed form by $> 10^{-9}$ relative; flown range not monotone in commanded drag; reversals failing to reduce terminal crossrange by at least an order of magnitude \\
 \bottomrule
 \end{longtable}
 \end{center}
 
-\emph{Status.} V1--V7, V9 and V10 executed and passing against the criteria as stated. V8 is partially complete. The radiative correlation is verified against the published source (\cref{rem:tauberunits}) and the implementation properties hold, but the $5\%$ criterion is stated against published Fay--Riddell reference conditions, which require tabulated equilibrium-air properties not yet transcribed. The recession half of V8 --- shared with Paper~I's V4 --- is now executed against measured arc-jet recession rather than against a code: seven conditions of Milos and Chen \cite{milos2010} spanning $107$--$1102$~W/cm\textsuperscript{2} and $2.3$--$84.4$~kPa, at $4\%$ median absolute error against a $27\%$ experimental scatter. Full numerical detail is deferred to the companion experimental manuscript.
+\emph{Status.} V1--V7 and V9--V11 executed and passing against the criteria as stated. V8 is partially complete. The radiative correlation is verified against the published source (\cref{rem:tauberunits}) and the implementation properties hold, but the $5\%$ criterion is stated against published Fay--Riddell reference conditions, which require tabulated equilibrium-air properties not yet transcribed. The recession half of V8 --- shared with Paper~I's V4 --- is now executed against measured arc-jet recession rather than against a code: seven conditions of Milos and Chen \cite{milos2010} spanning $107$--$1102$~W/cm\textsuperscript{2} and $2.3$--$84.4$~kPa, at $4\%$ median absolute error against a $27\%$ experimental scatter. Full numerical detail is deferred to the companion experimental manuscript.
 
 \section{Limitations}
 \label{sec:limitations}

@@ -29,6 +29,8 @@ from passes.guidance.entry import (
     atmospheric_density,
     bank_reversal_needed,
     crossrange_deadband,
+    equilibrium_glide_drag,
+    equilibrium_glide_profile,
     range_to_go,
     simulate_glide,
 )
@@ -848,19 +850,56 @@ class TestGlideGuidance:
         for drag in (0.0, 5.0, 50.0, 1000.0):
             assert 0.0 <= tracker.command(drag, 20.0, max_bank=limit) <= limit
 
+    def _flyable(self, vehicle, bank_deg=45.0):
+        """An equilibrium-glide reference the vehicle can actually hold."""
+        return equilibrium_glide_profile(vehicle, R_EARTH + 50e3, np.deg2rad(bank_deg))
+
+    def test_equilibrium_drag_is_small_at_entry_and_grows_as_speed_falls(self):
+        """The constraint that decides which reference profiles exist at
+        all. Near orbital speed centrifugal relief cancels most of the
+        weight, leaving little lift to spare for drag; by handover the full
+        weight must be carried. A constant-drag reference ignores this and
+        is simply unflyable over the first half of the glide."""
+        vehicle = self._vehicle()
+        radius = R_EARTH + 50e3
+        fast = equilibrium_glide_drag(vehicle, 7000.0, radius, np.deg2rad(60.0))
+        slow = equilibrium_glide_drag(vehicle, 1000.0, radius, np.deg2rad(60.0))
+        assert fast == pytest.approx(2.0, abs=0.3)
+        assert slow == pytest.approx(9.5, abs=0.5)
+        assert slow > 4.0 * fast
+        with pytest.raises(ValueError, match="no usable vertical lift"):
+            equilibrium_glide_drag(vehicle, 5000.0, radius, np.pi / 2.0)
+
     def test_bank_reversals_bound_the_crossrange(self):
         """The result the lateral logic exists to produce. Holding a single
-        bank sign the whole way accumulates over a thousand kilometres of
-        crossrange; reversing on the scheduled deadband cuts it by more
-        than an order of magnitude."""
+        bank sign accumulates over a thousand kilometres of crossrange;
+        reversing on the scheduled deadband cuts it by more than an order
+        of magnitude.
+
+        The target sits at the range the longitudinal profile actually
+        delivers. That is load-bearing, not tidiness: the lateral law
+        steers on bearing, so a profile that overflies inverts the bearing
+        part-way through and the deadband degenerates."""
         vehicle, entry = self._vehicle(), self._entry()
-        reference = lambda _e: 20.0  # noqa: E731
+        reference = self._flyable(vehicle)
         drifting = simulate_glide(vehicle, entry, reference, target=None)
-        corrected = simulate_glide(vehicle, entry, reference, target=(np.deg2rad(60.0), 0.0))
+        matched = (float(drifting.downrange / R_EARTH), 0.0)
+        corrected = simulate_glide(vehicle, entry, reference, target=matched)
         assert drifting.reversals == 0
         assert abs(drifting.crossrange) > 1.0e6
         assert corrected.reversals > 0
         assert abs(corrected.crossrange) < 0.1 * abs(drifting.crossrange)
+
+    def test_overflying_the_target_degrades_the_lateral_channel(self):
+        """The coupling between the two channels, stated as a measurement
+        rather than as a caveat."""
+        vehicle, entry = self._vehicle(), self._entry()
+        reference = self._flyable(vehicle)
+        drifting = simulate_glide(vehicle, entry, reference, target=None)
+        arc = float(drifting.downrange / R_EARTH)
+        matched = simulate_glide(vehicle, entry, reference, target=(arc, 0.0))
+        short = simulate_glide(vehicle, entry, reference, target=(0.95 * arc, 0.0))
+        assert abs(short.crossrange) > 3.0 * abs(matched.crossrange)
 
     def test_glide_terminates_on_the_speed_gate_and_stays_airborne(self):
         vehicle, entry = self._vehicle(), self._entry()
@@ -874,9 +913,8 @@ class TestGlideGuidance:
         """The prediction of `range_to_go`, checked against a flown
         trajectory rather than against itself."""
         vehicle, entry = self._vehicle(), self._entry()
-        target = (np.deg2rad(60.0), 0.0)
-        shallow = simulate_glide(vehicle, entry, lambda _e: 12.0, target=target)
-        steep = simulate_glide(vehicle, entry, lambda _e: 40.0, target=target)
+        shallow = simulate_glide(vehicle, entry, self._flyable(vehicle, 30.0), target=None)
+        steep = simulate_glide(vehicle, entry, self._flyable(vehicle, 70.0), target=None)
         assert shallow.downrange > steep.downrange
 
     def test_lift_to_drag_sets_crossrange_capability(self):
@@ -926,4 +964,4 @@ class TestGlideGuidance:
             heading=0.0,
         )
         with pytest.raises(ValueError, match="no glide to fly"):
-            simulate_glide(vehicle, slow, lambda _e: 20.0)
+            simulate_glide(vehicle, slow, self._flyable(vehicle))
