@@ -27,6 +27,9 @@ class TestPhaseTaxonomy:
         assert Payload.SINGLE_RV.is_multiple is False
         assert Payload.MULTIPLE_RV.is_multiple is True
         assert Payload.MULTIPLE_GLIDER.is_multiple is True
+        assert Payload.MIXED.is_multiple is True
+        assert Payload.MIXED.is_mixed is True
+        assert Payload.MULTIPLE_RV.is_mixed is False
         assert Payload.SINGLE_RV.is_lifting is False
         assert Payload.GLIDER.is_lifting is True
         assert Payload.CRUISER.is_propelled is True
@@ -59,6 +62,8 @@ class TestNamedArchitectures:
             "fractional-orbital-multiple",
             "fractional-orbital-multiple-glide",
             "powered-cruise",
+            "ballistic-mixed",
+            "fractional-orbital-mixed",
         }
         assert set(NAMED_ARCHITECTURES) == expected
 
@@ -100,12 +105,14 @@ class TestCompositionRules:
                 Payload.SINGLE_RV,
             )
 
-    def test_exactly_one_terminal_regime(self):
+    def test_a_uniform_payload_has_exactly_one_terminal_regime(self):
         """Glide, cruise and ballistic entry are alternative descriptions of
-        the whole atmospheric arc, not successive stages."""
-        with pytest.raises(ValueError, match="exactly one of glide"):
+        the whole atmospheric arc, not successive stages — for a payload
+        whose bodies all fly the same arc. A mixed payload is the exception
+        and is tested separately."""
+        with pytest.raises(ValueError, match="has one terminal regime"):
             validate((Phase.BOOST, Phase.GLIDE, Phase.BALLISTIC), Payload.GLIDER)
-        with pytest.raises(ValueError, match="exactly one of glide"):
+        with pytest.raises(ValueError, match="needs a terminal regime"):
             validate((Phase.BOOST, Phase.TERMINAL), Payload.SINGLE_RV)
 
     def test_exoatmospheric_phases_cannot_follow_entry(self):
@@ -200,6 +207,51 @@ class TestEnumeration:
         ordering of an optional midcourse against parking+deorbit giving
         the extra factor."""
         assert len(enumerate_architectures(Payload.SINGLE_RV)) == 12
+
+    def test_mixed_payloads_fly_both_arcs_concurrently(self):
+        """A bus can dispense glide vehicles and ballistic reentry vehicles
+        on the same pass, so terminal regime stops being a property of the
+        architecture and becomes a property of each body."""
+        mixed = NAMED_ARCHITECTURES["fractional-orbital-mixed"]
+        assert mixed.payload is Payload.MIXED
+        assert set(mixed.terminal_regimes) == {Phase.GLIDE, Phase.BALLISTIC}
+        # Asking for *the* regime is a category error and must say so
+        # rather than silently returning the first.
+        with pytest.raises(ValueError, match="2 terminal regimes"):
+            _ = mixed.terminal_regime
+        assert "mixed bodies" in describe(mixed)
+
+    def test_a_mixed_payload_must_be_exactly_glide_and_ballistic(self):
+        with pytest.raises(ValueError, match="exactly those two regimes"):
+            validate((Phase.BOOST, Phase.DISPENSE, Phase.GLIDE), Payload.MIXED)
+        with pytest.raises(ValueError, match="exactly those two regimes"):
+            validate(
+                (Phase.BOOST, Phase.DISPENSE, Phase.CRUISE, Phase.BALLISTIC),
+                Payload.MIXED,
+            )
+
+    def test_concurrent_arcs_have_a_canonical_order(self):
+        """The two arcs are flown at once by different bodies, so their
+        order in the phase list carries no meaning. Admitting both orders
+        would enumerate every mixed architecture twice."""
+        with pytest.raises(ValueError, match="list glide first"):
+            validate(
+                (Phase.BOOST, Phase.DISPENSE, Phase.BALLISTIC, Phase.GLIDE),
+                Payload.MIXED,
+            )
+
+    def test_every_mixed_architecture_dispenses_and_carries_both_arcs(self):
+        produced = enumerate_architectures(Payload.MIXED)
+        assert produced
+        for architecture in produced:
+            assert Phase.DISPENSE in architecture.phases
+            assert set(architecture.terminal_regimes) == {
+                Phase.GLIDE,
+                Phase.BALLISTIC,
+            }
+            assert architecture.phases.index(Phase.GLIDE) < architecture.phases.index(
+                Phase.BALLISTIC
+            )
 
     def test_a_cruiser_never_reaches_orbit_in_any_admissible_sequence(self):
         for architecture in enumerate_architectures(Payload.CRUISER):

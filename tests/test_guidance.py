@@ -5,6 +5,7 @@ import itertools
 import numpy as np
 import pytest
 
+from passes.geodesy import GeodeticPosition, geodetic_to_ecef
 from passes.guidance import (
     Aimpoint,
     CruiseVehicle,
@@ -1128,3 +1129,27 @@ class TestHypersonicCruise:
             self._vehicle(4.0, -0.1)
         with pytest.raises(ValueError, match="lift_to_drag"):
             CruiseVehicle(400.0, 0.0, 0.1, 0.3)
+
+    def test_aimpoints_accept_ground_locations_in_universal_format(self):
+        """A target is naturally a latitude and longitude, not an inertial
+        vector. The conversion must use the *arrival* epoch: an equatorial
+        ground point moves 465 m/s through the inertial frame, so the same
+        site at two epochs is two different aimpoints."""
+        site = GeodeticPosition.from_degrees(35.0, 139.0, label="site")
+        early = Aimpoint.from_geodetic(site, arrival_time=600.0)
+        late = Aimpoint.from_geodetic(site, arrival_time=1200.0)
+        assert early.label == "site"
+        assert early.arrival_time == 600.0
+        # Same ground point, different inertial aimpoints.
+        separation = float(np.linalg.norm(late.position - early.position))
+        assert separation == pytest.approx(465.0 * 600.0 * np.cos(np.deg2rad(35.0)), rel=0.05)
+        # And each is at the right radius for that latitude.
+        assert np.linalg.norm(early.position) == pytest.approx(
+            np.linalg.norm(geodetic_to_ecef(site)), rel=1e-12
+        )
+
+    def test_a_polar_aimpoint_barely_moves_between_epochs(self):
+        pole = GeodeticPosition.from_degrees(89.9, 0.0)
+        a = Aimpoint.from_geodetic(pole, 600.0)
+        b = Aimpoint.from_geodetic(pole, 1200.0)
+        assert float(np.linalg.norm(b.position - a.position)) < 1.0e4

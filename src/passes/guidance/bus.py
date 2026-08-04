@@ -66,6 +66,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from passes.geodesy import GeodeticPosition, geodetic_to_eci
 from passes.guidance.midcourse import (
     ExecutionErrorModel,
     correction_maneuver,
@@ -105,6 +106,29 @@ class Aimpoint:
     position: _FloatArray
     arrival_time: float
     label: str = ""
+
+    @classmethod
+    def from_geodetic(
+        cls,
+        site: GeodeticPosition,
+        arrival_time: float,
+        gmst_epoch: float = 0.0,
+        label: str | None = None,
+    ) -> Aimpoint:
+        """Build an aimpoint from a ground location in universal format.
+
+        The Earth-fixed point is rotated into the inertial frame **at the
+        arrival epoch**, not at the epoch of the call. That distinction is
+        not pedantry: an equatorial ground point travels 465 m/s through
+        the inertial frame, so using the wrong epoch displaces the aimpoint
+        by 28 km per minute of error. Passing ``arrival_time`` through both
+        the rotation and the targeting is what keeps them consistent.
+        """
+        return cls(
+            position=geodetic_to_eci(site, arrival_time, gmst_epoch),
+            arrival_time=arrival_time,
+            label=site.label if label is None else label,
+        )
 
     def __post_init__(self) -> None:
         pos = np.asarray(self.position, dtype=np.float64)

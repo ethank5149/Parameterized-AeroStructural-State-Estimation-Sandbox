@@ -661,6 +661,19 @@ A bus carrying $n$ independently targeted vehicles must place each on a ballisti
 
 \paragraph{Accumulated error and terminal dispersion are not the same ordering.} Every bus maneuver is imperfect and the next vehicle inherits it, so the bus covariance grows monotonically through the sequence --- each maneuver contributes a positive-semidefinite block and none is ever removed. The natural conclusion, that the last vehicle released is the least accurate, is false. A later release also has a shorter remaining flight, and terminal miss scales with that flight time through $\partial \mathbf{r}_f / \partial \mathbf{v}_0$, so the inherited error has less opportunity to grow into a miss. Over a three-vehicle sequence we measure one-sigma dispersions of $1482$, $1983$ and $1744$~m: rising, then falling. Which vehicle needs the accuracy budget is a result of the schedule and cannot be read off the release order.
 
+\section{Problem Specification in Universal Coordinates}
+\label{sec:geodesy}
+
+Every trajectory module here works in an inertial Cartesian frame, which is right for the dynamics and useless for stating a problem. A launch site and a set of aimpoints are naturally given as latitude, longitude and altitude on a reference ellipsoid, so the framework takes WGS-84 geodetic coordinates as its universal input format and converts at the boundary. Three distinctions are easy to elide and expensive to lose.
+
+\emph{Geodetic latitude is not geocentric latitude.} The first is the angle of the local normal to the ellipsoid --- what a survey or a GPS receiver reports --- and the second is the angle of the radius from the centre. They differ by up to $0.19^\circ$ near $45^\circ$, which is $21.4$~km on the ground, comfortably larger than any terminal accuracy worth discussing.
+
+\emph{The Earth-fixed frame is not the inertial frame.} A ground point is fixed in ECEF and moves in ECI, so converting a target to an inertial aimpoint requires the epoch \emph{at which the vehicle arrives}, not the epoch of the calculation. An equatorial site travels $465$~m/s through the inertial frame; a one-minute epoch error displaces the aimpoint by $27.9$~km. Our aimpoint constructor therefore takes the arrival time and threads it through both the frame rotation and the targeting solve.
+
+\emph{The ellipsoid is not a sphere.} The polar radius is $21.4$~km smaller than the equatorial. The glide and fractional-orbital modules assume a spherical Earth for the guidance structure rather than for the geometry, and a system-level answer converts through this section at the boundary rather than carrying the approximation into a terminal error budget.
+
+Coordinate inversion uses Bowring's closed form refined twice. Bowring alone is sub-millimetre near the surface but degrades with altitude --- we measure $0.32$~m at geostationary radius --- so the refinement is what makes the accuracy claim hold across the whole range rather than only near the ground. Measured round-trip error afterwards is under $10$~nm within the atmosphere and under a micrometre to geostationary. Great-circle range is provided for budgeting and labelled as such: haversine on a sphere of the mean radius errs by up to about $0.5\%$ against the true ellipsoidal geodesic, some $30$~km over a $6000$~km arc, which is negligible against a glide's own range uncertainty and far too large to use as a terminal aimpoint.
+
 \section{System Architectures}
 \label{sec:architectures}
 
@@ -668,7 +681,9 @@ The preceding sections build phases: boost, parking orbit, deorbit, midcourse co
 
 The rules concern physics and information rather than doctrine. Deorbit presupposes an orbit, since there is no perigee to lower without one, and symmetrically a parking orbit must be left or there is no entry. Dispensing and midcourse correction are exoatmospheric: a bus separating vehicles inside the atmosphere puts them in each other's hypersonic wake, and \cref{sec:midcourse} solves a Keplerian boundary-value problem that ceases to describe the plant once aerodynamic forces dominate. Exactly one of glide, cruise or ballistic entry may appear, because each describes the whole atmospheric arc rather than a stage of it; chaining two would place the vehicle in two aerodynamic states at once.
 
-The payload rule needs stating in both directions. Forward, it is capability: a single body has nothing to dispense, a non-lifting body cannot glide, an unpropelled one cannot cruise. The converse is less obvious and is what keeps the enumeration honest. A glide vehicle \emph{can} fly a purely ballistic entry by declining to use its lift, and a cruiser can glide with the engine off; admitting those enumerates one physical trajectory twice under two payload labels, the second copy carrying a description its own flight contradicts. Requiring an architecture to use the capability that names it removes $52$ such duplicates from the enumeration, taking it from $152$ sequences to $100$.
+Mixed payloads break one of these rules, and correctly so. A bus can dispense glide vehicles and ballistic reentry vehicles on the same pass, and once it does, terminal regime stops being a property of the \emph{architecture} and becomes a property of each \emph{body}: the two classes fly different atmospheric arcs concurrently. Our first rule set forbade this by requiring exactly one terminal regime, which is right for a uniform payload and wrong in general. The corrected rule admits exactly the pair $\{$glide, ballistic$\}$ for a mixed payload and nothing else --- a propelled cruiser among them would be a third vehicle class rather than a mix of these two --- and reports a request for \emph{the} terminal regime of a mixed architecture as the category error it is, rather than silently returning the first. Because the two arcs are concurrent, their order in the phase list carries no physical meaning; listing glide first by convention avoids enumerating every mixed architecture twice, which would otherwise have inflated the count from $54$ to $108$.
+
+The payload rule needs stating in both directions. Forward, it is capability: a single body has nothing to dispense, a non-lifting body cannot glide, an unpropelled one cannot cruise. The converse is less obvious and is what keeps the enumeration honest. A glide vehicle \emph{can} fly a purely ballistic entry by declining to use its lift, and a cruiser can glide with the engine off; admitting those enumerates one physical trajectory twice under two payload labels, the second copy carrying a description its own flight contradicts. Requiring an architecture to use the capability that names it removes $52$ such duplicates from the enumeration, taking it from $226$ sequences to $154$.
 
 \begin{center}
 \begin{tabular}{@{}llr@{}}
@@ -679,14 +694,15 @@ single reentry vehicle & ballistic entry & $12$ \\
 multiple reentry vehicles & ballistic entry & $36$ \\
 glide vehicle & glide & $12$ \\
 multiple glide vehicles & glide & $36$ \\
+mixed glide and ballistic & glide $+$ ballistic entry & $54$ \\
 powered cruise vehicle & cruise & $4$ \\
 \midrule
-& & $100$ \\
+& & $154$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Nine of these recur often enough to name: ballistic with a single body and with multiple; boost-glide with one glider and with several; fractional-orbital with each of those four payload classes; and powered cruise. Each is validated against the rules at import, so an inadmissible reference case fails loudly rather than propagating. The enumeration is closed under the rules --- everything it produces independently validates --- which is what makes it a derivation rather than a curated list kept in parallel with the rules it is supposed to satisfy.
+Eleven of these recur often enough to name: ballistic with a single body and with multiple; boost-glide with one glider and with several; fractional-orbital with each of those four payload classes; mixed glide-and-ballistic in both suborbital and fractional-orbital form; and powered cruise. Each is validated against the rules at import, so an inadmissible reference case fails loudly rather than propagating. The enumeration is closed under the rules --- everything it produces independently validates --- which is what makes it a derivation rather than a curated list kept in parallel with the rules it is supposed to satisfy.
 
 \begin{remark}[What the count does and does not mean]
 One hundred admissible sequences is a statement about \emph{composability} and nothing else. It says the phases chain without contradiction; it says nothing about whether any of them is desirable, affordable, or has ever been built. Most of the multiplicity comes from the ordering freedom among independent exoatmospheric phases --- whether a correction precedes or follows dispensing, for instance --- which is a real distinction with real consequences for dispersion, and not padding.

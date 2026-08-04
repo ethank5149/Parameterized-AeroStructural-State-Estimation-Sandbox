@@ -117,15 +117,36 @@ class Payload(Enum):
     MULTIPLE_RV = "multiple independently targeted vehicles"
     GLIDER = "hypersonic glide vehicle"
     MULTIPLE_GLIDER = "multiple glide vehicles"
+    MIXED = "mixed glide and ballistic vehicles"
     CRUISER = "powered cruise vehicle"
 
     @property
     def is_multiple(self) -> bool:
-        return self in (Payload.MULTIPLE_RV, Payload.MULTIPLE_GLIDER)
+        return self in (
+            Payload.MULTIPLE_RV,
+            Payload.MULTIPLE_GLIDER,
+            Payload.MIXED,
+        )
+
+    @property
+    def is_mixed(self) -> bool:
+        """Whether the bodies do not all share a terminal regime.
+
+        A bus can dispense glide vehicles and ballistic reentry vehicles on
+        the same pass. Once it does, ``terminal regime'' stops being a
+        property of the architecture and becomes a property of each body,
+        which is why :attr:`Architecture.terminal_regimes` is a set.
+        """
+        return self is Payload.MIXED
 
     @property
     def is_lifting(self) -> bool:
-        return self in (Payload.GLIDER, Payload.MULTIPLE_GLIDER, Payload.CRUISER)
+        return self in (
+            Payload.GLIDER,
+            Payload.MULTIPLE_GLIDER,
+            Payload.MIXED,
+            Payload.CRUISER,
+        )
 
     @property
     def is_propelled(self) -> bool:
@@ -146,11 +167,34 @@ class Architecture:
         return Phase.PARKING in self.phases
 
     @property
+    def terminal_regimes(self) -> tuple[Phase, ...]:
+        """Terminal regimes present, in phase order.
+
+        A set rather than a single value because a mixed payload genuinely
+        has more than one: glide vehicles and ballistic reentry vehicles
+        dispensed on the same pass fly different atmospheric arcs. For
+        every other payload this has exactly one element.
+        """
+        found = tuple(p for p in self.phases if p in _TERMINAL_REGIMES)
+        if not found:
+            raise ValueError("architecture has no terminal regime")
+        return found
+
+    @property
     def terminal_regime(self) -> Phase:
-        for phase in self.phases:
-            if phase in _TERMINAL_REGIMES:
-                return phase
-        raise ValueError("architecture has no terminal regime")
+        """The single terminal regime, for uniform payloads.
+
+        Raises for a mixed payload rather than picking one, because there
+        is no defensible choice and silently returning the first would make
+        a mixed deployment read as a uniform one.
+        """
+        regimes = self.terminal_regimes
+        if len(regimes) != 1:
+            raise ValueError(
+                f"this architecture has {len(regimes)} terminal regimes "
+                f"({[p.value for p in regimes]}); use `terminal_regimes`"
+            )
+        return regimes[0]
 
     def __str__(self) -> str:
         return " -> ".join(p.value for p in self.phases)
@@ -174,12 +218,41 @@ def validate(phases: tuple[Phase, ...] | list[Phase], payload: Payload) -> None:
         )
 
     terminals = [p for p in seq if p in _TERMINAL_REGIMES]
-    if len(terminals) != 1:
+    if not terminals:
         raise ValueError(
-            f"exactly one of glide, cruise or ballistic entry must appear — "
-            f"they are alternative descriptions of the whole atmospheric arc, "
-            f"not successive stages. Got {[p.value for p in terminals]}"
+            "an architecture needs a terminal regime: one of glide, cruise or ballistic entry"
         )
+    if len(terminals) > 1 and not payload.is_mixed:
+        raise ValueError(
+            f"a {payload.value} has one terminal regime, but "
+            f"{[p.value for p in terminals]} were given. For a uniform "
+            f"payload these are alternative descriptions of the whole "
+            f"atmospheric arc, not successive stages; only a mixed payload "
+            f"flies more than one, because different bodies fly different "
+            f"arcs"
+        )
+    if payload.is_mixed:
+        if set(terminals) != {Phase.GLIDE, Phase.BALLISTIC}:
+            raise ValueError(
+                f"a mixed payload is glide and ballistic bodies together, so "
+                f"exactly those two regimes must appear; got "
+                f"{[p.value for p in terminals]}"
+            )
+        # Cruise cannot be one of them: a cruiser is propelled and would be
+        # a third vehicle class rather than a mix of these two.
+        if Phase.CRUISE in terminals:
+            raise ValueError("a mixed payload does not include a cruise vehicle")
+        # The two arcs are flown *concurrently* by different bodies, so the
+        # order they appear in the phase list carries no physical meaning
+        # and admitting both orders would enumerate each architecture
+        # twice. Glide is listed first by convention.
+        if seq.index(Phase.BALLISTIC) < seq.index(Phase.GLIDE):
+            raise ValueError(
+                "for a mixed payload the glide and ballistic arcs are flown "
+                "concurrently by different bodies, so their order carries no "
+                "meaning; list glide first by convention"
+            )
+    # The earliest terminal regime bounds where exoatmospheric phases end.
     terminal = terminals[0]
 
     if Phase.DEORBIT in seq and Phase.PARKING not in seq:
@@ -224,6 +297,9 @@ def validate(phases: tuple[Phase, ...] | list[Phase], payload: Payload) -> None:
     # copy carries a payload description that the trajectory contradicts.
     # An architecture that does not use a capability should be described
     # with the payload that lacks it.
+    if payload.is_mixed:
+        # Already checked above: exactly {glide, ballistic}.
+        return
     expected = {
         Payload.SINGLE_RV: Phase.BALLISTIC,
         Payload.MULTIPLE_RV: Phase.BALLISTIC,
@@ -278,10 +354,15 @@ def enumerate_architectures(payload: Payload | None = None) -> list[Architecture
 
 def describe(architecture: Architecture) -> str:
     """One-line human summary of what an architecture is."""
-    regime = architecture.terminal_regime
+    regime = " + ".join(p.value for p in architecture.terminal_regimes)
     orbital = "fractional-orbital" if architecture.is_orbital else "suborbital"
-    multiplicity = "multiple bodies" if architecture.payload.is_multiple else "single body"
-    return f"{orbital}, {regime.value}, {multiplicity} ({len(architecture.phases)} phases)"
+    if architecture.payload.is_mixed:
+        multiplicity = "mixed bodies"
+    elif architecture.payload.is_multiple:
+        multiplicity = "multiple bodies"
+    else:
+        multiplicity = "single body"
+    return f"{orbital}, {regime}, {multiplicity} ({len(architecture.phases)} phases)"
 
 
 def _named(name: str, payload: Payload, *phases: Phase) -> Architecture:
@@ -363,6 +444,27 @@ NAMED_ARCHITECTURES: dict[str, Architecture] = {
             Phase.DEORBIT,
             Phase.DISPENSE,
             Phase.GLIDE,
+            Phase.TERMINAL,
+        ),
+        _named(
+            "ballistic-mixed",
+            Payload.MIXED,
+            Phase.BOOST,
+            Phase.MIDCOURSE,
+            Phase.DISPENSE,
+            Phase.GLIDE,
+            Phase.BALLISTIC,
+            Phase.TERMINAL,
+        ),
+        _named(
+            "fractional-orbital-mixed",
+            Payload.MIXED,
+            Phase.BOOST,
+            Phase.PARKING,
+            Phase.DEORBIT,
+            Phase.DISPENSE,
+            Phase.GLIDE,
+            Phase.BALLISTIC,
             Phase.TERMINAL,
         ),
         _named(
