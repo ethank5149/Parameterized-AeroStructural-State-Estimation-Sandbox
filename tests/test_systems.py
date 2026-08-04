@@ -2,14 +2,18 @@
 
 import pytest
 
+from passes.geodesy import GeodeticPosition, great_circle_range
+from passes.guidance import CruiseVehicle, EntryVehicle
 from passes.systems import (
     NAMED_ARCHITECTURES,
     Architecture,
+    MissionRequest,
     Payload,
     Phase,
     PhaseRegime,
     describe,
     enumerate_architectures,
+    evaluate,
     validate,
 )
 
@@ -273,3 +277,175 @@ class TestEnumeration:
     def test_enumeration_is_sorted_by_length(self):
         lengths = [len(a.phases) for a in enumerate_architectures()]
         assert lengths == sorted(lengths)
+
+
+class TestMissionBudget:
+    """End-to-end accounting: what an architecture costs and whether it
+    closes for a stated launch site and aimpoints."""
+
+    def _request(self, *targets, arrival=3000.0):
+        site = GeodeticPosition.from_degrees(45.0, 60.0, label="launch")
+        points = targets or (GeodeticPosition.from_degrees(38.0, -100.0),)
+        return MissionRequest(launch_site=site, aimpoints=tuple(points), arrival_time=arrival)
+
+    def _vehicles(self):
+        return EntryVehicle(ballistic_coefficient=200.0, lift_to_drag=2.0), (
+            CruiseVehicle(400.0, 4.0, 0.1, 0.30)
+        )
+
+    def test_request_takes_the_farthest_aimpoint_and_the_widest_spread(self):
+        """Every body is dispensed from one trajectory, so the farthest
+        target sets the range the architecture must close."""
+        near = GeodeticPosition.from_degrees(50.0, 55.0)
+        far = GeodeticPosition.from_degrees(38.0, -100.0)
+        request = self._request(near, far)
+        assert request.required_range == pytest.approx(great_circle_range(request.launch_site, far))
+        assert request.aimpoint_spread == pytest.approx(great_circle_range(near, far))
+        assert self._request(far).aimpoint_spread == 0.0
+
+    def test_orbital_profiles_absorb_the_remainder_in_the_parking_arc(self):
+        """The structural reason a fractional-orbital profile is flexible
+        about range: the slack leg costs time, not propellant."""
+        entry, cruise = self._vehicles()
+        request = self._request()
+        budget = evaluate(
+            NAMED_ARCHITECTURES["fractional-orbital-single"],
+            request,
+            entry_vehicle=entry,
+            cruise_vehicle=cruise,
+        )
+        assert budget.closes
+        assert budget.slack_phase is Phase.PARKING
+        assert budget.shortfall == pytest.approx(0.0)
+        assert budget.total_range == pytest.approx(request.required_range, rel=1e-9)
+        parking = next(leg for leg in budget.legs if leg.phase is Phase.PARKING)
+        assert parking.is_slack
+        assert parking.delta_v == 0.0
+
+    def test_suborbital_profiles_charge_the_remainder_to_boost(self):
+        """No free slack leg, so the remainder is bought with propellant and
+        an architecture that cannot reach is infeasible for that booster
+        rather than merely expensive."""
+        entry, cruise = self._vehicles()
+        budget = evaluate(
+            NAMED_ARCHITECTURES["ballistic-single"],
+            self._request(),
+            entry_vehicle=entry,
+            cruise_vehicle=cruise,
+        )
+        assert not budget.closes
+        assert budget.slack_phase is Phase.BOOST
+        assert budget.shortfall > 5.0e6
+        assert "infeasible for the stated booster" in budget.reason
+
+    def test_a_long_glide_can_overshoot_and_the_diagnosis_says_so(self):
+        """The two ways to fail are not opposite ends of one scale. Here the
+        fixed legs already cover more than the required range, and the
+        remedy is a shorter glide rather than a bigger booster."""
+        entry, _ = self._vehicles()
+        request = self._request()
+        overshoot = evaluate(
+            NAMED_ARCHITECTURES["fractional-orbital-glide"],
+            request,
+            entry_vehicle=entry,
+            glide_range=6.0e6,
+        )
+        assert not overshoot.closes
+        assert "overshoot" in overshoot.reason
+        assert overshoot.total_range > request.required_range
+        # And the remedy the diagnosis names actually works.
+        shortened = evaluate(
+            NAMED_ARCHITECTURES["fractional-orbital-glide"],
+            request,
+            entry_vehicle=entry,
+            glide_range=3.0e6,
+        )
+        assert shortened.closes
+        assert shortened.reason == ""
+
+    def test_mixed_payload_charges_only_the_longer_concurrent_arc(self):
+        """Glide and ballistic bodies separate and fly in parallel, so
+        adding both would double-count a distance covered once."""
+        entry, _ = self._vehicles()
+        budget = evaluate(
+            NAMED_ARCHITECTURES["fractional-orbital-mixed"],
+            self._request(),
+            entry_vehicle=entry,
+            glide_range=3.0e6,
+        )
+        glide = next(leg for leg in budget.legs if leg.phase is Phase.GLIDE)
+        ballistic = next(leg for leg in budget.legs if leg.phase is Phase.BALLISTIC)
+        assert glide.ground_range == pytest.approx(3.0e6)
+        assert ballistic.ground_range == 0.0
+        assert "not charged as transport" in ballistic.note
+
+    def test_dispensing_cost_scales_with_the_number_of_bodies(self):
+        entry, _ = self._vehicles()
+        two = self._request(
+            GeodeticPosition.from_degrees(38.0, -100.0),
+            GeodeticPosition.from_degrees(40.0, -95.0),
+        )
+        four = self._request(
+            GeodeticPosition.from_degrees(38.0, -100.0),
+            GeodeticPosition.from_degrees(40.0, -95.0),
+            GeodeticPosition.from_degrees(42.0, -90.0),
+            GeodeticPosition.from_degrees(36.0, -105.0),
+        )
+        costs = []
+        for request in (two, four):
+            budget = evaluate(
+                NAMED_ARCHITECTURES["fractional-orbital-multiple"],
+                request,
+                entry_vehicle=entry,
+            )
+            costs.append(next(leg for leg in budget.legs if leg.phase is Phase.DISPENSE).delta_v)
+        assert costs[1] == pytest.approx(3.0 * costs[0] / 1.0, rel=1e-9)
+
+    def test_deorbit_leg_carries_its_real_transfer_arc(self):
+        """Charged from the actual Kepler solve, not a constant."""
+        entry, _ = self._vehicles()
+        budget = evaluate(
+            NAMED_ARCHITECTURES["fractional-orbital-single"],
+            self._request(),
+            entry_vehicle=entry,
+        )
+        deorbit = next(leg for leg in budget.legs if leg.phase is Phase.DEORBIT)
+        assert 3.0e6 < deorbit.ground_range < 8.0e6
+        assert 100.0 < deorbit.delta_v < 300.0
+        assert deorbit.duration > 0.0
+        assert "entry gamma" in deorbit.note
+
+    def test_a_glide_architecture_demands_a_vehicle_to_charge_it(self):
+        """Refusing beats silently charging a default vehicle the caller
+        never specified."""
+        with pytest.raises(ValueError, match="entry_vehicle is required"):
+            evaluate(NAMED_ARCHITECTURES["boost-glide"], self._request())
+        with pytest.raises(ValueError, match="cruise_vehicle is required"):
+            evaluate(NAMED_ARCHITECTURES["powered-cruise"], self._request())
+
+    def test_request_validates_its_own_inputs(self):
+        site = GeodeticPosition.from_degrees(45.0, 60.0)
+        with pytest.raises(ValueError, match="at least one aimpoint"):
+            MissionRequest(launch_site=site, aimpoints=(), arrival_time=100.0)
+        with pytest.raises(ValueError, match="arrival_time"):
+            MissionRequest(
+                launch_site=site,
+                aimpoints=(GeodeticPosition.from_degrees(0.0, 0.0),),
+                arrival_time=0.0,
+            )
+
+    def test_every_named_architecture_can_be_costed(self):
+        """The accounting must span the whole taxonomy, whether or not any
+        given architecture closes for this particular geometry."""
+        entry, cruise = self._vehicles()
+        request = self._request()
+        for name, architecture in NAMED_ARCHITECTURES.items():
+            budget = evaluate(
+                architecture,
+                request,
+                entry_vehicle=entry,
+                cruise_vehicle=cruise,
+            )
+            assert budget.total_delta_v > 0.0, name
+            assert budget.summary(), name
+            assert (budget.reason == "") is budget.closes, name

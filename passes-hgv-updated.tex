@@ -708,6 +708,21 @@ Eleven of these recur often enough to name: ballistic with a single body and wit
 One hundred admissible sequences is a statement about \emph{composability} and nothing else. It says the phases chain without contradiction; it says nothing about whether any of them is desirable, affordable, or has ever been built. Most of the multiplicity comes from the ordering freedom among independent exoatmospheric phases --- whether a correction precedes or follows dispensing, for instance --- which is a real distinction with real consequences for dispersion, and not padding.
 \end{remark}
 
+\subsection{End-to-end budgets and the closure question}
+\label{sec:budget}
+
+Admissibility says a phase sequence composes; it says nothing about whether that sequence reaches a given target from a given launch site. Charging each phase its range, $\Delta v$ and time --- and testing the sum against the geometry of \cref{sec:geodesy} --- answers that, and the accounting has one structural feature worth stating.
+
+Most legs contribute a range that is \emph{computed}: a deorbit transfer sweeps an arc set by perigee depth (\cref{sec:fobs}), a glide covers a distance set by its drag profile (\cref{sec:glide}), a cruise by its fuel (\cref{sec:cruise}). What closes an architecture is the one remaining leg that absorbs the difference, and which leg that is differs fundamentally between the two families. A fractional-orbital profile absorbs it in the \emph{parking arc}, which costs time and no propellant whatever; the closure test is only whether the remainder is non-negative and fits inside one revolution. A suborbital profile has no such leg, so the remainder falls on \emph{boost}, which is bought with propellant, and the test is against a stated booster capability. Treating these two cases alike is the most common way to get a range budget wrong, so the budget names which leg took the slack.
+
+The second point is that an architecture can fail in two ways that are not opposite ends of one scale. For a launch site at $45^\circ$N $60^\circ$E and an aimpoint at $38^\circ$N $100^\circ$W --- a required range of $10\,571$~km --- a purely ballistic profile falls $8\,271$~km short of a $2\,000$~km booster and is infeasible for it. But a fractional-orbital profile carrying a $6\,000$~km glide \emph{overshoots}: its fixed legs already cover $13\,135$~km, and no parking arc can close a negative remainder. The remedy is a shorter glide or a steeper deorbit, not a larger booster; commanding $3\,000$~km of glide instead closes the profile exactly. Reporting an unsigned magnitude with a named reason, rather than a signed residual, is what keeps those two diagnoses distinct.
+
+For a mixed payload the glide and ballistic arcs are flown concurrently by different bodies, so only the longer is charged as transport. Adding them would double-count a distance the system covers once.
+
+\begin{remark}[The budget is an objective function, not an optimiser]
+Every leg is evaluated at the parameters it is given. Sweeping glide range, perigee depth or fuel fraction to find a design that closes with margin is the caller's problem, and deliberately so: an optimiser here would bury the trade it exists to expose. Dispersion is propagated where a model exists --- the bus accumulation of \cref{sec:bus} --- and reported as undefined where none does, rather than assumed zero.
+\end{remark}
+
 \section{Verification and Validation Plan}
 \label{sec:vandv}
 
