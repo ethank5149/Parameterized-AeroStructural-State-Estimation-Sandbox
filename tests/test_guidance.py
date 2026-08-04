@@ -1,15 +1,21 @@
 """Guidance numerics: t_go branch analysis, precision behavior, AC-APN."""
 
+import itertools
+
 import numpy as np
 import pytest
 
 from passes.guidance import (
+    Aimpoint,
     ExecutionErrorModel,
     TgoStatus,
     apn_acceleration,
     correction_maneuver,
     los_rate,
     miss_sensitivity,
+    optimize_deployment_order,
+    plan_deployment,
+    reachable_aimpoints,
     schedule_corrections,
     time_to_go,
     time_to_go_naive,
@@ -510,3 +516,228 @@ class TestMidcourseCorrection:
                 ).residual_miss
             )
         assert misses == sorted(misses, reverse=True)
+
+
+class TestBusDeployment:
+    """Post-boost bus dispensing several vehicles to separated aimpoints."""
+
+    T_ARC = 2400.0
+
+    def _geometry(self):
+        """Bus arc plus an orthonormal downrange/crossrange/radial frame at
+        the nominal impact point, so aimpoints can be displaced in named
+        directions rather than in arbitrary inertial components."""
+        r0 = np.array([6.7e6, 0.0, 0.0])
+        v0 = lambert(r0, np.array([1.5e6, 6.5e6, 0.3e6]), self.T_ARC).v1
+        end = propagate_coast(r0, v0, self.T_ARC, rtol=1e-12, atol=1e-6, n_output=2)
+        nominal = np.asarray(end.states[:3, -1])
+        v_end = np.asarray(end.states[3:, -1])
+        radial = nominal / np.linalg.norm(nominal)
+        downrange = v_end - np.dot(v_end, radial) * radial
+        downrange = downrange / np.linalg.norm(downrange)
+        crossrange = np.cross(radial, downrange)
+        return r0, v0, nominal, downrange, crossrange, radial
+
+    def _aimpoints(self, nominal, downrange, crossrange, offsets):
+        return [
+            Aimpoint(
+                position=nominal + d * downrange + c * crossrange,
+                arrival_time=self.T_ARC,
+                label=f"A{i}",
+            )
+            for i, (d, c) in enumerate(offsets)
+        ]
+
+    def test_every_released_vehicle_reaches_its_own_aimpoint(self):
+        """The defining property. `achieved_miss` is obtained by flying the
+        released vehicle, not by trusting the targeting solve, so a
+        non-converged solve fails here rather than passing silently."""
+        r0, v0, nominal, down, cross, _ = self._geometry()
+        aims = self._aimpoints(
+            nominal, down, cross, [(0.0, 0.0), (60e3, 0.0), (0.0, 40e3), (-50e3, 25e3)]
+        )
+        plan = plan_deployment(r0, v0, aims, [300.0, 600.0, 900.0, 1200.0])
+        assert len(plan.releases) == 4
+        assert plan.worst_miss < 1.0
+        # Every vehicle is matched to the aimpoint it was assigned.
+        assert plan.order == (0, 1, 2, 3)
+        assert [r.aimpoint_index for r in plan.releases] == [0, 1, 2, 3]
+
+    def test_total_cost_is_the_sum_of_magnitudes_not_of_vectors(self):
+        """Maneuvers that partly oppose each other still burn propellant."""
+        r0, v0, nominal, down, cross, _ = self._geometry()
+        aims = self._aimpoints(nominal, down, cross, [(80e3, 0.0), (-80e3, 0.0)])
+        plan = plan_deployment(r0, v0, aims, [400.0, 1000.0])
+        vector_sum = np.linalg.norm(sum(r.delta_v for r in plan.releases))
+        assert plan.total_delta_v == pytest.approx(sum(plan.costs))
+        assert plan.total_delta_v > vector_sum
+
+    def test_deployment_order_dominates_the_cost(self):
+        """The headline result: for a spread of aimpoints the cheapest and
+        dearest orderings differ by tens of percent, and the natural order
+        is not merely suboptimal but can be the worst one available. This
+        is why `optimize_deployment_order` exists."""
+        r0, v0, nominal, down, cross, _ = self._geometry()
+        aims = self._aimpoints(
+            nominal,
+            down,
+            cross,
+            [(80e3, -30e3), (-70e3, 45e3), (120e3, 20e3), (-40e3, -60e3)],
+        )
+        times = [200.0, 700.0, 1300.0, 1900.0]
+        costs = {}
+        for order in itertools.permutations(range(4)):
+            costs[order] = plan_deployment(r0, v0, aims, times, order=order).total_delta_v
+        cheapest = min(costs.values())
+        dearest = max(costs.values())
+        assert dearest / cheapest > 1.5
+        assert costs[(0, 1, 2, 3)] == pytest.approx(dearest)
+
+    def test_optimizer_finds_the_exhaustive_optimum_and_says_so(self):
+        r0, v0, nominal, down, cross, _ = self._geometry()
+        aims = self._aimpoints(
+            nominal,
+            down,
+            cross,
+            [(80e3, -30e3), (-70e3, 45e3), (120e3, 20e3), (-40e3, -60e3)],
+        )
+        times = [200.0, 700.0, 1300.0, 1900.0]
+        plan, method = optimize_deployment_order(r0, v0, aims, times)
+        assert method == "exhaustive"
+        brute = min(
+            plan_deployment(r0, v0, aims, times, order=order).total_delta_v
+            for order in itertools.permutations(range(4))
+        )
+        assert plan.total_delta_v == pytest.approx(brute)
+        assert plan.total_delta_v < plan_deployment(r0, v0, aims, times).total_delta_v
+
+    def test_optimizer_labels_a_local_optimum_as_local(self):
+        """Above the exhaustive limit the answer is a 2-opt local optimum,
+        and the method string must not let that be mistaken for a proof."""
+        r0, v0, nominal, down, cross, _ = self._geometry()
+        aims = self._aimpoints(nominal, down, cross, [(60e3, -20e3), (-50e3, 30e3), (90e3, 10e3)])
+        times = [300.0, 900.0, 1500.0]
+        plan, method = optimize_deployment_order(r0, v0, aims, times, exhaustive_limit=2)
+        assert "local optimum" in method
+        assert plan.total_delta_v > 0.0
+
+    def test_fixed_arrival_epoch_removes_the_downrange_advantage(self):
+        """A result that inverts the usual claim. Downrange separation is
+        held to be cheap and crossrange expensive; under *fixed* time of
+        arrival that is not so, and the two cost within tens of percent of
+        each other. The familiar anisotropy is a property of timing
+        freedom, not of geometry."""
+        r0, v0, nominal, down, cross, _radial = self._geometry()
+        state = propagate_coast(r0, v0, 600.0, rtol=1e-12, atol=1e-6, n_output=2)
+        r, v = np.asarray(state.states[:3, -1]), np.asarray(state.states[3:, -1])
+        fixed = {}
+        for name, direction in (("down", down), ("cross", cross)):
+            fixed[name] = correction_maneuver(
+                r, v, nominal + 50e3 * direction, self.T_ARC - 600.0
+            ).cost
+        assert fixed["cross"] / fixed["down"] < 1.5
+
+    def test_relaxing_the_arrival_epoch_helps_downrange_only(self):
+        """The mechanism behind the previous test, isolated. Letting the
+        arrival epoch slip buys a large reduction downrange and *nothing*
+        crossrange, whose optimum sits at zero slip because a plane change
+        cannot be bought with time."""
+        r0, v0, nominal, down, cross, _ = self._geometry()
+        state = propagate_coast(r0, v0, 600.0, rtol=1e-12, atol=1e-6, n_output=2)
+        r, v = np.asarray(state.states[:3, -1]), np.asarray(state.states[3:, -1])
+        # The downrange minimum is sharp -- a few m/s per second of slip on
+        # either side -- so a coarse grid steps straight over it and would
+        # make the effect look like a 3% saving instead of a 54% one.
+        slips = np.arange(-30.0, 31.0, 5.0)
+        best = {}
+        for name, direction in (("down", down), ("cross", cross)):
+            target = nominal + 50e3 * direction
+            costs = [correction_maneuver(r, v, target, self.T_ARC - 600.0 + s).cost for s in slips]
+            best[name] = (min(costs), float(slips[int(np.argmin(costs))]))
+        fixed_down = correction_maneuver(r, v, nominal + 50e3 * down, self.T_ARC - 600.0).cost
+        # Downrange is bought down substantially by a small slip...
+        assert best["down"][0] < 0.5 * fixed_down
+        assert abs(best["down"][1]) <= 20.0
+        # ...while crossrange gains nothing and prefers no slip at all.
+        fixed_cross = correction_maneuver(r, v, nominal + 50e3 * cross, self.T_ARC - 600.0).cost
+        assert best["cross"][0] == pytest.approx(fixed_cross, rel=1e-9)
+        assert best["cross"][1] == 0.0
+
+    def test_dispersion_is_not_monotone_down_the_sequence(self):
+        """Two effects compete and neither wins outright, so the last
+        vehicle off the bus is *not* reliably the least accurate.
+
+        The bus covariance grows monotonically -- each maneuver adds a
+        positive-semidefinite block and nothing removes one. But a
+        later-released vehicle also has a shorter flight, and terminal miss
+        scales with that flight time through the sensitivity, so the
+        inherited error has less opportunity to grow into a miss. Measured
+        here the dispersions run 1482, 1983, 1744 m: rising then falling.
+        Assuming monotonicity would mis-rank which vehicle needs the
+        accuracy budget."""
+        r0, v0, nominal, down, cross, _ = self._geometry()
+        aims = self._aimpoints(nominal, down, cross, [(60e3, 0.0), (0.0, 40e3), (-50e3, 25e3)])
+        plan = plan_deployment(
+            r0,
+            v0,
+            aims,
+            [300.0, 800.0, 1400.0],
+            execution=ExecutionErrorModel(magnitude_fraction=0.02, pointing_sigma=5e-3),
+        )
+        dispersions = plan.dispersions
+        assert np.all(np.isfinite(dispersions))
+        # The first release is the cheapest to hold accurate, because it
+        # inherits only its own maneuver error.
+        assert dispersions[0] == dispersions.min()
+        # But the last is not the worst -- the shorter flight wins.
+        assert dispersions[-1] < dispersions.max()
+
+    def test_dispersion_is_not_invented_without_an_execution_model(self):
+        r0, v0, nominal, down, cross, _ = self._geometry()
+        aims = self._aimpoints(nominal, down, cross, [(60e3, 0.0), (0.0, 40e3)])
+        plan = plan_deployment(r0, v0, aims, [400.0, 1000.0])
+        assert np.all(np.isnan(plan.dispersions))
+        assert np.all(np.isfinite(plan.costs))
+
+    def test_reachability_is_a_budget_cut_on_a_measured_cost_field(self):
+        """The footprint is returned as costs for every aimpoint, in budget
+        or out, so its shape is visible rather than only its boundary."""
+        r0, v0, nominal, down, cross, _ = self._geometry()
+        aims = self._aimpoints(
+            nominal,
+            down,
+            cross,
+            [(0.0, 0.0), (40e3, 0.0), (200e3, 0.0), (0.0, 200e3)],
+        )
+        result = reachable_aimpoints(r0, v0, aims, 600.0, delta_v_budget=40.0)
+        assert result.costs.shape == (4,)
+        assert result.costs[0] < result.costs[1] < result.costs[2]
+        assert set(result.reachable) == {i for i, c in enumerate(result.costs) if c <= 40.0}
+        assert 0 in result.reachable
+        assert 2 not in result.reachable
+
+    def test_rejects_an_inconsistent_schedule(self):
+        r0, v0, nominal, down, cross, _ = self._geometry()
+        aims = self._aimpoints(nominal, down, cross, [(60e3, 0.0), (0.0, 40e3)])
+        with pytest.raises(ValueError, match="strictly increasing"):
+            plan_deployment(r0, v0, aims, [900.0, 400.0])
+        with pytest.raises(ValueError, match="one release time per aimpoint"):
+            plan_deployment(r0, v0, aims, [400.0])
+        with pytest.raises(ValueError, match="permutation"):
+            plan_deployment(r0, v0, aims, [400.0, 900.0], order=(0, 0))
+
+    def test_refuses_to_release_a_vehicle_after_its_own_arrival(self):
+        """A schedule that asks a vehicle to land before it leaves the bus
+        is not expensive, it is impossible, and must be rejected as such."""
+        r0, v0, nominal, down, _cross, _ = self._geometry()
+        late = [Aimpoint(position=nominal + 10e3 * down, arrival_time=500.0)]
+        with pytest.raises(ValueError, match="cannot arrive before"):
+            plan_deployment(r0, v0, late, [900.0])
+
+    def test_aimpoint_validates_its_own_inputs(self):
+        with pytest.raises(ValueError, match="3-vector"):
+            Aimpoint(position=np.zeros(2), arrival_time=100.0)
+        with pytest.raises(ValueError, match="arrival_time"):
+            Aimpoint(position=np.zeros(3), arrival_time=-1.0)
+        with pytest.raises(ValueError, match="must be finite"):
+            Aimpoint(position=np.array([np.nan, 0.0, 0.0]), arrival_time=100.0)
