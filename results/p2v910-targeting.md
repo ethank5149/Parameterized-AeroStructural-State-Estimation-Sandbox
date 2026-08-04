@@ -1,8 +1,8 @@
-# II-V9-V12: Lambert targeting, bus dispensing, glide guidance, fractional orbital profiles
+# II-V9-V13: Lambert targeting, bus dispensing, glide guidance, fractional orbital profiles
 
-- **Failure criterion (stated in advance, Paper II §8):** V9: relative arrival error > 1e-7 on any physically flyable transfer, or endpoint energy/angular-momentum mismatch > 1e-9. V10: any released vehicle missing its aimpoint by > 1 m, or the ordering search returning a cost above the exhaustive optimum. V11: range integral differing from its closed form by > 1e-9, flown range not monotone in commanded drag, or reversals failing to reduce crossrange by 10x. V12: the Kepler deorbit solve differing from the integrated trajectory beyond tolerance, or the three-leg range accounting failing to close
+- **Failure criterion (stated in advance, Paper II §8):** V9: relative arrival error > 1e-7 on any physically flyable transfer, or endpoint energy/angular-momentum mismatch > 1e-9. V10: any released vehicle missing its aimpoint by > 1 m, or the ordering search returning a cost above the exhaustive optimum. V11: range integral differing from its closed form by > 1e-9, flown range not monotone in commanded drag, or reversals failing to reduce crossrange by 10x. V12: the Kepler deorbit solve differing from the integrated trajectory beyond tolerance, or the three-leg range accounting failing to close. V13: Breguet range not linear in L/D, mass-ratio doublings not adding equal range, or the cruise-climb differing between vehicles
 - **Verdict:** **PASS**
-- **Generated:** 2026-08-04 22:32 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.14.6 (x86_64)
+- **Generated:** 2026-08-04 22:40 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.14.6 (x86_64)
 
 ## V9 — Lambert transfer envelope
 
@@ -100,6 +100,26 @@ A negative perigee is virtual — the vehicle never reaches it — and is simply
 | three-leg range closure | 1.110e-16 | < 1e-12 rel | PASS |
 
 The deorbit solve is closed-form Kepler; the reference is the coast integrator advancing the equations of motion from the post-burn state. The two share no code, so agreement at this level is a real check on both. Ground-track walk for this orbit is 22.2 deg per revolution, which is what allows the entry interface to be repositioned by waiting rather than by manoeuvring.
+
+## V13 — Breguet range against its analytic scalings
+
+| property | measured | criterion | verdict |
+|---|---|---|---|
+| linearity in L/D | 0.000e+00 rel | < 1e-12 | PASS |
+| range added per doubling of mass ratio, spread over 4 decades | 6.661e-16 | < 1e-9 | PASS |
+| cruise-climb across dissimilar vehicles | 0.000e+00 rel | < 1e-12 | PASS |
+| cruise-climb at 30% fuel | 3.03 km | — | — |
+
+Each doubling of mass ratio adds the same absolute range regardless of where it starts, which is the precise content of 'logarithmic in mass ratio'. The cruise-climb is H ln(m_i/m_f) with wing loading, lift coefficient and L/D all cancelling, so two vehicles sharing only a fuel fraction climb identically.
+
+## V13 — where the usual gloss on that scaling goes wrong
+
+| change | range multiplier |
+|---|---|
+| L/D doubled, 4 -> 8 | 2.000 |
+| fuel fraction doubled, 0.30 -> 0.60 | 2.569 |
+
+Fuel is commonly said to show diminishing returns while L/D does not. Over this range the opposite holds, because ln(1/(1-f)) is *convex* in fuel fraction: its derivative 1/(1-f) grows, so doubling f more than doubles the logarithm. The diminishing return is in mass ratio, not in fuel fraction — the row above measures that one directly — and the two are statements about different variables.
 
 ## What these tasks establish, and what they do not
 

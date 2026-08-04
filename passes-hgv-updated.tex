@@ -661,10 +661,41 @@ A bus carrying $n$ independently targeted vehicles must place each on a ballisti
 
 \paragraph{Accumulated error and terminal dispersion are not the same ordering.} Every bus maneuver is imperfect and the next vehicle inherits it, so the bus covariance grows monotonically through the sequence --- each maneuver contributes a positive-semidefinite block and none is ever removed. The natural conclusion, that the last vehicle released is the least accurate, is false. A later release also has a shorter remaining flight, and terminal miss scales with that flight time through $\partial \mathbf{r}_f / \partial \mathbf{v}_0$, so the inherited error has less opportunity to grow into a miss. Over a three-vehicle sequence we measure one-sigma dispersions of $1482$, $1983$ and $1744$~m: rising, then falling. Which vehicle needs the accuracy budget is a result of the schedule and cannot be read off the release order.
 
+\section{System Architectures}
+\label{sec:architectures}
+
+The preceding sections build phases: boost, parking orbit, deorbit, midcourse correction, bus dispensing, glide, powered cruise, ballistic entry, terminal homing. A \emph{system} is an ordered sequence of them, and not every sequence is a system. We state the composition rules explicitly and enumerate from them rather than tabulating the familiar architectures, because a table conflates two very different reasons for an architecture's absence --- nobody builds it, and it is not physically admissible --- and those look identical once written down.
+
+The rules concern physics and information rather than doctrine. Deorbit presupposes an orbit, since there is no perigee to lower without one, and symmetrically a parking orbit must be left or there is no entry. Dispensing and midcourse correction are exoatmospheric: a bus separating vehicles inside the atmosphere puts them in each other's hypersonic wake, and \cref{sec:midcourse} solves a Keplerian boundary-value problem that ceases to describe the plant once aerodynamic forces dominate. Exactly one of glide, cruise or ballistic entry may appear, because each describes the whole atmospheric arc rather than a stage of it; chaining two would place the vehicle in two aerodynamic states at once.
+
+The payload rule needs stating in both directions. Forward, it is capability: a single body has nothing to dispense, a non-lifting body cannot glide, an unpropelled one cannot cruise. The converse is less obvious and is what keeps the enumeration honest. A glide vehicle \emph{can} fly a purely ballistic entry by declining to use its lift, and a cruiser can glide with the engine off; admitting those enumerates one physical trajectory twice under two payload labels, the second copy carrying a description its own flight contradicts. Requiring an architecture to use the capability that names it removes $52$ such duplicates from the enumeration, taking it from $152$ sequences to $100$.
+
+\begin{center}
+\begin{tabular}{@{}llr@{}}
+\toprule
+\textbf{Payload} & \textbf{Terminal regime} & \textbf{Admissible sequences} \\
+\midrule
+single reentry vehicle & ballistic entry & $12$ \\
+multiple reentry vehicles & ballistic entry & $36$ \\
+glide vehicle & glide & $12$ \\
+multiple glide vehicles & glide & $36$ \\
+powered cruise vehicle & cruise & $4$ \\
+\midrule
+& & $100$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Nine of these recur often enough to name: ballistic with a single body and with multiple; boost-glide with one glider and with several; fractional-orbital with each of those four payload classes; and powered cruise. Each is validated against the rules at import, so an inadmissible reference case fails loudly rather than propagating. The enumeration is closed under the rules --- everything it produces independently validates --- which is what makes it a derivation rather than a curated list kept in parallel with the rules it is supposed to satisfy.
+
+\begin{remark}[What the count does and does not mean]
+One hundred admissible sequences is a statement about \emph{composability} and nothing else. It says the phases chain without contradiction; it says nothing about whether any of them is desirable, affordable, or has ever been built. Most of the multiplicity comes from the ordering freedom among independent exoatmospheric phases --- whether a correction precedes or follows dispensing, for instance --- which is a real distinction with real consequences for dispersion, and not padding.
+\end{remark}
+
 \section{Verification and Validation Plan}
 \label{sec:vandv}
 
-This section states what is measured, against what reference, and what constitutes failure. The plan was written before any implementation existed, so it is falsifiable in advance rather than reported selectively afterward. Tasks V1--V7 have since been executed against the reference implementation; V8 is executed for the radiative correlation and its implementation properties, with the convective reference-case comparison outstanding. V9--V12 were added after \cref{sec:midcourse}, \cref{sec:bus}, \cref{sec:glide} and \cref{sec:fobs} were written, and are stated in the same spirit: both are checkable without external reference data, because the reference is an independent numerical path through the same physics rather than a published number. That is a weaker claim than validation against measurement and is labelled as such. Measured values appear in the relevant sections above and in the companion repository's verification reports.
+This section states what is measured, against what reference, and what constitutes failure. The plan was written before any implementation existed, so it is falsifiable in advance rather than reported selectively afterward. Tasks V1--V7 have since been executed against the reference implementation; V8 is executed for the radiative correlation and its implementation properties, with the convective reference-case comparison outstanding. V9--V13 were added after \cref{sec:midcourse}, \cref{sec:bus}, \cref{sec:glide}, \cref{sec:fobs} and \cref{sec:cruise} were written, and are stated in the same spirit: both are checkable without external reference data, because the reference is an independent numerical path through the same physics rather than a published number. That is a weaker claim than validation against measurement and is labelled as such. Measured values appear in the relevant sections above and in the companion repository's verification reports.
 
 \begin{center}
 \begin{longtable}{@{}llp{5.4cm}p{3.4cm}@{}}
@@ -695,11 +726,13 @@ V10 & Bus dispensing & Every released vehicle propagated to its own aimpoint; or
 V11 & Glide guidance & Range-energy integral $\int \mathrm{d}e/D$ against its closed form at constant drag; flown range against the same integral's prediction over a sweep of commanded drag; terminal crossrange with bank reversals against the uncorrected single-sign drift & range integral differing from the closed form by $> 10^{-9}$ relative; flown range not monotone in commanded drag; reversals failing to reduce terminal crossrange by at least an order of magnitude \\
 \addlinespace
 V12 & Fractional orbital profile & Closed-form Kepler deorbit solve against the independent $J_2$ integrator of \cref{sec:j2} on radius, swept angle, speed and flight-path angle; $\Delta v$ against vis-viva; three-leg range accounting & any transfer quantity differing from the integrated trajectory by more than its stated tolerance; $\Delta v$ differing from vis-viva by $> 10^{-12}$ relative; parking, transfer and glide arcs failing to sum to the angle to the target \\
+\addlinespace
+V13 & Cruise scaling & Br\'eguet range against its analytic scalings: exact linearity in $L/D$, exact additivity of $\ln 2$ per doubling of mass ratio, and vehicle-independence of the cruise-climb $H\ln(m_i/m_f)$ across dissimilar wing loading, $C_L$ and $L/D$ & range not linear in $L/D$ to $10^{-12}$; a doubling of mass ratio not adding $\ln 2$ worth of range; cruise-climb differing between vehicles of equal fuel fraction \\
 \bottomrule
 \end{longtable}
 \end{center}
 
-\emph{Status.} V1--V7 and V9--V12 executed and passing against the criteria as stated. V8 is partially complete. The radiative correlation is verified against the published source (\cref{rem:tauberunits}) and the implementation properties hold, but the $5\%$ criterion is stated against published Fay--Riddell reference conditions, which require tabulated equilibrium-air properties not yet transcribed. The recession half of V8 --- shared with Paper~I's V4 --- is now executed against measured arc-jet recession rather than against a code: seven conditions of Milos and Chen \cite{milos2010} spanning $107$--$1102$~W/cm\textsuperscript{2} and $2.3$--$84.4$~kPa, at $4\%$ median absolute error against a $27\%$ experimental scatter. Full numerical detail is deferred to the companion experimental manuscript.
+\emph{Status.} V1--V7 and V9--V13 executed and passing against the criteria as stated. V8 is partially complete. The radiative correlation is verified against the published source (\cref{rem:tauberunits}) and the implementation properties hold, but the $5\%$ criterion is stated against published Fay--Riddell reference conditions, which require tabulated equilibrium-air properties not yet transcribed. The recession half of V8 --- shared with Paper~I's V4 --- is now executed against measured arc-jet recession rather than against a code: seven conditions of Milos and Chen \cite{milos2010} spanning $107$--$1102$~W/cm\textsuperscript{2} and $2.3$--$84.4$~kPa, at $4\%$ median absolute error against a $27\%$ experimental scatter. Full numerical detail is deferred to the companion experimental manuscript.
 
 \section{Limitations}
 \label{sec:limitations}

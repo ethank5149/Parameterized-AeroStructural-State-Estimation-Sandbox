@@ -48,6 +48,11 @@ from passes.guidance.bus import (
     optimize_deployment_order,
     plan_deployment,
 )
+from passes.guidance.cruise import (
+    CruiseVehicle,
+    cruise_climb_altitude,
+    cruise_range,
+)
 from passes.guidance.entry import (
     EntryVehicle,
     GlideState,
@@ -686,10 +691,107 @@ def _v12_fobs(report: VerificationReport) -> bool:
     return passed
 
 
+def _v13_cruise(report: VerificationReport) -> bool:
+    """II-V13: Breguet range against its analytic scalings."""
+    sound = 295.0
+    speed = 8.0 * sound
+    isp = 1200.0
+
+    def vehicle(lift_to_drag: float, fuel: float) -> CruiseVehicle:
+        return CruiseVehicle(
+            wing_loading=400.0,
+            lift_to_drag=lift_to_drag,
+            lift_coefficient=0.1,
+            fuel_fraction=fuel,
+        )
+
+    # Linearity in L/D.
+    base = cruise_range(vehicle(4.0, 0.30), speed, isp)
+    linear_error = abs(cruise_range(vehicle(8.0, 0.30), speed, isp) / (2.0 * base) - 1.0)
+
+    # Each doubling of mass ratio adds exactly the same increment.
+    increments = []
+    for ratio in (1.5, 2.0, 4.0, 8.0):
+        low = cruise_range(vehicle(4.0, 1.0 - 1.0 / ratio), speed, isp)
+        high = cruise_range(vehicle(4.0, 1.0 - 1.0 / (2.0 * ratio)), speed, isp)
+        increments.append(high - low)
+    increment_spread = float(max(increments) / min(increments) - 1.0)
+
+    # Cruise-climb is independent of the vehicle.
+    climbs = [
+        cruise_climb_altitude(vehicle(4.0, 0.30)),
+        cruise_climb_altitude(
+            CruiseVehicle(
+                wing_loading=900.0,
+                lift_to_drag=1.5,
+                lift_coefficient=0.4,
+                fuel_fraction=0.30,
+            )
+        ),
+    ]
+    climb_spread = abs(climbs[0] / climbs[1] - 1.0)
+
+    # The scaling that is commonly stated backwards.
+    by_ld = cruise_range(vehicle(8.0, 0.30), speed, isp) / base
+    by_fuel = cruise_range(vehicle(4.0, 0.60), speed, isp) / base
+
+    linear_ok = linear_error <= 1e-12
+    increment_ok = increment_spread <= 1e-9
+    climb_ok = climb_spread <= 1e-12
+    passed = linear_ok and increment_ok and climb_ok
+
+    report.add_table(
+        "V13 — Breguet range against its analytic scalings",
+        ["property", "measured", "criterion", "verdict"],
+        [
+            [
+                "linearity in L/D",
+                f"{linear_error:.3e} rel",
+                "< 1e-12",
+                "PASS" if linear_ok else "FAIL",
+            ],
+            [
+                "range added per doubling of mass ratio, spread over 4 decades",
+                f"{increment_spread:.3e}",
+                "< 1e-9",
+                "PASS" if increment_ok else "FAIL",
+            ],
+            [
+                "cruise-climb across dissimilar vehicles",
+                f"{climb_spread:.3e} rel",
+                "< 1e-12",
+                "PASS" if climb_ok else "FAIL",
+            ],
+            ["cruise-climb at 30% fuel", f"{climbs[0] / 1e3:.2f} km", "—", "—"],
+        ],
+        "Each doubling of mass ratio adds the same absolute range regardless "
+        "of where it starts, which is the precise content of 'logarithmic in "
+        "mass ratio'. The cruise-climb is H ln(m_i/m_f) with wing loading, "
+        "lift coefficient and L/D all cancelling, so two vehicles sharing "
+        "only a fuel fraction climb identically.",
+    )
+    report.add_table(
+        "V13 — where the usual gloss on that scaling goes wrong",
+        ["change", "range multiplier"],
+        [
+            ["L/D doubled, 4 -> 8", f"{by_ld:.3f}"],
+            ["fuel fraction doubled, 0.30 -> 0.60", f"{by_fuel:.3f}"],
+        ],
+        "Fuel is commonly said to show diminishing returns while L/D does "
+        "not. Over this range the opposite holds, because ln(1/(1-f)) is "
+        "*convex* in fuel fraction: its derivative 1/(1-f) grows, so "
+        "doubling f more than doubles the logarithm. The diminishing return "
+        "is in mass ratio, not in fuel fraction — the row above measures "
+        "that one directly — and the two are statements about different "
+        "variables.",
+    )
+    return passed
+
+
 def run_p2v910(output_dir: Path) -> VerificationReport:
     """Execute II-V9 and II-V10 and write the report."""
     report = VerificationReport(
-        task_id="II-V9-V12",
+        task_id="II-V9-V13",
         title="Lambert targeting, bus dispensing, glide guidance, fractional orbital profiles",
         criterion=(
             "V9: relative arrival error > 1e-7 on any physically flyable "
@@ -700,7 +802,9 @@ def run_p2v910(output_dir: Path) -> VerificationReport:
             "flown range not monotone in commanded drag, or reversals failing "
             "to reduce crossrange by 10x. V12: the Kepler deorbit solve "
             "differing from the integrated trajectory beyond tolerance, or the "
-            "three-leg range accounting failing to close"
+            "three-leg range accounting failing to close. V13: Breguet range "
+            "not linear in L/D, mass-ratio doublings not adding equal range, "
+            "or the cruise-climb differing between vehicles"
         ),
         passed=True,
     )
@@ -710,6 +814,7 @@ def run_p2v910(output_dir: Path) -> VerificationReport:
         _v10_dispensing(report),
         _v11_glide(report),
         _v12_fobs(report),
+        _v13_cruise(report),
     ]
     report.passed = all(results)
 
