@@ -29,10 +29,17 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from passes.thermal.fiat.materials import PressureConductivity, TabulatedConductivity
+from passes.thermal.fiat.materials import (
+    MultiComponentMaterial,
+    PressureConductivity,
+    TabulatedConductivity,
+)
 from passes.thermal.material import CharringMaterial
 
-__all__ = ["MaterialStack", "Ply", "StackGrid"]
+#: A three-component CMA material or the generalised N-component form.
+MaterialLike = CharringMaterial | MultiComponentMaterial
+
+__all__ = ["MaterialLike", "MaterialStack", "Ply", "StackGrid"]
 
 _FloatArray = NDArray[np.float64]
 _IntArray = NDArray[np.intp]
@@ -74,7 +81,7 @@ class Ply:
         semi-transparent and need a value here.
     """
 
-    material: CharringMaterial
+    material: MaterialLike
     thickness: float
     n_cells: int
     growth: float = 1.0
@@ -240,9 +247,9 @@ class MaterialStack:
             interface_faces=np.asarray(interface_faces, dtype=np.intp),
         )
 
-    def cell_materials(self) -> list[CharringMaterial]:
+    def cell_materials(self) -> list[MaterialLike]:
         """Per-cell material, in grid order."""
-        out: list[CharringMaterial] = []
+        out: list[MaterialLike] = []
         for ply in self._plies:
             out.extend([ply.material] * ply.n_cells)
         return out

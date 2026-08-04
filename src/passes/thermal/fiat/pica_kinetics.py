@@ -71,6 +71,8 @@ __all__ = [
     "COMPETITIVE_PICA_BAYESIAN",
     "COMPETITIVE_PICA_DETERMINISTIC",
     "PARALLEL_PICA_RESIN",
+    "PICA_PYROLYSIS_ELEMENTS",
+    "PICA_PYROLYSIS_ELEMENTS_RANGE",
     "CompetitivePica",
     "ParallelReaction",
     "advancement_to_fiat_rate",
@@ -414,3 +416,37 @@ def parallel_pica_resin(
             )
         )
     return components
+
+
+#: Elemental composition of PICA pyrolysis gas, mole fractions.
+#:
+#: This is the number that separates a PICA surface-chemistry deck from a
+#: TACOT one, and it is confirmed by two independent routes.
+#:
+#: **Route 1** — weight [TH2019] Table 2's species yields ζ by their
+#: density-loss fractions F and sum over each species' formula. That gives
+#: C 0.1745, H 0.6785, O 0.1470.
+#:
+#: **Route 2** — integrate Bessire & Minton Fig. 7's measured mass yields
+#: over temperature, species by species, at each of four heating rates.
+#: That gives C 0.167–0.187, H 0.661–0.678, O 0.146–0.159. Route 1 lands
+#: inside that band on carbon and oxygen, and misses on hydrogen by
+#: 0.0003 — 0.04%, far inside what a figure-traced ordinate supports.
+#:
+#: The two share no methodology: one is a fitted kinetic mechanism, the
+#: other is raw integrated mass spectrometry. The composition is also
+#: nearly heating-rate independent, varying about 11% in carbon across a
+#: factor of eight in rate.
+#:
+#: **TACOT differs where it counts.** Its deck carries C 0.206, O 0.115 —
+#: 18% richer in carbon and 21% leaner in oxygen than PICA, while agreeing
+#: on hydrogen to 0.1%. TACOT is the open surrogate, not the material, and
+#: the carbon and oxygen are where the two part.
+PICA_PYROLYSIS_ELEMENTS = {"C": 0.1745, "H": 0.6785, "O": 0.1470}
+
+#: Range spanned by the four Bessire & Minton heating rates, for reference.
+PICA_PYROLYSIS_ELEMENTS_RANGE = {
+    "C": (0.1668, 0.1870),
+    "H": (0.6613, 0.6782),
+    "O": (0.1457, 0.1593),
+}

@@ -82,8 +82,10 @@ __all__ = [
     "PICA_LIKE_CHAR_DENSITY",
     "PICA_VIRGIN_CONDUCTIVITY_RT",
     "PICA_VIRGIN_DENSITY",
+    "MultiComponentMaterial",
     "PressureConductivity",
     "TabulatedConductivity",
+    "pica_fiat_material",
     "pica_like_material",
     "read_tran_conductivity",
     "read_tran_specific_heat",
@@ -475,4 +477,169 @@ def read_tran_specific_heat(directory: str | Path) -> LinearBlendProperty:
     slope, intercept = np.polyfit(t, cp, 1)
     return LinearBlendProperty(
         float(intercept), float(slope), float(intercept), float(slope)
+    )
+
+
+@dataclass(frozen=True)
+class MultiComponentMaterial:
+    """FIAT Eq. (7) generalised from three solid components to :math:`N`.
+
+    Chen & Milos write the composite density as
+    :math:`\\rho = \\Gamma(\\rho_A + \\rho_B) + (1-\\Gamma)\\rho_C` — two
+    resin components and one reinforcement, which is what the CMA lineage
+    has always used. That is a modelling convention, not a physical
+    limit, and it becomes a hard constraint the moment a published
+    mechanism has a different number of reactions.
+
+    It does here. Torres-Herrador's measured PICA set has **six** parallel
+    reactions. Lumping six into two discards exactly the resolution that
+    made the measurement worth having, so Eq. (7) is generalised instead:
+
+    .. math::
+
+        \\rho = \\sum_i w_i \\rho_i,
+
+    with the three-component form recovered by
+    :math:`w = (\\Gamma, \\Gamma, 1-\\Gamma)`.
+
+    Attributes
+    ----------
+    components:
+        The decomposing (and inert) solid components.
+    weights:
+        :math:`w_i` in the sum above, same length.
+    """
+
+    components: tuple[ArrheniusComponent, ...]
+    weights: tuple[float, ...]
+    conductivity: LinearBlendProperty
+    specific_heat: LinearBlendProperty
+    gas_specific_heat: float
+    gas_enthalpy_offset: float
+    gas_enthalpy_slope: float
+    solid_enthalpy_offset: float
+    solid_enthalpy_slope: float
+    emissivity_virgin: float
+    emissivity_char: float
+
+    def __post_init__(self) -> None:
+        if len(self.components) != len(self.weights):
+            raise ValueError(
+                f"need one weight per component, got {len(self.weights)} "
+                f"weights for {len(self.components)} components"
+            )
+        if not self.components:
+            raise ValueError("a material needs at least one component")
+        if any(w <= 0.0 or not np.isfinite(w) for w in self.weights):
+            raise ValueError("weights must be finite and > 0")
+
+    @property
+    def virgin_density(self) -> float:
+        return float(
+            sum(w * c.virgin_density for w, c in zip(self.weights, self.components, strict=True))
+        )
+
+    @property
+    def char_density(self) -> float:
+        return float(
+            sum(w * c.char_density for w, c in zip(self.weights, self.components, strict=True))
+        )
+
+
+def pica_fiat_material(
+    directory: str | Path | None = None,
+    resin_density: float = 94.0,
+    total_density: float = PICA_VIRGIN_DENSITY,
+) -> MultiComponentMaterial:
+    """PICA with **measured** kinetics — the full deck.
+
+    Seven components: Torres-Herrador 2019 Table 2's six parallel
+    reactions, plus the non-decomposing remainder (carbon preform and
+    residual resin char).
+
+    Each reaction carries :math:`F_i` of the resin mass and volatilises
+    all of it, which is what [TH2019] Eq. (5) says :math:`F` means: "the
+    fraction of density that is lost when reaction :math:`R_{i,j}`
+    reaches completion". Setting each component's char density to zero
+    also makes the advancement and FIAT rate normalisations coincide
+    exactly — the conversion factor
+    :math:`(\\rho_v/(\\rho_v-\\rho_r))^{n-1}` is unity — so the published
+    pre-exponentials go in unmodified.
+
+    The composition closes on published numbers without tuning: the six
+    :math:`F` values sum to 0.544 of a 94 kg/m³ resin fraction, which is
+    51.1 kg/m³ of volatiles out of 274 kg/m³ total. That leaves a char
+    density of 222.9 kg/m³ against the 227 implied by the published bulk
+    densities — 1.8% apart, from two unrelated sources.
+
+    Conductivity and specific heat come from Tran Fig. 9 and Fig. 7 when
+    ``directory`` is given, and fall back to the MEDLI2 one-atmosphere
+    row otherwise.
+    """
+    from passes.thermal.fiat.pica_kinetics import (
+        PARALLEL_PICA_RESIN,
+        advancement_to_fiat_rate,
+    )
+
+    total_f = sum(r.density_loss_fraction for r in PARALLEL_PICA_RESIN)
+    volatile = total_f * resin_density
+    if volatile >= total_density:
+        raise ValueError(
+            f"volatile mass {volatile:.1f} kg/m³ exceeds the total "
+            f"{total_density:.1f}; check resin_density"
+        )
+
+    components = []
+    weights = []
+    for r in PARALLEL_PICA_RESIN:
+        virgin = r.density_loss_fraction * resin_density
+        components.append(
+            ArrheniusComponent(
+                # char_density = 0 makes the two rate normalisations
+                # identical, so the published log10(A) is used as printed.
+                pre_exponential=advancement_to_fiat_rate(r.log10_a, r.order, virgin, 0.0),
+                activation_energy=r.activation_energy_kj * 1.0e3,
+                reaction_order=r.order,
+                virgin_density=virgin,
+                char_density=0.0,
+            )
+        )
+        weights.append(1.0)
+
+    inert = total_density - volatile
+    components.append(
+        ArrheniusComponent(
+            pre_exponential=0.0,
+            activation_energy=1.0e5,
+            reaction_order=1.0,
+            virgin_density=inert,
+            char_density=inert * (1.0 - 1e-9),
+        )
+    )
+    weights.append(1.0)
+
+    if directory is not None:
+        k = read_tran_conductivity(directory).values.mean(axis=0)
+        t = read_tran_conductivity(directory).temperatures
+        slope, intercept = np.polyfit(t, k, 1)
+        conductivity = LinearBlendProperty(
+            float(intercept), float(slope), float(intercept), float(slope)
+        )
+        specific_heat = read_tran_specific_heat(directory)
+    else:
+        conductivity = MEDLI2_PICA_CONDUCTIVITY.high
+        specific_heat = LinearBlendProperty(1100.0, 0.32, 1250.0, 0.30)
+
+    return MultiComponentMaterial(
+        components=tuple(components),
+        weights=tuple(weights),
+        conductivity=conductivity,
+        specific_heat=specific_heat,
+        gas_specific_heat=2100.0,
+        gas_enthalpy_offset=-2.2e6,
+        gas_enthalpy_slope=2100.0,
+        solid_enthalpy_offset=-1.1e6,
+        solid_enthalpy_slope=1400.0,
+        emissivity_virgin=0.85,
+        emissivity_char=0.90,
     )

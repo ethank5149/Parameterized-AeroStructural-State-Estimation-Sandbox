@@ -91,13 +91,17 @@ import scipy.linalg
 from numpy.typing import NDArray
 
 from passes.thermal.fiat.bprime import BPrimeTable, TableRangeError
-from passes.thermal.fiat.materials import PressureConductivity, TabulatedConductivity
+from passes.thermal.fiat.materials import (
+    MultiComponentMaterial,
+    PressureConductivity,
+    TabulatedConductivity,
+)
 from passes.thermal.fiat.radiation import (
     gray_radiative_flux,
     optical_depth,
     rosseland_conductivity,
 )
-from passes.thermal.fiat.stack import MaterialStack
+from passes.thermal.fiat.stack import MaterialLike, MaterialStack
 from passes.thermal.fiat.surface import (
     AerothermalEnvironment,
     BackfaceCondition,
@@ -105,7 +109,7 @@ from passes.thermal.fiat.surface import (
     SurfaceState,
     solve_surface,
 )
-from passes.thermal.material import GAS_CONSTANT, ArrheniusComponent, CharringMaterial
+from passes.thermal.material import GAS_CONSTANT, ArrheniusComponent
 from passes.thermal.surface import STEFAN_BOLTZMANN
 
 __all__ = [
@@ -229,20 +233,41 @@ class FiatSolution:
         return np.array([s.temperature for s in self.steps])
 
 
-def _components(material: CharringMaterial) -> tuple[ArrheniusComponent, ...]:
+def _components(material: MaterialLike) -> tuple[ArrheniusComponent, ...]:
+    """Solid components of a material, however many it has."""
+    if isinstance(material, MultiComponentMaterial):
+        return material.components
     return (material.resin_a, material.resin_b, material.filler)
 
 
-def _virgin_density(material: CharringMaterial) -> float:
+def _component_weights(material: MaterialLike) -> tuple[float, ...]:
+    """:math:`w_i` of the generalised Eq. (7).
+
+    The classical three-component form is the special case
+    :math:`w = (\\Gamma, \\Gamma, 1-\\Gamma)`.
+    """
+    if isinstance(material, MultiComponentMaterial):
+        return material.weights
     g = material.resin_fraction
-    a, b, c = _components(material)
-    return g * (a.virgin_density + b.virgin_density) + (1.0 - g) * c.virgin_density
+    return (g, g, 1.0 - g)
 
 
-def _char_density(material: CharringMaterial) -> float:
-    g = material.resin_fraction
-    a, b, c = _components(material)
-    return g * (a.char_density + b.char_density) + (1.0 - g) * c.char_density
+def _virgin_density(material: MaterialLike) -> float:
+    return float(
+        sum(
+            w * c.virgin_density
+            for w, c in zip(_component_weights(material), _components(material), strict=True)
+        )
+    )
+
+
+def _char_density(material: MaterialLike) -> float:
+    return float(
+        sum(
+            w * c.char_density
+            for w, c in zip(_component_weights(material), _components(material), strict=True)
+        )
+    )
 
 
 class FiatSolver:
@@ -261,7 +286,6 @@ class FiatSolver:
         self._opt = options or SolverOptions()
         self._materials = stack.cell_materials()
         self._n = stack.n_cells
-        self._resin_fraction = np.array([m.resin_fraction for m in self._materials])
         self._virgin = np.array([_virgin_density(m) for m in self._materials])
         self._char = np.array([_char_density(m) for m in self._materials])
         self._n_top = stack.plies[0].n_cells
@@ -277,8 +301,15 @@ class FiatSolver:
         self._order = np.array([[c.reaction_order for c in row] for row in comps])
         self._rho_v = np.array([[c.virgin_density for c in row] for row in comps])
         self._rho_r = np.array([[c.char_density for c in row] for row in comps])
-        self._weights = np.stack(
-            [self._resin_fraction, self._resin_fraction, 1.0 - self._resin_fraction], axis=1
+        n_components = len(comps[0])
+        if any(len(row) != n_components for row in comps):
+            raise ValueError(
+                "every ply must carry the same number of solid components; "
+                "mixing a 3-component and a 7-component material in one stack "
+                "would make the packed state ambiguous"
+            )
+        self._weights = np.array(
+            [list(_component_weights(m)) for m in self._materials]
         )
         self._gas_slope = np.array([m.gas_enthalpy_slope for m in self._materials])
         self._solid_slope = np.array([m.solid_enthalpy_slope for m in self._materials])

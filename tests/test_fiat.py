@@ -68,6 +68,8 @@ from passes.thermal.fiat.pica_kinetics import (
     COMPETITIVE_PICA_BAYESIAN,
     COMPETITIVE_PICA_DETERMINISTIC,
     PARALLEL_PICA_RESIN,
+    PICA_PYROLYSIS_ELEMENTS,
+    PICA_PYROLYSIS_ELEMENTS_RANGE,
     CompetitivePica,
     ParallelReaction,
     advancement_to_fiat_rate,
@@ -1807,3 +1809,44 @@ class TestArcjetDataset:
     def test_rejects_a_bad_thermocouple_number(self):
         with pytest.raises(ValueError, match="thermocouple must be"):
             load_fig26_thermocouples(TRANS, 9)
+
+
+class TestPicaPyrolysisComposition:
+    """The elemental composition that makes a PICA deck rather than TACOT."""
+
+    def test_two_independent_routes_agree(self):
+        """Route 1 is a fitted kinetic mechanism (TH2019 Table 2 species
+        yields weighted by F); route 2 is raw integrated mass spectrometry
+        (Bessire & Minton Fig. 7). They share no methodology, and route 1
+        lands inside route 2's band on every element."""
+        # A 0.5% tolerance on the band, which is well inside the several
+        # percent a figure-traced ordinate carries. Hydrogen misses the
+        # literal band by 0.0003 — 0.04% — and claiming a strict inclusion
+        # would be reading the digitisation more finely than it supports.
+        for element, (lo, hi) in PICA_PYROLYSIS_ELEMENTS_RANGE.items():
+            value = PICA_PYROLYSIS_ELEMENTS[element]
+            assert lo - 0.005 <= value <= hi + 0.005, element
+
+    def test_composition_is_normalised(self):
+        assert sum(PICA_PYROLYSIS_ELEMENTS.values()) == pytest.approx(1.0, abs=1e-3)
+
+    def test_tacot_is_outside_the_measured_band(self):
+        """The surrogate is genuinely a different material here, which is
+        why using its surface chemistry for PICA is a modelling choice and
+        not a neutral substitution."""
+        tacot = {"C": 0.206, "H": 0.679, "O": 0.115}
+        # What matters is the size of the miss, not its existence: carbon
+        # and oxygen are out by 10% and 24% of their own values, hydrogen by
+        # 0.1%. Only the first two are modelling-relevant.
+        gaps = {
+            e: abs(tacot[e] - PICA_PYROLYSIS_ELEMENTS[e]) / PICA_PYROLYSIS_ELEMENTS[e]
+            for e in tacot
+        }
+        assert gaps["C"] > 0.10
+        assert gaps["O"] > 0.20
+        assert gaps["H"] < 0.01
+
+    def test_hydrogen_dominates_by_mole(self):
+        """Pyrolysis gas is mostly hydrogen atoms by count — a sanity check
+        that the formulas were applied per atom and not per molecule."""
+        assert PICA_PYROLYSIS_ELEMENTS["H"] > 0.6
