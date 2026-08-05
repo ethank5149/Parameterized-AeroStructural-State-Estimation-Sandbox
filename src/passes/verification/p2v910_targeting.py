@@ -854,7 +854,13 @@ def _v14_budget(report: VerificationReport) -> bool:
         if stats is None or budget.total_delta_v <= 0.0:
             all_costed = False
             continue
-        if stats.cep * (R95_OVER_SIGMA / CEP_OVER_SIGMA) >= stats.r95:
+        # The circular scaling is a *lower bound* on R95, met with equality
+        # only when the dispersion is genuinely isotropic. Since midcourse
+        # correction resets to an isotropic floor, architectures whose
+        # remaining contributions are also isotropic land exactly on it —
+        # so the criterion is that the scaling never over-states, not that
+        # it always under-states.
+        if stats.cep * (R95_OVER_SIGMA / CEP_OVER_SIGMA) > stats.r95 * (1.0 + 1e-9):
             understated = False
         rows.append(
             [
@@ -918,9 +924,13 @@ def _v14_budget(report: VerificationReport) -> bool:
         "no propellant, and boost for suborbital ones, which costs both — so "
         "a 'does not close' verdict means different things in the two cases "
         "and the budget names which. Every ratio exceeds the circular 2.079, "
-        "confirming that no architecture here has an isotropic dispersion. "
-        "The per-phase error contributions are parametric inputs; the "
-        "arithmetic over them is what this task verifies.",
+        "Ratios at exactly 2.079 are isotropic dispersions, which arise "
+        "where a midcourse correction resets to an isotropic floor and "
+        "nothing anisotropic follows; every other ratio exceeds it, so the "
+        "circular scaling never over-states the 95% radius and usually "
+        "under-states it. Deorbit, dispensing, glide and terminal "
+        "contributions are now derived from the phase models; only boost "
+        "injection remains a stated specification.",
     )
     return passed
 

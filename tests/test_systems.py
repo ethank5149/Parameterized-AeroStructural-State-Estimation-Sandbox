@@ -7,6 +7,7 @@ from passes.geodesy import GeodeticPosition, great_circle_range
 from passes.guidance import CruiseVehicle, EntryVehicle
 from passes.systems import (
     CEP_OVER_SIGMA,
+    DISPERSION_SOURCES,
     NAMED_ARCHITECTURES,
     R95_OVER_SIGMA,
     Architecture,
@@ -589,3 +590,46 @@ class TestBudgetDispersion:
             entry_vehicle=entry,
         )
         assert multiple.accuracy.cep > single.accuracy.cep
+
+    def test_a_correction_resets_the_error_rather_than_scaling_it(self):
+        """The defining property, and the one this model first got wrong.
+
+        A midcourse correction nulls the *trajectory* error outright; what
+        survives is the error in the estimate it was computed from plus the
+        error in executing it, and neither depends on how large the
+        incoming error was. So the post-correction error must be
+        independent of everything before it. Modelling the phase as a
+        multiplier instead makes a good correction look worse after a bad
+        boost and better after a good one, which is exactly backwards."""
+        request, entry, _ = self._setup()
+        architecture = NAMED_ARCHITECTURES["ballistic-single"]
+        floors = []
+        for boost_error in ((300.0, 200.0), (1200.0, 900.0), (5000.0, 4000.0)):
+            original = DISPERSION_SOURCES[Phase.BOOST]
+            DISPERSION_SOURCES[Phase.BOOST] = boost_error
+            try:
+                budget = evaluate(architecture, request, entry_vehicle=entry)
+                floors.append(budget.accuracy.cep)
+            finally:
+                DISPERSION_SOURCES[Phase.BOOST] = original
+        # A twenty-fold spread in boost error leaves the answer unchanged.
+        assert max(floors) == pytest.approx(min(floors), rel=1e-12)
+
+    def test_architectures_without_a_correction_do_inherit_boost_error(self):
+        """The complement: remove the correction and the boost error must
+        propagate through, or the reset is being applied unconditionally."""
+        request, entry, _ = self._setup()
+        with_correction = NAMED_ARCHITECTURES["ballistic-single"]
+        without = Architecture(
+            phases=tuple(p for p in with_correction.phases if p is not Phase.MIDCOURSE),
+            payload=with_correction.payload,
+        )
+        original = DISPERSION_SOURCES[Phase.BOOST]
+        try:
+            DISPERSION_SOURCES[Phase.BOOST] = (300.0, 200.0)
+            small = evaluate(without, request, entry_vehicle=entry).accuracy.cep
+            DISPERSION_SOURCES[Phase.BOOST] = (5000.0, 4000.0)
+            large = evaluate(without, request, entry_vehicle=entry).accuracy.cep
+        finally:
+            DISPERSION_SOURCES[Phase.BOOST] = original
+        assert large > 5.0 * small

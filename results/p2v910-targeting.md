@@ -2,7 +2,7 @@
 
 - **Failure criterion (stated in advance, Paper II §8):** V9: relative arrival error > 1e-7 on any physically flyable transfer, or endpoint energy/angular-momentum mismatch > 1e-9. V10: any released vehicle missing its aimpoint by > 1 m, or the ordering search returning a cost above the exhaustive optimum. V11: range integral differing from its closed form by > 1e-9, flown range not monotone in commanded drag, or reversals failing to reduce crossrange by 10x. V12: the Kepler deorbit solve differing from the integrated trajectory beyond tolerance, or the three-leg range accounting failing to close. V13: Breguet range not linear in L/D, mass-ratio doublings not adding equal range, or the cruise-climb differing between vehicles. V14: containment radii disagreeing with their closed-form limits, a failed radius/probability round-trip, or any architecture without a ledger, verdict and CEP/R95 pair
 - **Verdict:** **PASS**
-- **Generated:** 2026-08-04 23:25 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.14.6 (x86_64)
+- **Generated:** 2026-08-05 01:23 UTC · numpy 2.5.1 · scipy 1.18.0 · CPython 3.14.6 (x86_64)
 
 ## V9 — Lambert transfer envelope
 
@@ -136,19 +136,19 @@ The radial part of the containment integral is analytic, leaving a one-dimension
 
 | architecture | closes | range (km) | ΔV (m/s) | CEP (m) | R95 (m) | R95/CEP |
 |---|---|---|---|---|---|---|
-| ballistic-single | no | 2300 | 6030 | 1007 | 2132 | 2.117 |
-| ballistic-multiple | no | 2300 | 6180 | 1058 | 2247 | 2.123 |
-| boost-glide | no | 5000 | 6000 | 1181 | 2586 | 2.189 |
-| boost-glide-multiple | no | 5000 | 6180 | 1136 | 2502 | 2.203 |
-| fractional-orbital-single | yes | 10571 | 6188 | 1195 | 2556 | 2.138 |
-| fractional-orbital-glide | yes | 10571 | 6188 | 1263 | 2785 | 2.205 |
-| fractional-orbital-multiple | yes | 10571 | 6338 | 1239 | 2653 | 2.142 |
-| fractional-orbital-multiple-glide | yes | 10571 | 6338 | 1304 | 2875 | 2.205 |
-| ballistic-mixed | no | 5000 | 6180 | 1191 | 2600 | 2.182 |
-| fractional-orbital-mixed | yes | 10571 | 6338 | 1353 | 2960 | 2.188 |
+| ballistic-single | no | 2300 | 6030 | 621 | 1290 | 2.079 |
+| ballistic-multiple | no | 2300 | 6180 | 950 | 1976 | 2.079 |
+| boost-glide | no | 5000 | 6000 | 8987 | 20077 | 2.234 |
+| boost-glide-multiple | no | 5000 | 6180 | 8972 | 20032 | 2.233 |
+| fractional-orbital-single | yes | 10571 | 6188 | 1349 | 2874 | 2.130 |
+| fractional-orbital-glide | yes | 10571 | 6188 | 9020 | 20145 | 2.233 |
+| fractional-orbital-multiple | yes | 10571 | 6338 | 1533 | 3234 | 2.110 |
+| fractional-orbital-multiple-glide | yes | 10571 | 6338 | 9051 | 20197 | 2.231 |
+| ballistic-mixed | no | 5000 | 6180 | 8980 | 20044 | 2.232 |
+| fractional-orbital-mixed | yes | 10571 | 6338 | 9059 | 20209 | 2.231 |
 | powered-cruise | no | 6040 | 6000 | 1163 | 2456 | 2.111 |
 
-Range, propellant and accuracy for one launch site and two aimpoints. Which leg absorbs the range remainder differs by family — parking arc for fractional-orbital profiles, which costs time and no propellant, and boost for suborbital ones, which costs both — so a 'does not close' verdict means different things in the two cases and the budget names which. Every ratio exceeds the circular 2.079, confirming that no architecture here has an isotropic dispersion. The per-phase error contributions are parametric inputs; the arithmetic over them is what this task verifies.
+Range, propellant and accuracy for one launch site and two aimpoints. Which leg absorbs the range remainder differs by family — parking arc for fractional-orbital profiles, which costs time and no propellant, and boost for suborbital ones, which costs both — so a 'does not close' verdict means different things in the two cases and the budget names which. Every ratio exceeds the circular 2.079, Ratios at exactly 2.079 are isotropic dispersions, which arise where a midcourse correction resets to an isotropic floor and nothing anisotropic follows; every other ratio exceeds it, so the circular scaling never over-states the 95% radius and usually under-states it. Deorbit, dispensing, glide and terminal contributions are now derived from the phase models; only boost injection remains a stated specification.
 
 ## What these tasks establish, and what they do not
 

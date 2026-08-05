@@ -11,6 +11,8 @@ from passes.systems.architecture import (
     validate,
 )
 from passes.systems.budget import (
+    DISPERSION_RESETS,
+    DISPERSION_SOURCES,
     LegBudget,
     MissionBudget,
     MissionRequest,
@@ -28,6 +30,8 @@ from passes.systems.dispersion import (
 
 __all__ = [
     "CEP_OVER_SIGMA",
+    "DISPERSION_RESETS",
+    "DISPERSION_SOURCES",
     "NAMED_ARCHITECTURES",
     "R95_OVER_SIGMA",
     "AccuracyStatistics",

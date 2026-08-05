@@ -63,6 +63,7 @@ from passes.systems.architecture import Architecture, Phase
 from passes.systems.dispersion import AccuracyStatistics, accuracy_statistics
 
 __all__ = [
+    "DISPERSION_RESETS",
     "DISPERSION_SOURCES",
     "LegBudget",
     "MissionBudget",
@@ -88,10 +89,29 @@ _TERMINAL_RANGE = 0.0
 #: model. Anyone quoting a CEP from this module is quoting these numbers
 #: plus arithmetic, and the honest thing is to say so rather than let a
 #: computed-looking figure imply a computed provenance.
+#: Phases that **reset** the error rather than adding to it.
+#:
+#: This distinction was got wrong first time and is worth stating. A
+#: guidance phase was modelled as a multiplier on whatever had accumulated,
+#: which is how a damping term behaves and is not how a correction behaves.
+#: A midcourse correction nulls the *trajectory* error outright; what
+#: survives is the error in the estimate it was computed from, plus the
+#: error in executing it. Neither depends on how large the incoming error
+#: was. So the phase sets a floor rather than scaling what came before, and
+#: modelling it as a multiplier makes a good correction look worse after a
+#: bad boost and better after a good one — exactly backwards.
+#:
+#: Measured with `correction_maneuver` carrying a navigation covariance and
+#: the bus execution model: 512 m at 200 m / 0.2 m/s navigation, 1279 m at
+#: 500 m / 0.5 m/s, taken at mid-arc. The value below is the former, since
+#: a system aiming at a small CEP is not navigating at the latter.
+DISPERSION_RESETS: dict[Phase, tuple[float, float]] = {
+    Phase.MIDCOURSE: (512.0, 512.0),
+}
+
 DISPERSION_SOURCES: dict[Phase, tuple[float, float]] = {
     Phase.BOOST: (1200.0, 900.0),
-    Phase.MIDCOURSE: (-0.90, -0.90),
-    Phase.DISPENSE: (400.0, 250.0),
+    Phase.DISPENSE: (719.0, 719.0),
     # DERIVED, not assumed. Propagating a 200 m / 1 m/s injection
     # covariance through the actual Kepler transfer with
     # `passes.guidance.midcourse.miss_sensitivity` gives principal sigmas
@@ -102,6 +122,11 @@ DISPERSION_SOURCES: dict[Phase, tuple[float, float]] = {
     # steep one**. The same perigee choice that trades delta-v against
     # transfer arc also trades error amplification, in the same direction.
     Phase.DEORBIT: (915.0, 635.0),
+    # DERIVED from `plan_deployment` carrying the bus execution model: a
+    # four-body sequence gives per-vehicle sigmas of 30, 860, 1202 and
+    # 784 m, mean 719 m. The first body is nearly free because it inherits
+    # only its own release error; the rest carry everything the bus did
+    # before them. The value below is the mean rather than the best case.
     # DERIVED, and it corrected an assumption that was wrong by a factor
     # of twenty. Forty closed-loop glides with a 900 m entry-interface
     # position error, 1 m/s speed, 0.02 deg flight-path angle and 3%
@@ -490,6 +515,12 @@ def evaluate(
     down = 0.0
     cross = 0.0
     for leg in sorted(legs, key=lambda item: architecture.phases.index(item.phase)):
+        reset = DISPERSION_RESETS.get(leg.phase)
+        if reset is not None:
+            # A correction nulls the trajectory error; what survives is the
+            # navigation and execution floor, independent of what came in.
+            down, cross = reset
+            continue
         source = DISPERSION_SOURCES.get(leg.phase)
         if source is None:
             continue
