@@ -55,6 +55,7 @@ from passes.guidance.terminal import (
     Seeker,
     TerminalEngagement,
     achievable_cep,
+    homing_miss,
     required_lateral_acceleration,
     terminal_homing,
 )
@@ -93,6 +94,7 @@ __all__ = [
     "cruise_dynamic_pressure",
     "cruise_range",
     "cruise_versus_glide",
+    "homing_miss",
     "linearize_trajectory",
     "los_rate",
     "miss_sensitivity",

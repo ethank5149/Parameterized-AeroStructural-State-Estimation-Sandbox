@@ -22,6 +22,7 @@ from passes.guidance import (
     cruise_dynamic_pressure,
     cruise_range,
     cruise_versus_glide,
+    homing_miss,
     los_rate,
     miss_sensitivity,
     optimize_deployment_order,
@@ -1393,3 +1394,35 @@ class TestTerminalHoming:
                 lateral_acceleration=100.0,
                 target_location_sigma=-1.0,
             )
+
+    def test_homing_miss_reproduces_three_statements_from_zarchan(self):
+        """The linearised loop is verified against its published source
+        (Zarchan, *Tactical and Strategic Missile Guidance*, Ch. 6) rather
+        than against itself."""
+        tau = 0.5
+        # 1. Miss from an initial heading error vanishes for t_F/tau >~ 10.
+        assert abs(homing_miss(2.0 * tau, tau, heading_error_rate=100.0)) < 1.0
+        assert abs(homing_miss(20.0 * tau, tau, heading_error_rate=100.0)) < 0.05
+        # 2. Normalised miss from a step manoeuvre peaks at finite t_F/tau
+        #    and decays, rather than growing without bound.
+        curve = [
+            abs(homing_miss(T * tau, tau, target_acceleration=1.0)) / tau**2
+            for T in (1, 2, 3, 5, 8, 12)
+        ]
+        peak = curve.index(max(curve))
+        assert 0 < peak < len(curve) - 1
+        assert curve[-1] < 0.05 * max(curve)
+        # 3. Doubling the guidance time constant raises manoeuvre-induced
+        #    miss by more than an order of magnitude, which the source
+        #    states explicitly for this case.
+        short = abs(homing_miss(5.0 * tau, tau, target_acceleration=4.0 * 9.80665))
+        long_lag = abs(homing_miss(5.0 * tau, 2.0 * tau, target_acceleration=4.0 * 9.80665))
+        assert long_lag / short > 10.0
+
+    def test_homing_miss_validates_its_inputs(self):
+        with pytest.raises(ValueError, match="flight_time"):
+            homing_miss(0.0, 0.5)
+        with pytest.raises(ValueError, match="time_constant"):
+            homing_miss(5.0, 0.0)
+        with pytest.raises(ValueError, match="navigation_ratio"):
+            homing_miss(5.0, 0.5, navigation_ratio=0.0)
