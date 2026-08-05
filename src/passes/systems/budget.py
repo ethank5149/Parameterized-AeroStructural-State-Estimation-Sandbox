@@ -56,6 +56,7 @@ from passes.geodesy import (
 )
 from passes.guidance.cruise import CruiseVehicle, cruise_range
 from passes.guidance.entry import EntryVehicle
+from passes.guidance.inertial import IMU_GRADES, injection_error
 from passes.guidance.terminal import Seeker, TerminalEngagement, terminal_homing
 from passes.orbital.fobs import deorbit_burn
 from passes.orbital.gravity import EARTH
@@ -109,8 +110,37 @@ DISPERSION_RESETS: dict[Phase, tuple[float, float]] = {
     Phase.MIDCOURSE: (512.0, 512.0),
 }
 
+#: Boost injection, DERIVED from an IMU grade rather than stated.
+#:
+#: `injection_error` propagates accelerometer bias, initial misalignment
+#: and gyro drift over the burn. For a 300 s boost the position error is
+#: 11.6 m at marine grade, 44.8 m at aviation grade and 507 m at
+#: tactical, and in every case the *velocity* error matters more: 0.073,
+#: 0.322 and 3.74 m/s respectively, which the transfer that follows
+#: amplifies by 850 to 3484 seconds depending on perigee depth.
+#:
+#: Notably it is **initial platform alignment**, not gyro drift, that
+#: dominates at the better grades over a burn this short — gyro drift only
+#: overtakes accelerometer bias after 3094 s at aviation grade. The
+#: derived figure below is the entry-interface error for aviation grade (Groves Table 4.1),
+#: the velocity term carried through the shallow-transfer sensitivity.
+#:
+#: What remains an assumption is the IMU grade itself, which is a
+#: procurement decision; see `passes.guidance.inertial.IMU_GRADES` and the
+#: provenance stated there.
+_BOOST_GRADE = "aviation"
+_BOOST_BURN_TIME = 300.0
+
 DISPERSION_SOURCES: dict[Phase, tuple[float, float]] = {
-    Phase.BOOST: (1200.0, 900.0),
+    Phase.BOOST: (
+        float(
+            np.hypot(
+                injection_error(IMU_GRADES[_BOOST_GRADE], _BOOST_BURN_TIME).position,
+                injection_error(IMU_GRADES[_BOOST_GRADE], _BOOST_BURN_TIME).velocity * 3484.0,
+            )
+        ),
+        float(injection_error(IMU_GRADES[_BOOST_GRADE], _BOOST_BURN_TIME).velocity * 850.0),
+    ),
     Phase.DISPENSE: (719.0, 719.0),
     # DERIVED, not assumed. Propagating a 200 m / 1 m/s injection
     # covariance through the actual Kepler transfer with

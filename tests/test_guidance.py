@@ -7,9 +7,11 @@ import pytest
 
 from passes.geodesy import GeodeticPosition, geodetic_to_ecef
 from passes.guidance import (
+    IMU_GRADES,
     Aimpoint,
     CruiseVehicle,
     ExecutionErrorModel,
+    ImuGrade,
     MissLimit,
     Seeker,
     TgoStatus,
@@ -22,7 +24,10 @@ from passes.guidance import (
     cruise_dynamic_pressure,
     cruise_range,
     cruise_versus_glide,
+    dominant_error_source,
+    gyro_dominates_after,
     homing_miss,
+    injection_error,
     los_rate,
     miss_sensitivity,
     optimize_deployment_order,
@@ -1456,3 +1461,87 @@ class TestTerminalHoming:
             homing_miss(5.0, 0.0)
         with pytest.raises(ValueError, match="navigation_ratio"):
             homing_miss(5.0, 0.5, navigation_ratio=0.0)
+
+
+class TestInertialInjection:
+    """Boost injection error derived from IMU grade rather than stated."""
+
+    def test_the_three_growth_laws_have_their_stated_exponents(self):
+        """Accelerometer bias and misalignment integrate twice into
+        position; gyro drift integrates three times, because the tilt it
+        causes grows linearly first. Doubling the burn must therefore
+        quadruple the first two and octuple the third -- which is what
+        makes the dominant term identifiable rather than a judgement."""
+        grade = IMU_GRADES["aviation"]
+        short = injection_error(grade, 100.0)
+        long_burn = injection_error(grade, 200.0)
+        assert long_burn.from_accelerometer / short.from_accelerometer == (
+            pytest.approx(4.0, rel=1e-12)
+        )
+        assert long_burn.from_alignment / short.from_alignment == pytest.approx(4.0, rel=1e-12)
+        assert long_burn.from_gyro / short.from_gyro == pytest.approx(8.0, rel=1e-12)
+
+    def test_alignment_dominates_a_short_burn_at_good_grades(self):
+        """Not gyro drift, which is the intuitive answer. Over a few hundred
+        seconds the cubic term has not had time to matter."""
+        for name in ("marine", "aviation"):
+            assert dominant_error_source(IMU_GRADES[name], 300.0) == "alignment"
+        # A poor accelerometer changes which term leads.
+        assert dominant_error_source(IMU_GRADES["tactical"], 300.0) == "accelerometer"
+
+    def test_the_gyro_crossover_depends_only_on_the_specification_ratio(self):
+        """t = 3 b_a / (g eps), so grades sharing that ratio share a
+        crossover however different their absolute performance."""
+        # Two grades with the same specification ratio share a crossover
+        # however different their absolute performance. Constructed rather
+        # than taken from the table: the real grades do not happen to share
+        # a ratio, and an earlier revision of this test asserted that they
+        # did -- which was true only of the invented numbers it was written
+        # against, and is a good reason to build the case explicitly.
+        coarse = ImuGrade(accelerometer_bias=1e-3, gyro_drift=1e-6, alignment=1e-4)
+        fine = ImuGrade(accelerometer_bias=1e-5, gyro_drift=1e-8, alignment=1e-6)
+        assert gyro_dominates_after(coarse) == pytest.approx(gyro_dominates_after(fine), rel=1e-12)
+        # And on the real grades a worse gyro is overtaken sooner.
+        assert gyro_dominates_after(IMU_GRADES["tactical"]) < gyro_dominates_after(
+            IMU_GRADES["aviation"]
+        )
+        # A perfect gyro is never overtaken.
+        perfect = ImuGrade(accelerometer_bias=1e-4, gyro_drift=0.0, alignment=1e-5)
+        assert gyro_dominates_after(perfect) == float("inf")
+
+    def test_velocity_error_is_the_one_that_matters_downstream(self):
+        """Position error at burnout is the smaller problem: a velocity
+        error persists and is amplified by the transfer that follows, by
+        850 to 3484 seconds depending on perigee depth."""
+        error = injection_error(IMU_GRADES["aviation"], 300.0)
+        assert error.velocity * 850.0 > error.position
+        assert error.velocity == pytest.approx(0.299, rel=0.02)
+        assert error.position == pytest.approx(44.8, rel=0.02)
+
+    def test_better_grades_are_monotonically_better(self):
+        errors = [
+            injection_error(IMU_GRADES[name], 300.0).position
+            for name in ("marine", "aviation", "tactical")
+        ]
+        assert errors == sorted(errors)
+
+    def test_a_burn_beyond_the_schuler_regime_is_refused(self):
+        """The polynomial growth laws hold while the burn is short against
+        the 84-minute Schuler period. Past that the error dynamics
+        oscillate, and extrapolating would be silently wrong."""
+        with pytest.raises(ValueError, match="Schuler period"):
+            injection_error(IMU_GRADES["aviation"], 2000.0)
+        with pytest.raises(ValueError, match="burn_time"):
+            injection_error(IMU_GRADES["aviation"], 0.0)
+
+    def test_engineering_units_convert_correctly(self):
+        grade = ImuGrade.from_engineering_units(
+            accelerometer_bias_micro_g=1000.0,
+            gyro_drift_deg_per_hour=1.0,
+            alignment_arcsec=3600.0,
+        )
+        assert grade.accelerometer_bias == pytest.approx(1e-3 * 9.80665, rel=1e-12)
+        assert grade.gyro_drift == pytest.approx(np.pi / 180.0 / 3600.0, rel=1e-12)
+        assert grade.alignment == pytest.approx(np.pi / 180.0, rel=1e-12)
+        with pytest.raises(ValueError, match="accelerometer_bias"):
+            ImuGrade(accelerometer_bias=-1.0, gyro_drift=0.0, alignment=0.0)

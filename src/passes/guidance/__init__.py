@@ -33,6 +33,14 @@ from passes.guidance.entry import (
     range_to_go,
     simulate_glide,
 )
+from passes.guidance.inertial import (
+    IMU_GRADES,
+    ImuGrade,
+    InjectionError,
+    dominant_error_source,
+    gyro_dominates_after,
+    injection_error,
+)
 from passes.guidance.midcourse import (
     CorrectionPlan,
     CorrectionResult,
@@ -62,6 +70,7 @@ from passes.guidance.terminal import (
 from passes.guidance.tgo import TgoResult, TgoStatus, time_to_go, time_to_go_naive
 
 __all__ = [
+    "IMU_GRADES",
     "Aimpoint",
     "CorrectionPlan",
     "CorrectionResult",
@@ -73,6 +82,8 @@ __all__ = [
     "ExecutionErrorModel",
     "GlideResult",
     "GlideState",
+    "ImuGrade",
+    "InjectionError",
     "MissLimit",
     "Release",
     "SCvxConfig",
@@ -94,7 +105,10 @@ __all__ = [
     "cruise_dynamic_pressure",
     "cruise_range",
     "cruise_versus_glide",
+    "dominant_error_source",
+    "gyro_dominates_after",
     "homing_miss",
+    "injection_error",
     "linearize_trajectory",
     "los_rate",
     "miss_sensitivity",
