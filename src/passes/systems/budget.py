@@ -151,6 +151,18 @@ DISPERSION_SOURCES: dict[Phase, tuple[float, float]] = {
     # deorbit amplifies injection velocity error four times more than a
     # steep one**. The same perigee choice that trades delta-v against
     # transfer arc also trades error amplification, in the same direction.
+    #
+    # This asymmetry is not a peculiarity of our transfer model -- it is
+    # exactly what a real INS-guided solid vehicle's own published accuracy
+    # table shows. The Minotaur I and Minotaur IV-VI User's Guides (Sec.
+    # 3.4, same avionics stack, identical numbers in both) give worst-case
+    # injection accuracy separately for the "Insertion Apse" (+-18.5 km)
+    # and the "Non-Insertion Apse" (+-92.6 km) of the same orbit -- a 5x
+    # spread attributed explicitly to the second apse additionally carrying
+    # "navigation (INS) error" that the actively-targeted apse does not.
+    # That is the identical structural statement as the 850-to-3484-second
+    # spread above: an error at cutoff is suppressed at the point the
+    # guidance corrects to and amplified at the point it does not.
     Phase.DEORBIT: (915.0, 635.0),
     # DERIVED from `plan_deployment` carrying the bus execution model: a
     # four-body sequence gives per-vehicle sigmas of 30, 860, 1202 and

@@ -4,6 +4,7 @@ import itertools
 
 import numpy as np
 import pytest
+import scipy.optimize
 
 from passes.geodesy import GeodeticPosition, geodetic_to_ecef
 from passes.guidance import (
@@ -55,7 +56,7 @@ from passes.guidance.entry import (
     range_to_go,
     simulate_glide,
 )
-from passes.orbital import EARTH, lambert, propagate_coast
+from passes.orbital import EARTH, lambert, orbital_elements, propagate_coast
 
 
 def quadratic_residual(r, v, a, t):
@@ -1545,3 +1546,52 @@ class TestInertialInjection:
         assert grade.alignment == pytest.approx(np.pi / 180.0, rel=1e-12)
         with pytest.raises(ValueError, match="accelerometer_bias"):
             ImuGrade(accelerometer_bias=-1.0, gyro_drift=0.0, alignment=0.0)
+
+    def test_derived_grades_bracket_a_published_orbit_insertion_guarantee(self):
+        """Cross-check against a real vehicle's own published capability,
+        via the orbital mechanics already in this repo rather than a new
+        formula.
+
+        SpaceX's Falcon 9 Payload User's Guide Rev 1 SS4.5 states a minimum
+        guaranteed LEO insertion accuracy of +-10 km on apogee and perigee.
+        Converting that to an equivalent cutoff velocity error is a one-line
+        use of the two-body elements `passes.orbital.coast.orbital_elements`
+        already provides: a small tangential velocity perturbation at a
+        circular reference orbit moves the *opposite* apse by an amount
+        that inverts cleanly to a required dv, with negligible effect on
+        the near apse -- which is itself a miniature version of the
+        near/far-apse asymmetry the Minotaur I/IV injection-accuracy table
+        states explicitly (Sec. 3.4: 'Altitude (Insertion Apse)' vs
+        'Altitude (Non-Insertion Apse)', the latter roughly 5x looser
+        because it additionally carries navigation error the actively
+        controlled apse does not).
+
+        This is not a clean 1-sigma-to-1-sigma comparison -- SpaceX's
+        figure is a multi-stage, worst-case guarantee that also folds in
+        engine cutoff dispersion and staging dynamics, not IMU error alone
+        -- so the honest claim is only that the two should be the same
+        order of magnitude. They are: the implied dv of order 3 m/s falls
+        between the 'intermediate' and 'tactical' grades at a representative
+        multi-stage powered-flight duration, which brackets the framework's
+        default 'aviation' grade choice on the optimistic side, consistent
+        with a real stack carrying more error sources than IMU drift alone."""
+        r_leo = EARTH.radius + 300e3
+        v_circ = float(np.sqrt(EARTH.mu / r_leo))
+        r0 = np.array([r_leo, 0.0, 0.0])
+
+        def apogee(delta_v: float) -> float:
+            v0 = np.array([0.0, v_circ + delta_v, 0.0])
+            elements = orbital_elements(r0, v0)
+            sma, ecc = elements["semi_major_axis"], elements["eccentricity"]
+            return float(sma * (1.0 + ecc))
+
+        base_apogee = apogee(0.0)
+        implied_dv = scipy.optimize.brentq(lambda dv: apogee(dv) - base_apogee - 10e3, -50.0, 50.0)
+        assert implied_dv == pytest.approx(2.89, rel=0.05)
+
+        burn_time = 540.0  # representative Falcon 9 total powered flight (s)
+        bracket = (
+            injection_error(IMU_GRADES["intermediate"], burn_time).velocity,
+            injection_error(IMU_GRADES["tactical"], burn_time).velocity,
+        )
+        assert bracket[0] < implied_dv < bracket[1]

@@ -214,6 +214,17 @@ def injection_error(grade: ImuGrade, burn_time: float) -> InjectionError:
     84 minutes, which every boost phase is. Beyond that the error dynamics
     oscillate rather than grow polynomially and these expressions stop
     describing them; the function refuses rather than extrapolating.
+
+    The cutoff is deliberately the same for all three terms even though
+    Gelb (*Applied Optimal Estimation*, Fig. 8.2-1) attributes them to two
+    *different* feedback loops: accelerometer bias and gravity uncertainty
+    excite the 84-minute Schuler loop, while gyro drift excites the
+    24-hour heading (Earth-rate) loop. Using one quarter-Schuler cutoff for
+    all three is not an approximation that happens to be convenient — a
+    boost phase of a few hundred seconds sits four orders of magnitude
+    inside *both* periods, so both terms are deep in their polynomial
+    regime regardless of which loop eventually bounds them, and a single
+    conservative gate is exact for the purpose it is used for here.
     """
     t = float(burn_time)
     if not (np.isfinite(t) and t > 0.0):
