@@ -127,15 +127,26 @@ DISPERSION_SOURCES: dict[Phase, tuple[float, float]] = {
     # 784 m, mean 719 m. The first body is nearly free because it inherits
     # only its own release error; the rest carry everything the bus did
     # before them. The value below is the mean rather than the best case.
-    # DERIVED, and it corrected an assumption that was wrong by a factor
-    # of twenty. Forty closed-loop glides with a 900 m entry-interface
-    # position error, 1 m/s speed, 0.02 deg flight-path angle and 3%
-    # ballistic-coefficient scatter give 11.3 km downrange and 6.7 km
-    # crossrange one-sigma *with* the outer range loop closed at gain 20.
-    # Without that loop the same inputs give 34 km and 35 km, because
-    # tracking a drag profile controls drag and not range. See
-    # `passes.guidance.entry.simulate_glide`'s `range_gain`.
-    Phase.GLIDE: (11300.0, 6700.0),
+    # DERIVED, after two structural fixes to the guidance it measures.
+    # Forty closed-loop glides with a 900 m entry-interface position error,
+    # 1 m/s speed, 0.02 deg flight-path angle and 3% ballistic-coefficient
+    # scatter:
+    #
+    #   drag tracking alone .................. 34.0 / 35.1 km
+    #   + outer range loop (gain 20) ......... 11.3 /  6.7 km
+    #   + handover at 150 km range-to-go ...... 1.3 /  8.0 km
+    #
+    # The first fix is that tracking a drag profile controls drag and not
+    # range. The second is that terminating on *speed* ends the flight
+    # wherever the vehicle happens to have got to, because the stopping
+    # condition is defined on its own state rather than on its relationship
+    # to the target; handing over at a fixed range-to-go makes the arrival
+    # point the handover point by construction, and downrange dispersion
+    # falls ninefold. Crossrange rises slightly in exchange, because the
+    # bank-reversal logic is cut off while still converging — a real trade
+    # and not an artefact. The result is strongly anisotropic, 6:1, which
+    # is exactly the regime where the circular CEP-to-R95 scaling misleads.
+    Phase.GLIDE: (8000.0, 1300.0),
     Phase.CRUISE: (500.0, 500.0),
     Phase.BALLISTIC: (350.0, 350.0),
     # Terminal homing is *computed* by passes.guidance.terminal when a

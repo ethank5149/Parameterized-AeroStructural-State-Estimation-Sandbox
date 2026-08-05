@@ -518,6 +518,7 @@ def simulate_glide(
     n_output: int = 601,
     range_gain: float = 0.0,
     terminal_energy: float | None = None,
+    handover_range: float | None = None,
 ) -> GlideResult:
     """Fly a glide with the drag tracker and bank-reversal logic closed.
 
@@ -596,7 +597,36 @@ def simulate_glide(
             ]
         )
 
-    while clock < max_time and state[3] > terminal_speed and state[0] > _R_EARTH:
+    def _still_flying() -> bool:
+        """Whether the glide continues.
+
+        Terminating on speed alone ends the flight wherever the vehicle
+        happens to have got to, which is why it leaves a large downrange
+        dispersion however well the range loop is tuned: the stopping
+        condition is defined on the *vehicle's* state and not on its
+        relationship to the target. Handing over when range-to-go reaches
+        the terminal acquisition range instead defines the condition
+        relative to the target, so the arrival point is the handover point
+        by construction. The speed gate is retained underneath it as a
+        floor, because a vehicle out of energy must stop regardless.
+        """
+        if state[3] <= terminal_speed or state[0] <= _R_EARTH:
+            return False
+        if handover_range is not None and target is not None:
+            remaining = _R_EARTH * _great_circle(
+                float(state[1]), float(state[2]), target[0], target[1]
+            )
+            if remaining <= handover_range:
+                return False
+        return True
+
+    if handover_range is not None:
+        if target is None:
+            raise ValueError("a handover range needs a target to measure range-to-go against")
+        if not (np.isfinite(handover_range) and handover_range > 0.0):
+            raise ValueError(f"handover_range must be finite and > 0, got {handover_range}")
+
+    while clock < max_time and _still_flying():
         radius, lon, lat, speed, _gamma, heading = state
         energy = 0.5 * speed**2 - _MU / radius
         drag = vehicle.drag_acceleration(radius - _R_EARTH, speed)

@@ -904,6 +904,59 @@ class TestGlideGuidance:
         assert corrected.reversals > 0
         assert abs(corrected.crossrange) < 0.1 * abs(drifting.crossrange)
 
+    def test_handover_range_ends_the_glide_relative_to_the_target(self):
+        """The structural fix. A speed gate ends the flight wherever the
+        vehicle happens to have got to, because it is defined on the
+        vehicle's own state; handing over at a fixed range-to-go makes the
+        arrival point the handover point by construction."""
+        vehicle, entry = self._vehicle(), self._entry()
+        reference = self._flyable(vehicle)
+        drifting = simulate_glide(vehicle, entry, reference, target=None)
+        arc = float(drifting.downrange / R_EARTH)
+        handed = simulate_glide(
+            vehicle,
+            entry,
+            reference,
+            target=(arc, 0.0),
+            range_gain=20.0,
+            handover_range=150e3,
+        )
+        remaining = R_EARTH * np.arccos(
+            np.clip(
+                np.cos(handed.states[2, -1]) * np.cos(handed.states[1, -1] - arc),
+                -1.0,
+                1.0,
+            )
+        )
+        assert remaining <= 160e3
+        # And it stops earlier than the speed gate would.
+        assert handed.terminal_speed > 1000.0
+
+    def test_an_unreachable_handover_range_falls_back_to_the_speed_gate(self):
+        """A profile that under-ranges announces itself this way rather
+        than flying forever."""
+        vehicle, entry = self._vehicle(), self._entry()
+        reference = self._flyable(vehicle)
+        drifting = simulate_glide(vehicle, entry, reference, target=None)
+        arc = float(drifting.downrange / R_EARTH)
+        handed = simulate_glide(
+            vehicle,
+            entry,
+            reference,
+            target=(arc, 0.0),
+            range_gain=20.0,
+            handover_range=1e3,
+        )
+        assert handed.terminal_speed == pytest.approx(1000.0, abs=25.0)
+
+    def test_handover_range_requires_a_target_and_a_positive_value(self):
+        vehicle, entry = self._vehicle(), self._entry()
+        reference = self._flyable(vehicle)
+        with pytest.raises(ValueError, match="handover range needs a target"):
+            simulate_glide(vehicle, entry, reference, handover_range=100e3)
+        with pytest.raises(ValueError, match="handover_range must be finite"):
+            simulate_glide(vehicle, entry, reference, target=(1.0, 0.0), handover_range=-1.0)
+
     def test_overflying_the_target_degrades_the_lateral_channel(self):
         """The coupling between the two channels, stated as a measurement
         rather than as a caveat."""
