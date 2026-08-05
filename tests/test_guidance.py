@@ -43,6 +43,7 @@ from passes.guidance.entry import (
     atmospheric_density,
     bank_reversal_needed,
     crossrange_deadband,
+    crossrange_deadband_from_range,
     equilibrium_glide_drag,
     equilibrium_glide_profile,
     range_to_go,
@@ -956,6 +957,66 @@ class TestGlideGuidance:
             simulate_glide(vehicle, entry, reference, handover_range=100e3)
         with pytest.raises(ValueError, match="handover_range must be finite"):
             simulate_glide(vehicle, entry, reference, target=(1.0, 0.0), handover_range=-1.0)
+
+    def test_a_range_scheduled_deadband_bounds_the_miss_not_the_angle(self):
+        """A deadband on heading error is the wrong invariant once the
+        glide hands over on range: the speed schedule spans 7000 to 1000
+        m/s, the flight ends near 1700, and the deadband is still 3.2
+        degrees when it does. What matters is the lateral distance that
+        error becomes, and that shrinks with range."""
+        far = crossrange_deadband_from_range(600e3, 2e3, np.deg2rad(12.0), np.deg2rad(0.1))
+        near = crossrange_deadband_from_range(50e3, 2e3, np.deg2rad(12.0), np.deg2rad(0.1))
+        # Tight far out and permissive close in -- the opposite of the
+        # speed schedule, and correct: a given heading error becomes a
+        # larger miss the further away it is held.
+        assert far < near
+        # Very close in it saturates wide, keeping the reversal count down.
+        assert crossrange_deadband_from_range(
+            1e3, 2e3, np.deg2rad(12.0), np.deg2rad(0.1)
+        ) == pytest.approx(np.deg2rad(12.0))
+        # The bound is the miss it permits, not the angle.
+        assert 50e3 * np.tan(near) == pytest.approx(2e3, rel=1e-9)
+        assert 600e3 * np.tan(far) == pytest.approx(2e3, rel=1e-9)
+
+    def test_range_scheduled_deadband_validates_its_inputs(self):
+        with pytest.raises(ValueError, match="range_to_go"):
+            crossrange_deadband_from_range(0.0, 2e3, 0.2, 0.01)
+        with pytest.raises(ValueError, match="allowed_miss"):
+            crossrange_deadband_from_range(50e3, 0.0, 0.2, 0.01)
+        with pytest.raises(ValueError, match="0 < low < high"):
+            crossrange_deadband_from_range(50e3, 2e3, 0.01, 0.2)
+
+    def test_range_scheduling_reduces_terminal_crossrange(self):
+        """The measured effect, on a single perturbed case rather than the
+        full Monte Carlo so the suite stays fast."""
+        vehicle, entry = self._vehicle(), self._entry()
+        reference = self._flyable(vehicle)
+        drifting = simulate_glide(vehicle, entry, reference, target=None)
+        arc = float(drifting.downrange / R_EARTH)
+        perturbed = GlideState(
+            radius=entry.radius + 2000.0,
+            longitude=entry.longitude,
+            latitude=entry.latitude + 2000.0 / R_EARTH,
+            speed=entry.speed,
+            flight_path_angle=entry.flight_path_angle,
+            heading=entry.heading,
+        )
+        common = {
+            "target": (arc, 0.0),
+            "range_gain": 20.0,
+            "handover_range": 150e3,
+        }
+        speed_scheduled = simulate_glide(vehicle, perturbed, reference, **common)
+        range_scheduled = simulate_glide(
+            vehicle,
+            perturbed,
+            reference,
+            crossrange_tolerance=2e3,
+            deadband_low=np.deg2rad(0.75),
+            **common,
+        )
+        assert abs(range_scheduled.crossrange) < abs(speed_scheduled.crossrange)
+        assert range_scheduled.reversals > speed_scheduled.reversals
 
     def test_overflying_the_target_degrades_the_lateral_channel(self):
         """The coupling between the two channels, stated as a measurement

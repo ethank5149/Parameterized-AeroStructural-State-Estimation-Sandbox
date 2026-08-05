@@ -135,6 +135,9 @@ DISPERSION_SOURCES: dict[Phase, tuple[float, float]] = {
     #   drag tracking alone .................. 34.0 / 35.1 km
     #   + outer range loop (gain 20) ......... 11.3 /  6.7 km
     #   + handover at 150 km range-to-go ...... 1.3 /  8.0 km
+    #   + deadband scheduled on range ......... 0.43/  3.7  km
+    #   + deadband floor 0.75 deg ............. 0.40/  1.3  km  <- used
+    #   + deadband floor 0.25 deg ............. 0.43/  0.43 km
     #
     # The first fix is that tracking a drag profile controls drag and not
     # range. The second is that terminating on *speed* ends the flight
@@ -144,9 +147,20 @@ DISPERSION_SOURCES: dict[Phase, tuple[float, float]] = {
     # point the handover point by construction, and downrange dispersion
     # falls ninefold. Crossrange rises slightly in exchange, because the
     # bank-reversal logic is cut off while still converging — a real trade
-    # and not an artefact. The result is strongly anisotropic, 6:1, which
-    # is exactly the regime where the circular CEP-to-R95 scaling misleads.
-    Phase.GLIDE: (8000.0, 1300.0),
+    # and not an artefact -- but it is a trade with a remedy, and the
+    # remedy is the third fix. The heading-error deadband was scheduled on
+    # *speed*, spanning 7000 to 1000 m/s, while a range-based handover ends
+    # the flight near 1700 m/s with the deadband still at 3.2 degrees. At
+    # 150 km of range-to-go that is 8.4 km of crossrange, which is the
+    # measured dispersion to within a few percent. Scheduling the deadband
+    # so that it bounds the *crossrange miss* rather than the heading error
+    # tightens it automatically as range shrinks.
+    #
+    # The floor then binds, and lowering it trades accuracy against
+    # reversal count: 3.7 km at 2 degrees and 11 reversals, 1.3 km at 0.75
+    # and 26, 0.43 km at 0.25 and 53. The 0.75 degree point is used below;
+    # the tightest is available and costs a reversal every twenty seconds.
+    Phase.GLIDE: (1300.0, 400.0),
     Phase.CRUISE: (500.0, 500.0),
     Phase.BALLISTIC: (350.0, 350.0),
     # Terminal homing is *computed* by passes.guidance.terminal when a

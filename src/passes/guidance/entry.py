@@ -124,6 +124,7 @@ __all__ = [
     "atmospheric_density",
     "bank_reversal_needed",
     "crossrange_deadband",
+    "crossrange_deadband_from_range",
     "equilibrium_glide_drag",
     "equilibrium_glide_profile",
     "range_to_go",
@@ -387,6 +388,44 @@ def crossrange_deadband(speed: float, high: float, low: float) -> float:
     return float(low + (high - low) * fraction)
 
 
+def crossrange_deadband_from_range(
+    range_to_go: float, allowed_miss: float, high: float, low: float
+) -> float:
+    """Heading-error deadband (rad) that bounds the *crossrange miss*.
+
+    Scheduling on speed is the traditional choice and it has a defect that
+    only shows once the glide hands over on range rather than on speed: the
+    schedule spans 7000 to 1000 m/s, the vehicle hands over around 1700,
+    and the deadband is therefore still 3.2 degrees when the flight ends.
+    At 150 km of range-to-go that is 8.4 km of crossrange — which is, to
+    within a few percent, exactly the crossrange dispersion measured.
+
+    A deadband on heading error is the wrong invariant. What matters is the
+    lateral distance that error becomes, and that shrinks with range:
+
+    .. math::
+
+        \\delta(R) = \\arctan\\frac{\\Delta_{\\text{allowed}}}{R},
+
+    clamped to ``[low, high]``. Note which way this runs: it is **tight far
+    out and permissive close in**, the opposite of the speed schedule and
+    the opposite of intuition. That is correct, because a given heading
+    error becomes a larger miss the further away you are. Holding heading
+    tightly through the long middle of the glide is what leaves crossrange
+    already small at handover; relaxing near the end costs little, because
+    little lateral distance can accumulate in the range that remains.
+    """
+    remaining = float(range_to_go)
+    allowed = float(allowed_miss)
+    if not (np.isfinite(remaining) and remaining > 0.0):
+        raise ValueError(f"range_to_go must be finite and > 0, got {remaining}")
+    if not (np.isfinite(allowed) and allowed > 0.0):
+        raise ValueError(f"allowed_miss must be finite and > 0, got {allowed}")
+    if not (0.0 < low < high):
+        raise ValueError(f"require 0 < low < high, got high={high}, low={low}")
+    return float(np.clip(np.arctan(allowed / remaining), low, high))
+
+
 def bank_reversal_needed(heading_error: float, speed: float, high: float, low: float) -> bool:
     """Whether the bank sign should flip now.
 
@@ -516,6 +555,7 @@ def simulate_glide(
     deadband_high: float = np.deg2rad(12.0),
     deadband_low: float = np.deg2rad(2.0),
     n_output: int = 601,
+    crossrange_tolerance: float | None = None,
     range_gain: float = 0.0,
     terminal_energy: float | None = None,
     handover_range: float | None = None,
@@ -671,7 +711,19 @@ def simulate_glide(
         if target is not None:
             bearing = _bearing(lon, lat, target[0], target[1])
             error = _wrap(bearing - heading)
-            if bank_reversal_needed(error, speed, deadband_high, deadband_low):
+            if crossrange_tolerance is None:
+                deadband = crossrange_deadband(speed, deadband_high, deadband_low)
+            else:
+                deadband = crossrange_deadband_from_range(
+                    max(
+                        _R_EARTH * _great_circle(lon, lat, target[0], target[1]),
+                        1.0,
+                    ),
+                    crossrange_tolerance,
+                    deadband_high,
+                    deadband_low,
+                )
+            if abs(error) > deadband:
                 desired = float(np.sign(error)) or 1.0
                 if desired != sign:
                     sign = desired
