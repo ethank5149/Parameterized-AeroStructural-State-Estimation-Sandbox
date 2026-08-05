@@ -65,10 +65,12 @@ import numpy as np
 
 __all__ = [
     "IMU_GRADES",
+    "AlignmentError",
     "ImuGrade",
     "InjectionError",
     "dominant_error_source",
     "gyro_dominates_after",
+    "gyrocompass_alignment",
     "injection_error",
 ]
 
@@ -114,14 +116,30 @@ class ImuGrade:
         cls,
         accelerometer_bias_micro_g: float,
         gyro_drift_deg_per_hour: float,
-        alignment_arcsec: float,
+        alignment_arcsec: float | None = None,
         label: str = "",
     ) -> ImuGrade:
-        """Construct from the units instruments are actually specified in."""
+        """Construct from the units instruments are actually specified in.
+
+        ``alignment_arcsec`` defaults to the levelling accuracy a
+        stationary gyrocompass alignment achieves with this accelerometer,
+        :math:`B/g` (Titterton & Weston §10.3.2). Leaving it unset is the
+        normal case and is *exact* rather than a rounded transcription,
+        which matters because it makes the alignment and accelerometer
+        contributions to injection error identically equal — see
+        :func:`dominant_error_source`. Pass a value only to model an
+        alignment limited by something other than the instrument, such as
+        a transfer alignment from a moving host.
+        """
+        bias = accelerometer_bias_micro_g * _MICRO_G
         return cls(
-            accelerometer_bias=accelerometer_bias_micro_g * _MICRO_G,
+            accelerometer_bias=bias,
             gyro_drift=gyro_drift_deg_per_hour * _DEG_PER_HOUR,
-            alignment=alignment_arcsec * np.pi / (180.0 * 3600.0),
+            alignment=(
+                bias / _G0
+                if alignment_arcsec is None
+                else alignment_arcsec * np.pi / (180.0 * 3600.0)
+            ),
             label=label,
         )
 
@@ -140,44 +158,56 @@ class ImuGrade:
 #: Where the table gives a range the better end is taken, with the range
 #: recorded alongside so the pessimistic end is not lost.
 #:
-#: **Alignment is not from Groves.** Table 4.1 covers instrument biases
-#: only; initial platform misalignment depends on the alignment procedure
-#: and its duration rather than on the instrument, so those values remain
-#: stated inputs.
+#: **Alignment is derived, not stated, and is no longer an independent
+#: input.** Groves Table 4.1 covers instrument bias only, and an earlier
+#: revision guessed alignment separately. It does not need guessing: a
+#: stationary gyrocompass alignment levels against gravity and finds north
+#: by nulling east Earth rate, so its accuracy follows from these same two
+#: biases -- see :func:`gyrocompass_alignment` and Titterton & Weston
+#: §10.3.2. The entries below therefore omit ``alignment_arcsec`` entirely
+#: and take the derived tilt, and deriving it corrected the guesses in both
+#: directions at once: tilt was roughly three times too pessimistic, while
+#: azimuth was optimistic by a factor of ten at marine grade and three
+#: hundred at tactical.
+#:
+#: That azimuth result is worth stating plainly. Gyrocompassing must
+#: resolve Earth rate, which is 15 deg/hr; a tactical-grade gyro drifting
+#: at 1 deg/hr is 7% of the signal it is trying to measure, and the
+#: resulting azimuth error is 5.4 degrees. **A tactical-grade unit cannot
+#: usefully gyrocompass at all** and needs an external azimuth reference --
+#: transfer alignment from a host, or a celestial or satellite fix. Only
+#: the tilt channel is carried into :func:`injection_error`, because tilt
+#: is what tips gravity into the horizontal accelerometers; azimuth error
+#: rotates the trajectory instead and appears downstream as crossrange.
 IMU_GRADES: dict[str, ImuGrade] = {
     # Table 4.1: 0.01 mg, 0.001 deg/hr.
     "marine": ImuGrade.from_engineering_units(
         accelerometer_bias_micro_g=10.0,
         gyro_drift_deg_per_hour=0.001,
-        alignment_arcsec=5.0,
         label="marine",
     ),
     # Table 4.1: 0.03-0.1 mg, 0.01 deg/hr.
     "aviation": ImuGrade.from_engineering_units(
         accelerometer_bias_micro_g=30.0,
         gyro_drift_deg_per_hour=0.01,
-        alignment_arcsec=20.0,
         label="aviation",
     ),
     # Table 4.1: 0.1-1 mg, 0.1 deg/hr.
     "intermediate": ImuGrade.from_engineering_units(
         accelerometer_bias_micro_g=100.0,
         gyro_drift_deg_per_hour=0.1,
-        alignment_arcsec=40.0,
         label="intermediate",
     ),
     # Table 4.1: 1-10 mg, 1-100 deg/hr.
     "tactical": ImuGrade.from_engineering_units(
         accelerometer_bias_micro_g=1000.0,
         gyro_drift_deg_per_hour=1.0,
-        alignment_arcsec=60.0,
         label="tactical",
     ),
     # Table 4.1: >3 mg, >100 deg/hr.
     "consumer": ImuGrade.from_engineering_units(
         accelerometer_bias_micro_g=3000.0,
         gyro_drift_deg_per_hour=100.0,
-        alignment_arcsec=300.0,
         label="consumer",
     ),
 }
@@ -205,6 +235,87 @@ class InjectionError:
             "alignment": self.from_alignment,
             "gyro": self.from_gyro,
         }
+
+
+#: Earth's sidereal rotation rate (rad/s), the reference gyrocompassing
+#: nulls against. Alignment in azimuth is only possible because this is
+#: non-zero, which is why the process degrades toward the poles.
+_EARTH_RATE = 7.292115e-5
+
+
+@dataclass(frozen=True)
+class AlignmentError:
+    """Initial platform misalignment from a gyrocompass alignment.
+
+    Attributes
+    ----------
+    tilt:
+        Level error (rad) about a horizontal axis. This is the one that
+        matters for injection: it tips the platform so a component of
+        gravity is read as horizontal acceleration.
+    azimuth:
+        Heading error (rad) about the vertical. It does not corrupt the
+        measured acceleration magnitude, but it rotates the whole
+        trajectory in the horizontal plane, so it appears downstream as
+        *crossrange* rather than as downrange error.
+    latitude:
+        Latitude (rad) the alignment was performed at.
+    """
+
+    tilt: float
+    azimuth: float
+    latitude: float
+
+
+def gyrocompass_alignment(grade: ImuGrade, latitude: float) -> AlignmentError:
+    """Alignment error achievable by gyrocompassing, from instrument bias.
+
+    Alignment is not an independent specification. A stationary
+    gyrocompass alignment levels the platform against gravity and finds
+    north by nulling the east component of Earth rate, so the accuracy it
+    reaches is set by the *same* accelerometer and gyro biases that
+    Groves' Table 4.1 already gives. Titterton & Weston, *Strapdown
+    Inertial Navigation Technology* 2nd ed., §10.3.2:
+
+    .. math::
+
+        \\delta\\alpha = \\frac{B}{g}, \\qquad
+        \\delta\\gamma = \\frac{D}{\\Omega \\cos L}
+                            + \\frac{B \\tan L}{g}.
+
+    The azimuth expression has two terms and the second is easy to miss:
+    a *level* error about north tips vertical Earth rate into the east
+    axis, where gyrocompassing cannot distinguish it from a gyro bias. So
+    a poor accelerometer degrades heading as well as level.
+
+    Verified against the two numerical statements the source makes: a
+    1 milli-g accelerometer bias gives a 1 mrad level error, and a
+    0.01 deg/hr gyro drift gives a 1 mrad azimuth error at 45 degrees
+    latitude.
+
+    Raises
+    ------
+    ValueError
+        Near the poles, where :math:`\\cos L \\to 0` and gyrocompassing
+        has no horizontal Earth-rate component to null. This is a real
+        limit of the method, not a numerical one -- Titterton's Fig. 10.4
+        shows the error diverging -- and it is refused rather than
+        returned as a large number.
+    """
+    lat = float(latitude)
+    if not np.isfinite(lat) or abs(lat) >= 0.5 * np.pi:
+        raise ValueError(f"latitude must be finite and within (-pi/2, pi/2), got {lat}")
+    if abs(np.cos(lat)) < np.cos(np.deg2rad(85.0)):
+        raise ValueError(
+            f"gyrocompassing degrades without bound toward the poles: at "
+            f"{np.rad2deg(lat):.2f} deg there is too little horizontal Earth "
+            f"rate to null against. Use an external azimuth reference instead"
+        )
+    tilt = grade.accelerometer_bias / _G0
+    azimuth = grade.gyro_drift / (_EARTH_RATE * np.cos(lat)) + (
+        grade.accelerometer_bias * np.tan(lat) / _G0
+    )
+    return AlignmentError(tilt=float(tilt), azimuth=float(azimuth), latitude=lat)
 
 
 def injection_error(grade: ImuGrade, burn_time: float) -> InjectionError:
@@ -262,9 +373,24 @@ def injection_error(grade: ImuGrade, burn_time: float) -> InjectionError:
 
 
 def dominant_error_source(grade: ImuGrade, burn_time: float) -> str:
-    """Which of the three terms contributes most position error."""
+    """Which of the three terms contributes most position error.
+
+    Ties are reported rather than broken. That matters here because one
+    tie is *structural* rather than coincidental: a gyrocompass-aligned
+    platform has tilt :math:`B/g`, so its alignment contribution is
+    :math:`\\tfrac12 g (B/g) t^2 = \\tfrac12 B t^2` — exactly the
+    accelerometer term. Accelerometer bias therefore enters twice, once
+    directly and once through the tilt it caused during alignment, and the
+    two are equal by construction rather than by accident. Silently
+    picking one would hide the fact that fixing the accelerometer buys
+    twice what it appears to.
+    """
     contributions = injection_error(grade, burn_time).contributions
-    return max(contributions, key=lambda key: contributions[key])
+    largest = max(contributions.values())
+    if largest == 0.0:
+        return "none"
+    tied = sorted(name for name, value in contributions.items() if value >= largest * (1.0 - 1e-9))
+    return " = ".join(tied)
 
 
 def gyro_dominates_after(grade: ImuGrade) -> float:

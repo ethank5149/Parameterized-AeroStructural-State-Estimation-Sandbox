@@ -35,10 +35,12 @@ from passes.guidance.entry import (
 )
 from passes.guidance.inertial import (
     IMU_GRADES,
+    AlignmentError,
     ImuGrade,
     InjectionError,
     dominant_error_source,
     gyro_dominates_after,
+    gyrocompass_alignment,
     injection_error,
 )
 from passes.guidance.midcourse import (
@@ -72,6 +74,7 @@ from passes.guidance.tgo import TgoResult, TgoStatus, time_to_go, time_to_go_nai
 __all__ = [
     "IMU_GRADES",
     "Aimpoint",
+    "AlignmentError",
     "CorrectionPlan",
     "CorrectionResult",
     "CruiseComparison",
@@ -107,6 +110,7 @@ __all__ = [
     "cruise_versus_glide",
     "dominant_error_source",
     "gyro_dominates_after",
+    "gyrocompass_alignment",
     "homing_miss",
     "injection_error",
     "linearize_trajectory",

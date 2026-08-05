@@ -27,6 +27,7 @@ from passes.guidance import (
     cruise_versus_glide,
     dominant_error_source,
     gyro_dominates_after,
+    gyrocompass_alignment,
     homing_miss,
     injection_error,
     los_rate,
@@ -1482,13 +1483,15 @@ class TestInertialInjection:
         assert long_burn.from_alignment / short.from_alignment == pytest.approx(4.0, rel=1e-12)
         assert long_burn.from_gyro / short.from_gyro == pytest.approx(8.0, rel=1e-12)
 
-    def test_alignment_dominates_a_short_burn_at_good_grades(self):
+    def test_gyro_drift_does_not_dominate_a_short_burn(self):
         """Not gyro drift, which is the intuitive answer. Over a few hundred
-        seconds the cubic term has not had time to matter."""
-        for name in ("marine", "aviation"):
-            assert dominant_error_source(IMU_GRADES[name], 300.0) == "alignment"
-        # A poor accelerometer changes which term leads.
-        assert dominant_error_source(IMU_GRADES["tactical"], 300.0) == "accelerometer"
+        seconds the cubic term has not had time to matter -- the
+        accelerometer leads, and it leads twice over, once directly and
+        once through the alignment tilt it caused."""
+        for name in ("marine", "aviation", "intermediate", "tactical"):
+            assert "gyro" not in dominant_error_source(IMU_GRADES[name], 300.0)
+        # A truly bad gyro does eventually take over, even on a short burn.
+        assert dominant_error_source(IMU_GRADES["consumer"], 300.0) == "gyro"
 
     def test_the_gyro_crossover_depends_only_on_the_specification_ratio(self):
         """t = 3 b_a / (g eps), so grades sharing that ratio share a
@@ -1516,8 +1519,11 @@ class TestInertialInjection:
         850 to 3484 seconds depending on perigee depth."""
         error = injection_error(IMU_GRADES["aviation"], 300.0)
         assert error.velocity * 850.0 > error.position
-        assert error.velocity == pytest.approx(0.299, rel=0.02)
-        assert error.position == pytest.approx(44.8, rel=0.02)
+        # Values fell when alignment stopped being guessed: the derived
+        # tilt for a 30 ug accelerometer is 6.2 arcsec, against the 20
+        # arcsec previously assumed.
+        assert error.velocity == pytest.approx(0.127, rel=0.02)
+        assert error.position == pytest.approx(18.8, rel=0.02)
 
     def test_better_grades_are_monotonically_better(self):
         errors = [
@@ -1525,6 +1531,80 @@ class TestInertialInjection:
             for name in ("marine", "aviation", "tactical")
         ]
         assert errors == sorted(errors)
+
+    def test_gyrocompass_alignment_reproduces_tittertons_two_numbers(self):
+        """Titterton & Weston SS10.3.2 states both results explicitly: a
+        1 milli-g accelerometer bias gives a 1 mrad level error, and a
+        0.01 deg/hr gyro drift gives a 1 mrad azimuth error at 45 deg."""
+        g = 9.80665
+        level_only = ImuGrade(accelerometer_bias=1e-3 * g, gyro_drift=0.0, alignment=0.0)
+        assert gyrocompass_alignment(level_only, np.deg2rad(45.0)).tilt == pytest.approx(
+            1e-3, rel=1e-9
+        )
+        gyro_only = ImuGrade(
+            accelerometer_bias=0.0,
+            gyro_drift=0.01 * np.pi / 180.0 / 3600.0,
+            alignment=0.0,
+        )
+        # The source rounds; the exact value is 0.94 mrad.
+        assert gyrocompass_alignment(gyro_only, np.deg2rad(45.0)).azimuth == pytest.approx(
+            1e-3, rel=0.07
+        )
+
+    def test_a_level_error_degrades_heading_too(self):
+        """The second term of the azimuth expression is easy to miss: a
+        tilt about north tips vertical Earth rate into the east axis,
+        where gyrocompassing cannot tell it from a gyro bias. So a poor
+        accelerometer costs heading as well as level, and it does so only
+        away from the equator, where tan L is non-zero."""
+        grade = ImuGrade(accelerometer_bias=1e-3 * 9.80665, gyro_drift=0.0, alignment=0.0)
+        at_equator = gyrocompass_alignment(grade, 0.0).azimuth
+        at_mid = gyrocompass_alignment(grade, np.deg2rad(45.0)).azimuth
+        assert at_equator == pytest.approx(0.0, abs=1e-12)
+        assert at_mid > 0.0
+
+    def test_gyrocompassing_is_refused_near_the_poles(self):
+        """A real limit of the method, not a numerical one: there is too
+        little horizontal Earth rate left to null against."""
+        with pytest.raises(ValueError, match="toward the poles"):
+            gyrocompass_alignment(IMU_GRADES["marine"], np.deg2rad(89.0))
+        with pytest.raises(ValueError, match="latitude"):
+            gyrocompass_alignment(IMU_GRADES["marine"], np.pi)
+        # Azimuth error grows toward the pole before the refusal bites.
+        low = gyrocompass_alignment(IMU_GRADES["marine"], np.deg2rad(10.0)).azimuth
+        high = gyrocompass_alignment(IMU_GRADES["marine"], np.deg2rad(70.0)).azimuth
+        assert high > low
+
+    def test_alignment_defaults_to_the_derived_tilt_exactly(self):
+        """Alignment is not an independent specification. Every tabulated
+        grade takes B/g exactly, not a rounded transcription of it."""
+        for grade in IMU_GRADES.values():
+            derived = gyrocompass_alignment(grade, np.deg2rad(45.0))
+            assert grade.alignment == derived.tilt
+            assert grade.alignment == grade.accelerometer_bias / 9.80665
+
+    def test_accelerometer_bias_enters_twice_and_equally(self):
+        """The structural consequence, and the reason ties are reported
+        rather than broken: tilt is B/g, so the alignment contribution is
+        (1/2) g (B/g) t^2, which is the accelerometer contribution exactly.
+        Fixing the accelerometer therefore buys twice what it appears to."""
+        for name in ("marine", "aviation", "intermediate", "tactical"):
+            error = injection_error(IMU_GRADES[name], 300.0)
+            assert error.from_alignment == pytest.approx(error.from_accelerometer, rel=1e-12)
+            assert dominant_error_source(IMU_GRADES[name], 300.0) == ("accelerometer = alignment")
+
+    def test_an_externally_aligned_platform_breaks_the_tie(self):
+        """Passing an explicit alignment models a transfer or celestial
+        alignment, whose accuracy is not set by this accelerometer -- and
+        the equality then no longer holds."""
+        tight = ImuGrade.from_engineering_units(
+            accelerometer_bias_micro_g=1000.0,
+            gyro_drift_deg_per_hour=1.0,
+            alignment_arcsec=10.0,
+        )
+        error = injection_error(tight, 300.0)
+        assert error.from_alignment < 0.5 * error.from_accelerometer
+        assert dominant_error_source(tight, 300.0) == "accelerometer"
 
     def test_a_burn_beyond_the_schuler_regime_is_refused(self):
         """The polynomial growth laws hold while the burn is short against

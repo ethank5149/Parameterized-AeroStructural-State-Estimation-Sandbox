@@ -29,16 +29,23 @@ Two standing rules, inherited from how the rest of this repository was built:
 The injection chain is derived end to end except for two inputs. Both have a
 source sitting unread in `reference/`.
 
-- [ ] **Initial platform alignment from Titterton & Weston, not from a stated
-      input.** `passes.guidance.inertial.IMU_GRADES` takes accelerometer and
-      gyro bias from Groves Table 4.1, but alignment is still invented —
-      Groves tabulates instrument bias only, and alignment depends on the
-      *procedure*, not the instrument. Titterton & Weston, *Strapdown Inertial
-      Navigation Technology* 2nd ed., Ch. 10, gives alignment accuracy for
-      gyrocompassing and transfer alignment as a function of procedure and
-      duration. **This matters more than it looks:** alignment is the
-      *dominant* injection error term at the better grades (measured, not
-      assumed), so the one term still guessed is the one that leads.
+- [x] ~~**Initial platform alignment from Titterton & Weston.**~~ **Done —
+      and alignment turned out not to be an independent input at all.** A
+      stationary gyrocompass levels against gravity and finds north by
+      nulling east Earth rate, so its accuracy follows from the *same*
+      biases Groves already tabulates. Titterton & Weston §10.3.2 gives
+      both closed forms and two numbers to check them against; we
+      reproduce **1.0000 mrad** tilt for a 1 milli-g bias and **0.9402
+      mrad** azimuth for 0.01 °/hr at 45° against his rounded 1 mrad. The
+      guesses were wrong in both directions — tilt 3× pessimistic, azimuth
+      optimistic by 10× (marine) to **300× (tactical)**. Two results fell
+      out: a **tactical-grade IMU cannot usefully gyrocompass** (5.4°
+      azimuth error, since 1 °/hr is 7% of Earth rate) and needs an
+      external reference; and **accelerometer bias enters twice and
+      exactly equally**, since tilt is `B/g` so the alignment term
+      `½g(B/g)t²` *is* the accelerometer term. Injection error at aviation
+      grade fell 44.8 m / 0.299 m/s → **18.8 m / 0.127 m/s**.
+
 - [ ] **Full Schuler-loop INS error propagation** (Gelb Ch. 4; Titterton
       Ch. 12). `injection_error` is polynomial and refuses beyond a quarter
       Schuler period — correct for boost, useless for coast. A full error-state
