@@ -1019,6 +1019,36 @@ class TestGlideGuidance:
         assert abs(range_scheduled.crossrange) < abs(speed_scheduled.crossrange)
         assert range_scheduled.reversals > speed_scheduled.reversals
 
+    def test_roll_rate_limit_prices_the_bank_reversals(self):
+        """Reversals are free only with an unlimited roll rate. A reversal
+        sweeps the bank through zero, where vertical lift is maximum, so
+        the vehicle lofts each time; a slower roll holds that excursion
+        longer."""
+        vehicle, entry = self._vehicle(), self._entry()
+        reference = self._flyable(vehicle)
+        drifting = simulate_glide(vehicle, entry, reference, target=None)
+        arc = float(drifting.downrange / R_EARTH)
+        common = {
+            "target": (arc, 0.0),
+            "range_gain": 20.0,
+            "handover_range": 150e3,
+            "crossrange_tolerance": 2e3,
+            "deadband_low": np.deg2rad(0.25),
+        }
+        fast = simulate_glide(vehicle, entry, reference, roll_rate_limit=np.deg2rad(30.0), **common)
+        slow = simulate_glide(vehicle, entry, reference, roll_rate_limit=np.deg2rad(3.0), **common)
+        # A rate too slow to complete a reversal before the next is demanded
+        # leaves the vehicle permanently slewing, and the reversal count
+        # *falls* rather than rises — which is the signature of the failure.
+        assert slow.reversals < fast.reversals
+        assert np.max(np.abs(np.diff(slow.bank))) <= np.deg2rad(3.0) + 1e-9
+
+    def test_roll_rate_limit_is_validated(self):
+        vehicle, entry = self._vehicle(), self._entry()
+        reference = self._flyable(vehicle)
+        with pytest.raises(ValueError, match="roll_rate_limit"):
+            simulate_glide(vehicle, entry, reference, roll_rate_limit=0.0)
+
     def test_overflying_the_target_degrades_the_lateral_channel(self):
         """The coupling between the two channels, stated as a measurement
         rather than as a caveat."""

@@ -556,6 +556,7 @@ def simulate_glide(
     deadband_low: float = np.deg2rad(2.0),
     n_output: int = 601,
     crossrange_tolerance: float | None = None,
+    roll_rate_limit: float | None = None,
     range_gain: float = 0.0,
     terminal_energy: float | None = None,
     handover_range: float | None = None,
@@ -600,8 +601,18 @@ def simulate_glide(
             f"terminal speed {terminal_speed:.6g} m/s; there is no glide to fly"
         )
 
+    if roll_rate_limit is not None and not (np.isfinite(roll_rate_limit) and roll_rate_limit > 0.0):
+        raise ValueError(
+            f"roll_rate_limit must be finite and > 0 when given, got {roll_rate_limit}"
+        )
     guidance_period = 1.0
     sign = 1.0
+    # Actual bank, as distinct from commanded. With an unlimited roll rate
+    # the two are identical and a reversal is free. They are not: a
+    # reversal sweeps the bank angle through zero, where the vertical lift
+    # component is *maximum*, so the vehicle lofts every time it reverses.
+    # The faster the roll, the briefer that excursion.
+    actual_bank = 0.0
     reversals = 0
     integral = 0.0
     # Anti-windup bound. Chosen so the integral term alone can swing the
@@ -728,7 +739,14 @@ def simulate_glide(
                 if desired != sign:
                     sign = desired
                     reversals += 1
-        bank = sign * magnitude
+        commanded_bank = sign * magnitude
+        if roll_rate_limit is None:
+            actual_bank = commanded_bank
+        else:
+            step_limit = roll_rate_limit * guidance_period
+            delta = float(np.clip(commanded_bank - actual_bank, -step_limit, step_limit))
+            actual_bank = actual_bank + delta
+        bank = actual_bank
         banks.append(bank)
 
         span = (clock, min(clock + guidance_period, max_time))
