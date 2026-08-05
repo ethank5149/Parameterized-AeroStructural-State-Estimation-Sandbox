@@ -92,8 +92,25 @@ DISPERSION_SOURCES: dict[Phase, tuple[float, float]] = {
     Phase.BOOST: (1200.0, 900.0),
     Phase.MIDCOURSE: (-0.90, -0.90),
     Phase.DISPENSE: (400.0, 250.0),
-    Phase.DEORBIT: (600.0, 300.0),
-    Phase.GLIDE: (800.0, 250.0),
+    # DERIVED, not assumed. Propagating a 200 m / 1 m/s injection
+    # covariance through the actual Kepler transfer with
+    # `passes.guidance.midcourse.miss_sensitivity` gives principal sigmas
+    # of 915 / 639 / 630 m at the entry interface, 1281 m RSS. The
+    # sensitivity itself is worth knowing: |dr_f/dv_0| runs 850 s at a
+    # -400 km virtual perigee and 3484 s at a +50 km one, so **a shallow
+    # deorbit amplifies injection velocity error four times more than a
+    # steep one**. The same perigee choice that trades delta-v against
+    # transfer arc also trades error amplification, in the same direction.
+    Phase.DEORBIT: (915.0, 635.0),
+    # DERIVED, and it corrected an assumption that was wrong by a factor
+    # of twenty. Forty closed-loop glides with a 900 m entry-interface
+    # position error, 1 m/s speed, 0.02 deg flight-path angle and 3%
+    # ballistic-coefficient scatter give 11.3 km downrange and 6.7 km
+    # crossrange one-sigma *with* the outer range loop closed at gain 20.
+    # Without that loop the same inputs give 34 km and 35 km, because
+    # tracking a drag profile controls drag and not range. See
+    # `passes.guidance.entry.simulate_glide`'s `range_gain`.
+    Phase.GLIDE: (11300.0, 6700.0),
     Phase.CRUISE: (500.0, 500.0),
     Phase.BALLISTIC: (350.0, 350.0),
     # Terminal homing is *computed* by passes.guidance.terminal when a

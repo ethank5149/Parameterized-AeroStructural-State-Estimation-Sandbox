@@ -32,6 +32,33 @@ entry guidance in the Shuttle lineage tracks drag rather than altitude or
 flight-path angle. :func:`range_to_go` evaluates that integral and
 :class:`DragTracker` closes a loop on it.
 
+Tracking drag is not controlling range
+--------------------------------------
+
+The relation above makes a drag profile *equivalent* to a range, but only
+if the vehicle flies the profile it was given from the state it was
+expected to be in. It will not be. Measured over forty closed-loop glides
+with a 900 m entry-interface position error and 3% ballistic-coefficient
+scatter, tracking the reference drag profile alone gives a terminal
+dispersion of **34 km downrange and 35 km crossrange** — a fortyfold
+amplification of the entry error, because nothing in the loop ever notices
+the range error accumulating. The tracker flies its profile faithfully and
+lands wherever that profile happens to reach.
+
+Closing an outer loop on range fixes most of it, and is what entry
+guidance in the Shuttle lineage does: predict the range the current
+profile will fly with :func:`range_to_go`, compare against the distance
+actually remaining, and scale the reference drag to null the difference.
+``range_gain`` on :func:`simulate_glide` enables it. At gain 20 the same
+Monte Carlo gives **11.3 km downrange and 6.7 km crossrange**, a factor of
+four better, with crossrange improving fivefold. The residual is dominated
+by downrange and does not shrink much further, because the glide is
+terminated by a *speed* gate rather than by arrival: even perfect range
+control cannot help once the vehicle has run out of energy at the wrong
+place. Handing over to terminal guidance on a range-and-energy condition
+rather than on speed alone is the next structural fix, and it is not made
+here.
+
 Bank reversals, and why the deadband is scheduled
 -------------------------------------------------
 
@@ -489,6 +516,8 @@ def simulate_glide(
     deadband_high: float = np.deg2rad(12.0),
     deadband_low: float = np.deg2rad(2.0),
     n_output: int = 601,
+    range_gain: float = 0.0,
+    terminal_energy: float | None = None,
 ) -> GlideResult:
     """Fly a glide with the drag tracker and bank-reversal logic closed.
 
@@ -516,6 +545,10 @@ def simulate_glide(
     """
     if tracker is None:
         tracker = DragTracker()
+    if not (np.isfinite(range_gain) and range_gain >= 0.0):
+        raise ValueError(f"range_gain must be finite and >= 0, got {range_gain}")
+    if range_gain > 0.0 and target is None:
+        raise ValueError("range closure needs a target to measure range-to-go against")
     if not (np.isfinite(terminal_speed) and terminal_speed > 0.0):
         raise ValueError(f"terminal_speed must be finite and > 0, got {terminal_speed}")
     if not (np.isfinite(max_time) and max_time > 0.0):
@@ -568,6 +601,29 @@ def simulate_glide(
         energy = 0.5 * speed**2 - _MU / radius
         drag = vehicle.drag_acceleration(radius - _R_EARTH, speed)
         commanded = float(drag_reference(energy))
+        # Outer range loop. Tracking a drag profile alone controls *drag*,
+        # not range: the vehicle flies the commanded profile faithfully and
+        # lands wherever that profile happens to reach. Measured, a 900 m
+        # entry-interface error then becomes a 49 km terminal scatter,
+        # because nothing in the loop notices the range error accumulating.
+        #
+        # Closing the loop the way entry guidance in the Shuttle lineage
+        # does: predict the range the current profile will fly with
+        # `range_to_go`, compare it with the great-circle distance actually
+        # remaining, and scale the reference drag to null the difference.
+        # Commanding more drag shortens the flight, hence the sign.
+        if range_gain > 0.0 and target is not None:
+            final_energy = (
+                0.5 * terminal_speed**2 - _MU / radius
+                if terminal_energy is None
+                else terminal_energy
+            )
+            if energy > final_energy:
+                predicted = range_to_go(drag_reference, energy, final_energy)
+                remaining = _R_EARTH * _great_circle(lon, lat, target[0], target[1])
+                if remaining > 0.0:
+                    error = (predicted - remaining) / remaining
+                    commanded *= float(np.clip(1.0 + range_gain * error, 0.25, 4.0))
         magnitude = tracker.command(drag, commanded, max_bank=vehicle.max_bank, integral=integral)
         # Anti-windup: stop accumulating while the command is against a
         # stop. Without this the accumulator keeps growing through the
