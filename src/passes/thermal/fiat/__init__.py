@@ -58,6 +58,12 @@ from passes.thermal.fiat.pica_kinetics import (
     competitive_mass_fraction,
     parallel_pica_resin,
 )
+from passes.thermal.fiat.pore_pressure import (
+    PORE_PRESSURE_REFERENCES,
+    PorePressureProfile,
+    pore_pressure,
+    pore_pressure_sensitivity,
+)
 from passes.thermal.fiat.radiation import (
     gray_radiative_flux,
     optical_depth,
@@ -86,6 +92,7 @@ __all__ = [
     "HERITAGE_PICA_CONDUCTIVITY",
     "MEDLI2_PICA_CONDUCTIVITY",
     "PARALLEL_PICA_RESIN",
+    "PORE_PRESSURE_REFERENCES",
     "AerothermalEnvironment",
     "BPrimeTable",
     "BackfaceCondition",
@@ -99,6 +106,7 @@ __all__ = [
     "MaterialStack",
     "ParallelReaction",
     "Ply",
+    "PorePressureProfile",
     "PressureConductivity",
     "SolverOptions",
     "StackGrid",
@@ -118,6 +126,8 @@ __all__ = [
     "parallel_pica_resin",
     "peak_rate_temperature",
     "pica_like_material",
+    "pore_pressure",
+    "pore_pressure_sensitivity",
     "probe_depths",
     "rosseland_conductivity",
     "rosseland_flux",

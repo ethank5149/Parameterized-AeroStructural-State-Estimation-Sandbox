@@ -16,6 +16,7 @@ import pytest
 import scipy.integrate
 
 from passes.thermal.fiat import (
+    PORE_PRESSURE_REFERENCES,
     AerothermalEnvironment,
     BackfaceCondition,
     BackfaceKind,
@@ -26,6 +27,8 @@ from passes.thermal.fiat import (
     blowing_reduction,
     gray_radiative_flux,
     optical_depth,
+    pore_pressure,
+    pore_pressure_sensitivity,
     rosseland_conductivity,
 )
 from passes.thermal.fiat.analysis import (
@@ -2116,3 +2119,100 @@ class TestGibbsEquilibrium:
     def test_rejects_species_that_cannot_be_formed_at_all(self, db):
         with pytest.raises(ValueError, match="no gas species"):
             solve_equilibrium(db, ("N2", "CN"), 2000.0, 1e4, {"C": 1.0})
+
+
+class TestPorePressure:
+    """Darcy pore pressure, and the question it was built to settle."""
+
+    def _uniform(self, n=201, length=0.05, source=1.0, temperature=1500.0):
+        x = np.linspace(0.0, length, n)
+        return x, np.full(n, source), np.full(n, temperature)
+
+    def test_matches_the_analytic_uniform_source_solution(self):
+        """A uniform source over a slab has a closed-form answer: the flux
+        is linear in depth, so d(P^2)/dx is linear and P^2 is quadratic.
+        The quadrature is exact for a piecewise-linear source, so this
+        should agree to machine precision rather than to a tolerance."""
+        x, source, temperature = self._uniform()
+        surface = 1.0e4
+        permeability = 1.0e-11
+        profile = pore_pressure(x, source, temperature, surface, permeability)
+        coefficient = 2.0 * 8.314462618 * 4.0e-5 / (0.0103 * permeability)
+        length = x[-1]
+        expected = np.sqrt(surface**2 + coefficient * 1500.0 * 1.0 * (length * x - 0.5 * x**2))
+        assert np.allclose(profile.pressure, expected, rtol=1e-12)
+
+    def test_is_grid_independent_for_a_piecewise_linear_source(self):
+        """Exactness means refinement must change nothing at all."""
+        peaks = []
+        for n in (51, 201, 801):
+            x, source, temperature = self._uniform(n=n)
+            peaks.append(pore_pressure(x, source, temperature, 1e4, 1e-11).peak_pressure)
+        assert max(peaks) == pytest.approx(min(peaks), rel=1e-12)
+
+    def test_pressure_peaks_at_the_impermeable_back_face(self):
+        """Gas flows outward, so pressure rises inward and is highest where
+        nothing has yet escaped. Getting the flux accumulation backwards
+        inverts this, which is how the first implementation was caught."""
+        x, source, temperature = self._uniform()
+        profile = pore_pressure(x, source, temperature, 1e4, 1e-11)
+        assert np.all(np.diff(profile.pressure) > 0.0)
+        assert profile.peak_depth == pytest.approx(x[-1])
+        assert profile.pressure[0] == pytest.approx(1e4, rel=1e-12)
+
+    def test_higher_permeability_relieves_the_pressure(self):
+        """The whole mechanism in one assertion: pressure builds because
+        the gas cannot get out fast enough."""
+        x, source, temperature = self._uniform()
+        ratios = [
+            pore_pressure(x, source, temperature, 1e4, k).peak_ratio for k in (1e-9, 1e-11, 1e-13)
+        ]
+        assert ratios == sorted(ratios)
+        # In the free-draining limit the pressure rise vanishes entirely.
+        # Note this fixture is a uniform source over the *whole* 5 cm,
+        # which is far more aggressive than a real pyrolysis zone confined
+        # to a front, so the limit is only approached well above the
+        # permeabilities a real material has.
+        assert pore_pressure(x, source, temperature, 1e4, 1e-6).peak_ratio == (
+            pytest.approx(1.0, abs=1e-3)
+        )
+
+    def test_the_sensitivity_sweep_answers_the_question_it_was_built_for(self):
+        """The measured conclusion: the pore/surface ratio gets large at
+        low permeability, which is exactly why the *conductivity* error
+        needs checking rather than assuming — it is bounded by the
+        log-pressure interpolation and the 1 atm clamp, and comes out under
+        10 % across the whole sweep."""
+        x, source, temperature = self._uniform()
+        sweep = pore_pressure_sensitivity(x, source, temperature, 2.3e3, [1e-9, 1e-11, 1e-12])
+        assert len(sweep) == 3
+        assert sweep[1e-12] > sweep[1e-11] > sweep[1e-9]
+        # Feed the extremes through the conductivity model the pressure is
+        # for, and confirm the error stays bounded.
+        base = MEDLI2_PICA_CONDUCTIVITY.value(1000.0, 0.0, 2.3e3)
+        worst = MEDLI2_PICA_CONDUCTIVITY.value(1000.0, 0.0, 2.3e3 * sweep[1e-12])
+        assert abs(worst / base - 1.0) < 0.10
+
+    def test_reference_table_flags_the_material_it_does_not_cover(self):
+        """The table exists for the gap in it. Park & Lawrence measured a
+        dense nozzle liner, not PICA, and must not be quoted as PICA."""
+        assert "NOT PICA" in PORE_PRESSURE_REFERENCES["MX4926 carbon cloth phenolic"][2]
+        low, high, note = PORE_PRESSURE_REFERENCES["PICA (placeholder bracket)"]
+        assert "NOT MEASURED" in note
+        assert low < high
+        # PICA is far more permeable than the dense material, as porosity
+        # demands; a table that got this backwards would be worse than none.
+        assert low > PORE_PRESSURE_REFERENCES["MX4926 carbon cloth phenolic"][1]
+
+    def test_inputs_are_validated(self):
+        x, source, temperature = self._uniform()
+        with pytest.raises(ValueError, match="strictly increasing"):
+            pore_pressure(x[::-1], source, temperature, 1e4, 1e-11)
+        with pytest.raises(ValueError, match="non-negative"):
+            pore_pressure(x, -source, temperature, 1e4, 1e-11)
+        with pytest.raises(ValueError, match="surface_pressure"):
+            pore_pressure(x, source, temperature, 0.0, 1e-11)
+        with pytest.raises(ValueError, match="permeability"):
+            pore_pressure(x, source, temperature, 1e4, 0.0)
+        with pytest.raises(ValueError, match="must match depth"):
+            pore_pressure(x, source[:-1], temperature, 1e4, 1e-11)

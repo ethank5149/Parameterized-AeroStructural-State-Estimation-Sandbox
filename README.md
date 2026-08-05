@@ -287,7 +287,10 @@ The verification runners are the authoritative record: each writes a markdown re
 
 ## Roadmap
 
-Ordered by dependency, not ambition.
+Ordered by dependency, not ambition. What is *not yet* built but is supportable
+from the sources already in [`reference/`](reference/) is tracked separately in
+[`TODO.md`](TODO.md) — 25 items, each naming what is currently assumed, which
+source closes it, and what measurably changes.
 
 1. ~~**Structural kernel** — Chebyshev operators, null-space projection, free-free eigenvalue solve.~~ **Done.** V1 (conditioning vs. $N$, frequencies vs. analytic) and V3 (integrator strategy comparison) executed and passing.
 2. ~~**Guidance numerics** — self-contained and quick.~~ **Done.** V6 (the $t_{go}$ precision comparison in single and double precision) executed and passing; the conjugate form holds the precision floor across the full $\hat A_c$ sweep while the textbook form degrades to under one significant digit.
