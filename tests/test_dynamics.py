@@ -11,6 +11,18 @@ from passes.dynamics import (
     quaternion_derivative,
     quaternion_norm_error,
 )
+from passes.dynamics.roll_resonance import (
+    pitch_frequency,
+    resonance_condition_ratio,
+    resonance_crossings,
+    roll_rate,
+    steady_state_roll_rate,
+    trim_amplification,
+)
+from passes.flight.ballistic_entry import (
+    EXPONENTIAL_ATMOSPHERE_EARTH,
+    BallisticEntry,
+)
 
 
 class TestQuaternionKinematics:
@@ -188,3 +200,140 @@ class TestLocalIncidence:
             local_incidence([0.0, 0.0, 1.0], [0.0, 0.0, 0.0])
         with pytest.raises(ValueError, match="trailing dimension 3"):
             local_incidence([0.0, 1.0], [0.0, 0.0, 1.0])
+
+
+class TestRollResonance:
+    """Regan §13.2 and §13.5: roll dynamics, and the resonance a reentry
+    vehicle can cross twice."""
+
+    _PS = 3.73e-3          # Regan's stability factor, m/kg
+    _ROLL = 18.0           # rad/s
+    _VE = 5000.0
+    _GAMMA = np.deg2rad(75.0)
+
+    def _crossings(self, ballistic_pascals: float):
+        entry = BallisticEntry(
+            self._VE,
+            self._GAMMA,
+            entry_altitude=120.0e3,
+            ballistic_coefficient=ballistic_pascals / 9.80665,
+        )
+        altitudes = np.linspace(0.0, 80.0e3, 8001)
+        return resonance_crossings(
+            altitudes,
+            entry.velocity(altitudes),
+            EXPONENTIAL_ATMOSPHERE_EARTH.density(altitudes),
+            self._ROLL,
+            self._PS,
+        )
+
+    def test_reproduces_regans_worked_resonance_case(self):
+        """His Fig. 13.10: one resonance for a 6e4 Pa ballistic factor, two
+        for 6e3 Pa at about 37 km and 11 km. Driven by the independently
+        verified Allen-Eggers profile, so this exercises two modules against
+        one published result."""
+        heavy = self._crossings(6.0e4)
+        light = self._crossings(6.0e3)
+        assert len(heavy) == 1
+        assert len(light) == 2
+        assert heavy[0].altitude / 1e3 == pytest.approx(37.0, abs=1.0)
+        assert light[0].altitude / 1e3 == pytest.approx(37.0, abs=1.5)
+        assert light[1].altitude / 1e3 == pytest.approx(11.0, abs=1.5)
+
+    def test_a_lighter_vehicle_is_the_one_that_resonates_twice(self):
+        """The structural claim: lowering the ballistic coefficient makes a
+        second crossing more likely, because the vehicle decelerates higher
+        and its pitch frequency peaks further above the roll rate."""
+        assert len(self._crossings(6.0e4)) == 1
+        assert len(self._crossings(6.0e3)) == 2
+
+    def test_first_and_second_resonance_are_distinguished(self):
+        """The two crossings are not interchangeable: one happens with the
+        pitch frequency still rising, the other on the way back down. That
+        distinction is what separates a thin-air excursion with a long time
+        to act from a forceful one with almost none."""
+        light = self._crossings(6.0e3)
+        assert light[0].ascending != light[1].ascending
+        assert light[0].altitude > light[1].altitude
+
+    def test_a_fast_enough_roll_never_resonates(self):
+        """Zero crossings is a physical outcome, not a failure. Spinning
+        far above the peak pitch frequency means the condition is never
+        met."""
+        entry = BallisticEntry(self._VE, self._GAMMA, ballistic_coefficient=612.0)
+        altitudes = np.linspace(0.0, 80.0e3, 4001)
+        assert (
+            resonance_crossings(
+                altitudes,
+                entry.velocity(altitudes),
+                EXPONENTIAL_ATMOSPHERE_EARTH.density(altitudes),
+                500.0,
+                self._PS,
+            )
+            == ()
+        )
+
+    def test_pitch_frequency_is_non_monotone_through_an_entry(self):
+        """The whole reason for two crossings: omega ~ V sqrt(rho), and on
+        the way down rho rises while V falls, so it peaks in between."""
+        entry = BallisticEntry(self._VE, self._GAMMA, ballistic_coefficient=612.0)
+        altitudes = np.linspace(0.0, 80.0e3, 2001)
+        omega = pitch_frequency(
+            entry.velocity(altitudes), EXPONENTIAL_ATMOSPHERE_EARTH.density(altitudes), self._PS
+        )
+        peak = int(np.argmax(omega))
+        assert 0 < peak < omega.size - 1, "the peak must be interior"
+        assert omega[peak] > omega[0] and omega[peak] > omega[-1]
+
+    def test_resonance_condition_is_within_five_percent_of_equal_rates(self):
+        """sqrt(1 - Ix/Iy) = 0.949 at the representative 0.1, which is why
+        the condition is usually quoted as 'pitch frequency equals roll
+        rate'. Kept visible rather than absorbed."""
+        assert resonance_condition_ratio(0.1) == pytest.approx(0.9487, abs=1e-4)
+        assert resonance_condition_ratio(0.0) == 1.0
+        assert resonance_condition_ratio(0.3) < resonance_condition_ratio(0.1)
+
+    def test_roll_rate_decays_to_its_steady_state(self):
+        """Eq. (13.11): exponential approach, independent of the sign of the
+        initial offset."""
+        steady = 12.0
+        times = np.linspace(0.0, 400.0, 401)
+        for initial in (0.0, 30.0):
+            history = roll_rate(times, initial, steady, 25.0)
+            assert history[0] == pytest.approx(initial)
+            assert history[-1] == pytest.approx(steady, abs=1e-3)
+            assert np.all(np.abs(history - steady) <= abs(initial - steady) + 1e-12)
+
+    def test_steady_state_roll_rate_is_independent_of_inertia(self):
+        """p_ss = -C_l0 V/(C_lp d) contains no inertia and no dynamic
+        pressure: those set how fast it is reached, not what it is."""
+        value = steady_state_roll_rate(0.001, -0.02, 4000.0, 0.5)
+        assert value == pytest.approx(0.001 * 4000.0 / (0.02 * 0.5))
+        # Doubling speed doubles it; the driving moment sets the sign.
+        assert steady_state_roll_rate(0.001, -0.02, 8000.0, 0.5) == pytest.approx(2 * value)
+        assert steady_state_roll_rate(-0.001, -0.02, 4000.0, 0.5) == pytest.approx(-value)
+
+    def test_trim_amplification_peaks_at_resonance_and_scales_as_one_over_zeta(self):
+        """A factor of 10 at 5% damping. The point of computing it is that
+        'considerable amplification' becomes a number."""
+        roll = 18.0
+        at_resonance = resonance_condition_ratio(0.1) * roll
+        peak = float(trim_amplification(at_resonance, roll, 0.05))
+        assert peak == pytest.approx(10.0, rel=0.02)
+        assert float(trim_amplification(at_resonance, roll, 0.25)) == pytest.approx(2.0, rel=0.02)
+        # Far from resonance the trim is essentially unamplified.
+        assert float(trim_amplification(10.0 * at_resonance, roll, 0.05)) < 1.05
+
+    def test_validation(self):
+        with pytest.raises(ValueError, match="stability_factor"):
+            pitch_frequency(4000.0, 0.1, 0.0)
+        with pytest.raises(ValueError, match="inertia_ratio"):
+            resonance_condition_ratio(1.0)
+        with pytest.raises(ValueError, match="roll_damping_coefficient"):
+            steady_state_roll_rate(0.001, 0.02, 4000.0, 0.5)
+        with pytest.raises(ValueError, match="time_constant"):
+            roll_rate(np.array([0.0]), 1.0, 0.0, -1.0)
+        with pytest.raises(ValueError, match="damping_ratio"):
+            trim_amplification(10.0, 18.0, 0.0)
+        with pytest.raises(ValueError, match="equal length"):
+            resonance_crossings([1.0, 2.0], [1.0], [1.0], 18.0, 3.73e-3)

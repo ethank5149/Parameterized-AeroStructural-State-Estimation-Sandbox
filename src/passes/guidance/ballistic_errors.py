@@ -374,15 +374,26 @@ def downrange_per_flight_path_angle(
     -----
     Regan prints this with the bracket the other way round, and his prose
     agrees with the printed form ("for :math:`\\gamma < \\gamma^*`,
-    :math:`\\delta R/\\delta\\gamma` is negative"). Finite differences of the
-    independent conic solution give the **opposite sign**, matching the
-    form above: below the optimum, lofting further *lengthens* the range,
-    which is what a maximum at :math:`\\gamma^*` requires. The magnitude
-    agrees to five figures either way, so only the sign is at issue, and it
-    may be a convention — an error measured as "short" rather than as a
-    signed displacement — rather than a mistake. It is flipped here to
-    match the physical derivative, and flagged rather than silently
-    adopted.
+    :math:`\\delta R/\\delta\\gamma` is negative"). **The printed form has
+    been confirmed against the book itself**, so this is not a transcription
+    artefact.
+
+    Finite differences of the independent conic solution give the
+    **opposite sign**, matching the form above. The decisive check is not
+    the derivative but the extremum: scanning :math:`\\theta_i(\\gamma)` at
+    fixed speed puts the maximum at :math:`\\pi/4 - \\theta_i/4` to within
+    0.01 degrees, so :math:`\\gamma^*` genuinely maximises range and the
+    derivative below it must be positive. The magnitude agrees to five
+    figures either way, so only the sign is at issue.
+
+    Where the sign enters cannot be located from the text: it should follow
+    from Regan Eq. (5.33), but the bracket multiplying
+    :math:`\\delta\\gamma` there does not reproduce the numerics under any
+    reading we can recover, including at :math:`\\gamma^*` where it must
+    vanish and does not. So the disagreement is recorded rather than
+    diagnosed. It may still be a convention — an error reported as "short"
+    rather than as a signed displacement — but nothing in the surrounding
+    text says so.
 
     A separate discrepancy is left unresolved because it cannot be settled
     from the text: Regan's worked example Eq. (5.40) states **-5.28
@@ -409,13 +420,26 @@ def downrange_per_burnout_altitude(
 
     Regan prints
     :math:`2\\cot\\gamma - \\cos(\\gamma+\\theta_i)/\\cos\\gamma`, which is
-    the same thing only when :math:`\\cos(\\gamma+\\theta_i) = 0`. Finite
-    differences of the independent conic solution match the form above to
-    **five decimal places at every angle pair tried**, and match the printed
-    form only at :math:`\\gamma + \\theta_i = 90°` — exactly the signature
-    of an outer bracket lost in typesetting or transcription, since the
-    second term is then multiplied by one instead of by
-    :math:`\\cot\\gamma`.
+    the same thing only when :math:`\\cos(\\gamma+\\theta_i) = 0`. That
+    printed form has been **confirmed against the book**, so it is his and
+    not a transcription artefact — and it is **demonstrably inconsistent
+    with his own Eq. (5.33)**, which is the total differential everything in
+    his §5.5 descends from.
+
+    Setting :math:`\\delta V = \\delta\\gamma = 0` in Eq. (5.33) gives
+    :math:`\\partial R/\\partial h = (1 + A)/C` with
+    :math:`A = (1-\\cos\\theta_i)/(\\lambda\\cos^2\\gamma)` and
+    :math:`C` the bracket on :math:`\\delta\\theta_i`. Two facts close it.
+    The impact equation makes
+    :math:`A = 1 - \\cos(\\gamma+\\theta_i)/\\cos\\gamma`, so the numerator
+    is exactly the bracket above; and :math:`C = \\tan\\gamma` identically on
+    the impact locus, verified to six decimals. Hence
+    :math:`(1+A)/C = \\cot\\gamma\\,[2 - \\cos(\\gamma+\\theta_i)/\\cos\\gamma]`
+    — the form used here. It agrees with finite differences to five decimals
+    at every angle pair tried, whereas the printed form agrees only where
+    :math:`\\cos(\\gamma+\\theta_i)=0`. The slip is in substituting
+    :math:`C = \\tan\\gamma` into the first term of the numerator but not
+    the second.
 
     The consequence is not academic. At Regan's own worked point
     (:math:`\\gamma = 22.5°, \\theta_i = 90°`) the printed form gives

@@ -415,9 +415,24 @@ separate open items above are chapters in it.
       numerics support the latter. Nothing in the text settles where the
       2.25 comes from.
 
-      A caveat on all of this: these were read from a machine transcription,
-      so a dropped bracket is at least as likely to be MinerU's as Regan's.
-      The numerics are what the implementation follows either way.
+      **Both printed forms have since been confirmed against the book
+      itself**, so neither is a transcription artefact — and the (5.41) case
+      became demonstrable rather than merely numerical. Setting
+      `δV = δγ = 0` in Regan's own Eq. (5.33) gives `∂R/∂h = (1+A)/C`; the
+      impact equation makes `A = 1 − cos(γ+θ)/cos γ`, and `C = tan γ`
+      identically on the impact locus (verified to six decimals). So
+      Eq. (5.33) implies exactly the corrected form, and Eq. (5.41) is
+      **internally inconsistent with it** — the slip is substituting
+      `C = tan γ` into the first term of the numerator but not the second.
+
+      The (5.39) sign could not be diagnosed the same way: the bracket
+      multiplying `δγ` in Eq. (5.33) does not reproduce the numerics under
+      any reading recoverable from the text, including at γ* where it must
+      vanish and does not. So that one is recorded as a disagreement rather
+      than located. What *is* settled is which side is right: scanning
+      `θ_i(γ)` at fixed speed puts the maximum at `π/4 − θ/4` to within
+      **0.01°**, so γ* genuinely maximises range and the derivative below it
+      is positive.
 - [x] ~~**REP, DEP and their relationship to CEP (§5.7.3).**~~ **Done — and
       it turned out to supply a 126-point verification, not just a ratio.**
       Siouris §5.7.3 gives the classical relations, but the section also
@@ -509,15 +524,48 @@ this backlog's gaps.
       also a second, independent treatment of the error analysis Siouris
       gives in §6.4.3 — worth having both, since agreement between two texts
       is worth more here than either alone.
-- [ ] **Angular motion during re-entry (Ch. XIII), and configuration
-      asymmetries (Ch. X §10.1).** These are the classical RV dispersion
-      mechanisms — roll resonance, roll-through-zero, asymmetry-induced trim
-      — and we model **none** of them. Our RV is a point mass with a
-      ballistic coefficient. For a real reentry vehicle these terms are not a
-      refinement of the dispersion budget, they are frequently the dominant
-      entry in it, which means the ballistic CEP we report is optimistic by
-      an amount we currently cannot even bound. §13.2 gives the rolling
-      moment equation.
+- [x] ~~**Angular motion during re-entry (Ch. XIII).**~~ **Roll dynamics
+      and resonance done; asymmetry-driven trim still open.**
+      [`roll_resonance.py`](src/passes/dynamics/roll_resonance.py) carries
+      Regan's roll-rate history (Eqs. 13.8–13.12) and the resonance
+      condition `ω_nα = √(1 − I_x/I_y)·p` (Eq. 13.79).
+
+      The structural result is that **the pitch frequency is not monotone
+      through an entry.** It goes as `V√ρ`, and on the way down ρ rises
+      while V falls, so it climbs, peaks, and falls again — meaning a
+      vehicle at fixed roll rate crosses resonance **twice, once, or not at
+      all**, decided by its ballistic coefficient.
+
+      Verified against Regan's worked Fig. 13.10 case (V_E = 5 km/s, 75°
+      entry, P_s = 3.73×10⁻³ m/kg, 18 rad/s), driven by the independently
+      verified Allen–Eggers profile so that two modules are exercised
+      against one published result: **one crossing at 37.0 km** for a 6×10⁴
+      Pa ballistic factor, **two at 36.5 and 10.2 km** for 6×10³ Pa, against
+      his one, and 37 km / ~11 km. Counts right in both, altitudes within
+      1–3 km on an exponential atmosphere rather than his tabulated one.
+
+      *A source inconsistency worth recording:* he gives first resonance as
+      "about 34 km" for the heavy vehicle then "as before, at 37 km" for the
+      light one, though these are the same quantity and his own argument
+      implies they barely differ. We compute 37.0 and 36.5 — consistent with
+      the "as before", not with the 34.
+
+      `trim_amplification` is flagged as **ours, not his**: Regan states only
+      that the response is singular undamped and "considerably" amplified at
+      realistic damping. The standard second-order form turns that adjective
+      into a number — a factor of **10 at 5 % damping** — and is labelled a
+      quasi-steady bound, since the real amplification depends on how fast
+      the vehicle sweeps through.
+
+- [ ] **Configuration asymmetries as a dispersion source (Ch. X §10.1,
+      Ch. XIII Fig. 13.2).** The resonance machinery now exists but nothing
+      *drives* it: `C_l0` and the trim angle are caller inputs, and the
+      budget still charges the ballistic leg a stated dispersion. Closing it
+      needs the c.g.-offset roll torque of Fig. 13.2 and a mapping from an
+      amplified trim excursion to an impact displacement — Regan notes the
+      trajectory effect persists *after* resonance, and that first and second
+      resonance trade force against remaining time of flight in opposite
+      directions.
 - [ ] **Deviation of the vertical (Ch. III §3.3).** Directly closes the
       gravity-anomaly item in §1, which was listed there as having *no*
       source in the repository.
