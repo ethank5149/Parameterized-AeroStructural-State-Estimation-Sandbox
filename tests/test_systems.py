@@ -1,5 +1,7 @@
 """System-level composition: which phase sequences form admissible systems."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -32,6 +34,7 @@ from passes.systems import (
     probable_error,
     validate,
 )
+from passes.systems.package import LaunchPackage, PackageError, load_package
 
 
 class TestPhaseTaxonomy:
@@ -912,3 +915,137 @@ class TestBoostLateralErrorIsRangeDependent:
             injection_error(IMU_GRADES["tactical"], 300.0).position
             * crossrange_offset_sensitivity(0.5 * np.pi)
         ) == pytest.approx(0.0, abs=1e-9)
+
+
+class TestLaunchPackage:
+    """The portable configuration format."""
+
+    _MINIMAL = """
+schema = "passes.launch-package/1"
+
+[launch]
+latitude_deg = 45.0
+longitude_deg = -100.0
+
+[[aimpoints]]
+latitude_deg = 50.0
+longitude_deg = 40.0
+"""
+
+    def test_a_minimal_package_loads_with_documented_defaults(self):
+        package = LaunchPackage.from_toml(self._MINIMAL)
+        assert package.profile.architecture == "ballistic-single"
+        assert package.vehicle.imu_grade == "aviation"
+        assert package.profile.burnout_flight_path_angle is None
+        assert np.rad2deg(package.launch.latitude) == pytest.approx(45.0)
+        assert np.rad2deg(package.aimpoints[0].longitude) == pytest.approx(40.0)
+
+    def test_round_trips_through_both_formats_identically(self):
+        package = LaunchPackage.from_toml(self._MINIMAL)
+        assert LaunchPackage.from_json(package.to_json()) == package
+        assert LaunchPackage.from_toml(package.to_toml()) == package
+        assert LaunchPackage.from_json(package.to_json()) == LaunchPackage.from_toml(
+            package.to_toml()
+        )
+
+    def test_the_shipped_reference_package_loads_and_round_trips(self):
+        path = Path("packages/fobs-reference.toml")
+        if not path.exists():
+            pytest.skip("reference package not present")
+        package = load_package(path)
+        assert package.profile.architecture == "fractional-orbital-single"
+        assert package.arrival_time == pytest.approx(4200.0)
+        assert package.objectives == ("warning_time", "burnout_speed")
+        assert LaunchPackage.from_json(package.to_json()) == package
+
+    def test_a_missing_or_wrong_schema_is_refused(self):
+        """Guessing at an unversioned file is how a format change silently
+        reinterprets old data."""
+        with pytest.raises(PackageError, match="schema"):
+            LaunchPackage.from_toml(self._MINIMAL.replace('"passes.launch-package/1"', '"other/9"'))
+        with pytest.raises(PackageError, match="schema"):
+            LaunchPackage.from_toml(
+                self._MINIMAL.replace('schema = "passes.launch-package/1"', "")
+            )
+
+    def test_unknown_keys_are_refused_because_toml_scoping_is_a_trap(self):
+        """A bare key written after a [table] header belongs to that table,
+        not to the document root. Without this check a package that looks
+        like it sets `arrival_time_s` at top level would silently set
+        `vehicle.arrival_time_s`, which means nothing, and the loader would
+        use the default and say so nowhere.
+
+        This is not hypothetical: it happened to the first example package
+        written for this format, and the summary quietly showed one
+        objective where the file listed two.
+        """
+        trapped = self._MINIMAL + """
+[vehicle]
+imu_grade = "marine"
+arrival_time_s = 4200.0
+"""
+        with pytest.raises(PackageError, match="unknown key"):
+            LaunchPackage.from_toml(trapped)
+        # ...and the message says why, not just that.
+        try:
+            LaunchPackage.from_toml(trapped)
+        except PackageError as error:
+            assert "belongs to that table" in str(error)
+
+    def test_closed_vocabularies_are_checked_against_the_code(self):
+        """A typo must be an error with the options listed, never a silent
+        fallback."""
+        with pytest.raises(PackageError, match="architecture"):
+            LaunchPackage.from_toml(
+                self._MINIMAL + '\n[profile]\narchitecture = "ballistic-signle"\n'
+            )
+        with pytest.raises(PackageError, match="imu_grade"):
+            LaunchPackage.from_toml(
+                self._MINIMAL + '\n[vehicle]\nimu_grade = "military"\n'
+            )
+        with pytest.raises(PackageError, match="objective"):
+            LaunchPackage.from_dict(
+                {**LaunchPackage.from_toml(self._MINIMAL).to_dict(),
+                 "objectives": ["minimise_regret"]}
+            )
+
+    def test_units_are_named_so_a_wrong_unit_cannot_be_plausible(self):
+        """Degrees on disk, radians in memory, converted once. A file that
+        supplied radians would be out of range and rejected rather than
+        quietly flying a different scenario."""
+        package = LaunchPackage.from_toml(self._MINIMAL)
+        assert package.launch.latitude == pytest.approx(np.deg2rad(45.0))
+        with pytest.raises(PackageError, match="latitude_deg"):
+            LaunchPackage.from_toml(self._MINIMAL.replace("45.0", "145.0"))
+
+    def test_geometry_is_validated_not_merely_parsed(self):
+        with pytest.raises(PackageError, match="entry_interface_altitude_m"):
+            LaunchPackage.from_toml(
+                self._MINIMAL
+                + "\n[profile]\nparking_altitude_m = 100e3\n"
+                "entry_interface_altitude_m = 150e3\n"
+            )
+        with pytest.raises(PackageError, match="arrival_time_s"):
+            LaunchPackage.from_toml("arrival_time_s = -1.0\n" + self._MINIMAL)
+
+    def test_it_produces_the_objects_the_framework_consumes(self):
+        package = LaunchPackage.from_toml(self._MINIMAL)
+        request = package.mission_request()
+        assert request.launch_site == package.launch
+        assert request.aimpoints == package.aimpoints
+        budget = evaluate(package.architecture(), request)
+        assert budget is not None
+
+    def test_with_profile_copies_rather_than_mutates(self):
+        """Sweeps must not contaminate the baseline they started from."""
+        package = LaunchPackage.from_toml(self._MINIMAL)
+        swept = package.with_profile(parking_altitude=300.0e3)
+        assert swept.profile.parking_altitude == 300.0e3
+        assert package.profile.parking_altitude == 150.0e3
+        assert swept.launch == package.launch
+
+    def test_load_package_refuses_to_sniff_a_format(self, tmp_path):
+        path = tmp_path / "scenario.cfg"
+        path.write_text(self._MINIMAL, encoding="utf-8")
+        with pytest.raises(PackageError, match="unrecognised package suffix"):
+            load_package(path)

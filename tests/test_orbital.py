@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from passes.geodesy import GeodeticPosition, great_circle_range
+from passes.geodesy import WGS84_MEAN_RADIUS, GeodeticPosition, great_circle_range
 from passes.orbital import (
     EARTH,
     EARTH_ROTATION_RATE,
@@ -32,7 +32,12 @@ from passes.orbital import (
 from passes.orbital.fobs import fractional_insertion
 from passes.orbital.radar import EARLY_WARNING_SITES, coverage
 from passes.orbital.radar import site as radar_site
-from passes.orbital.scenario import ballistic_trajectory, warning_comparison
+from passes.orbital.scenario import (
+    ballistic_trajectory,
+    fobs_trajectory,
+    leading_aimpoint,
+    warning_comparison,
+)
 from passes.orbital.warning import (
     detection_window,
     horizon_central_angle,
@@ -902,11 +907,25 @@ class TestRadarCoverage:
         assert comparison.fobs.range_angle > comparison.ballistic.range_angle
 
     def test_the_fractional_profile_really_does_go_the_long_way(self):
-        """Range angles must sum to a full revolution: the two profiles are
-        the minor and major arcs of the same great circle."""
-        comparison = warning_comparison(self._LAUNCH, self._TARGET)
-        total = comparison.ballistic.range_angle + comparison.fobs.range_angle
-        assert total == pytest.approx(2.0 * np.pi, abs=1e-9)
+        """The two profiles are the minor and major arcs of one great
+        circle, so their range angles sum to a full revolution.
+
+        That identity holds *exactly* only on a non-rotating Earth. With
+        rotation on, each profile leads its own aim point by its own flight
+        time — 7.4 degrees for the half-hour ballistic arc, 17.3 for the
+        69-minute fractional one — so they aim at different points and the
+        sum drifts by the difference of the leads. Asserting the exact
+        identity with rotation on was a real (and initially failing)
+        overreach.
+        """
+        fixed = warning_comparison(self._LAUNCH, self._TARGET, earth_rotation=False)
+        assert fixed.ballistic.range_angle + fixed.fobs.range_angle == pytest.approx(
+            2.0 * np.pi, abs=1e-9
+        )
+        turning = warning_comparison(self._LAUNCH, self._TARGET, earth_rotation=True)
+        total = turning.ballistic.range_angle + turning.fobs.range_angle
+        assert total == pytest.approx(2.0 * np.pi, abs=np.deg2rad(15.0))
+        assert total != pytest.approx(2.0 * np.pi, abs=1e-9)
 
     def test_both_profiles_end_at_the_target(self):
         """A comparison between different endpoints would be meaningless."""
@@ -938,3 +957,85 @@ class TestRadarCoverage:
             coverage(trajectory.times, trajectory.altitudes, trajectory.subpoints[:-1])
         with pytest.raises(ValueError, match="at least one radar site"):
             coverage(trajectory.times, trajectory.altitudes, trajectory.subpoints, ())
+
+
+class TestEarthRotationAndLeadTargeting:
+    """A long flight must aim where the target will be, not where it is."""
+
+    _LAUNCH = GeodeticPosition(np.deg2rad(51.8), np.deg2rad(59.5), 0.0, "launch")
+    _TARGET = GeodeticPosition(np.deg2rad(38.9), np.deg2rad(-77.0), 0.0, "target")
+    _OMEGA = 7.292115e-5
+
+    def test_both_profiles_arrive_over_the_target_with_rotation_on(self):
+        """The check that matters: with the ground turning underneath, an
+        un-led trajectory misses by the lead angle. Both profiles must still
+        arrive."""
+        for builder in (ballistic_trajectory, fobs_trajectory):
+            trajectory = builder(self._LAUNCH, self._TARGET, earth_rotation=True)
+            miss = great_circle_range(trajectory.subpoints[-1], self._TARGET)
+            assert miss < 5.0e3, f"{trajectory.label} misses by {miss/1e3:.0f} km"
+
+    def test_the_lead_a_fractional_profile_needs_is_not_a_correction(self):
+        """Over a 69-minute flight the Earth turns 17 degrees — about
+        1500 km. Aiming at the target's launch-time position is not
+        slightly wrong; it is a different continent."""
+        trajectory = fobs_trajectory(self._LAUNCH, self._TARGET, earth_rotation=True)
+        lead = self._OMEGA * trajectory.flight_time
+        assert np.rad2deg(lead) == pytest.approx(17.3, abs=1.0)
+        assert lead * WGS84_MEAN_RADIUS / 1e3 > 1000.0
+
+    def test_ignoring_rotation_misses_by_the_lead_angle(self):
+        """Quantifies what the correction is worth: laying the inertial
+        track at the target without leading it, then rotating the ground
+        beneath, lands the vehicle roughly `omega * t * R` away."""
+        unled = fobs_trajectory(self._LAUNCH, self._TARGET, earth_rotation=False)
+        rotated_arrival = GeodeticPosition(
+            unled.subpoints[-1].latitude,
+            float(
+                (unled.subpoints[-1].longitude - self._OMEGA * unled.flight_time + np.pi)
+                % (2.0 * np.pi)
+                - np.pi
+            ),
+        )
+        miss = great_circle_range(rotated_arrival, self._TARGET)
+        assert miss / 1e3 > 1000.0
+
+    def test_the_lead_iteration_converges_and_is_self_consistent(self):
+        """The aim point is a fixed point: the lead depends on the flight
+        time, which depends on the range to the lead point. At convergence
+        the two must agree."""
+        radius = WGS84_MEAN_RADIUS + 150e3
+        speed = float(np.sqrt(3.986004418e14 / radius))
+
+        def elapsed_for(aim):
+            arc = 2.0 * np.pi - great_circle_range(self._LAUNCH, aim) / WGS84_MEAN_RADIUS
+            return float(arc * radius / speed)
+
+        aim, elapsed = leading_aimpoint(self._LAUNCH, self._TARGET, elapsed_for)
+        implied = (aim.longitude - self._TARGET.longitude) % (2.0 * np.pi)
+        assert implied == pytest.approx(self._OMEGA * elapsed, abs=1e-6)
+        assert elapsed_for(aim) == pytest.approx(elapsed, rel=1e-9)
+
+    def test_rotation_changes_which_site_sees_it_more_than_when(self):
+        """The prediction made when rotation was first deferred, now
+        measured: the warning time moves by under a minute while the number
+        of detecting sites changes."""
+        fixed = warning_comparison(self._LAUNCH, self._TARGET, earth_rotation=False)
+        turning = warning_comparison(self._LAUNCH, self._TARGET, earth_rotation=True)
+        shift = abs(
+            turning.ballistic_coverage.warning_time
+            - fixed.ballistic_coverage.warning_time
+        )
+        assert shift < 120.0
+        # ...and the conclusion is unchanged either way, which is what makes
+        # the earlier comparison still valid.
+        assert turning.warning_reduction > 10.0 * 60.0
+
+    def test_rotation_can_be_switched_off_for_attribution(self):
+        """Kept switchable so a result can be attributed to geometry rather
+        than to the rotation correction, the same reason the glide plant
+        integrates over a non-rotating sphere."""
+        fixed = fobs_trajectory(self._LAUNCH, self._TARGET, earth_rotation=False)
+        turning = fobs_trajectory(self._LAUNCH, self._TARGET, earth_rotation=True)
+        assert fixed.subpoints[-1].longitude != turning.subpoints[-1].longitude
+        assert fixed.flight_time != turning.flight_time

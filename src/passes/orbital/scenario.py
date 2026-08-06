@@ -52,6 +52,7 @@ the backlog rather than hidden.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -63,7 +64,12 @@ from passes.geodesy import (
     great_circle_bearing,
     great_circle_range,
 )
-from passes.guidance.lofting import burnout_speed_for_range, optimum_burnout_angle
+from passes.guidance.lofting import (
+    burnout_speed_for_range,
+    free_flight_time,
+    optimum_burnout_angle,
+)
+from passes.orbital.fobs import EARTH_ROTATION_RATE
 from passes.orbital.radar import EARLY_WARNING_SITES, CoverageResult, RadarSite, coverage
 
 __all__ = [
@@ -72,6 +78,7 @@ __all__ = [
     "ballistic_trajectory",
     "fobs_trajectory",
     "great_circle_point",
+    "leading_aimpoint",
     "warning_comparison",
 ]
 
@@ -103,6 +110,68 @@ def great_circle_point(
     return GeodeticPosition(
         float(latitude), float((longitude + np.pi) % (2.0 * np.pi) - np.pi)
     )
+
+
+def leading_aimpoint(
+    launch: GeodeticPosition,
+    target: GeodeticPosition,
+    flight_time: Callable[[GeodeticPosition], float],
+    tolerance: float = 1.0e-9,
+    max_iterations: int = 40,
+) -> tuple[GeodeticPosition, float]:
+    """Where to aim so the target arrives under the impact point.
+
+    A trajectory is flown in an inertial plane; the target rotates with the
+    Earth. Over a flight of length :math:`t` the target moves east by
+    :math:`\\omega t` — **16.9 degrees, about 1500 km, for a 67-minute
+    fractional-orbital profile**, and still 7.5 degrees for a half-hour
+    ballistic arc. Aiming at where the target *is* therefore misses by
+    roughly that much, which is not a refinement but the difference between
+    hitting a target and hitting a different continent.
+
+    So the aim point is the target's position at *arrival*, and finding it
+    is a fixed point: the lead depends on the flight time, which depends on
+    the range to the lead point. This iterates it, which converges in a
+    handful of steps because the map is a strong contraction —
+    :math:`\\omega` times the sensitivity of flight time to range is well
+    under one for any Earth-bound trajectory.
+
+    Parameters
+    ----------
+    launch, target:
+        Endpoints, with ``target`` the position at launch.
+    flight_time:
+        Given a candidate aim point, the seconds of flight to reach it.
+    tolerance:
+        Convergence tolerance on the lead angle (rad).
+    max_iterations:
+        Cap. Exceeding it raises rather than returning a half-converged
+        aim point.
+
+    Returns
+    -------
+    tuple[GeodeticPosition, float]
+        The aim point in the inertial frame, and the flight time to it.
+    """
+    lead = 0.0
+    for _ in range(max_iterations):
+        aim = GeodeticPosition(
+            target.latitude,
+            float((target.longitude + lead + np.pi) % (2.0 * np.pi) - np.pi),
+            target.altitude,
+            target.label,
+        )
+        elapsed = float(flight_time(aim))
+        updated = EARTH_ROTATION_RATE * elapsed
+        if abs(updated - lead) < tolerance:
+            return aim, elapsed
+        lead = updated
+    msg = (
+        f"lead-angle iteration did not converge in {max_iterations} steps; "
+        "the flight time is not a contraction of the aim point, which "
+        "should not happen for an Earth-bound trajectory"
+    )
+    raise ValueError(msg)
 
 
 @dataclass(frozen=True)
@@ -147,6 +216,7 @@ def ballistic_trajectory(
     flight_path_angle: float | None = None,
     samples: int = 400,
     body_radius: float = WGS84_MEAN_RADIUS,
+    earth_rotation: bool = True,
 ) -> Trajectory:
     """A Keplerian ballistic arc on the short great circle.
 
@@ -163,7 +233,18 @@ def ballistic_trajectory(
     samples:
         Trajectory samples.
     """
-    theta = great_circle_range(launch, target) / body_radius
+    if earth_rotation:
+        def elapsed_for(aim: GeodeticPosition) -> float:
+            arc = great_circle_range(launch, aim) / body_radius
+            angle = optimum_burnout_angle(arc) if flight_path_angle is None else float(
+                flight_path_angle
+            )
+            return free_flight_time(arc, angle, _MU, body_radius)
+
+        aimpoint, _ = leading_aimpoint(launch, target, elapsed_for)
+    else:
+        aimpoint = target
+    theta = great_circle_range(launch, aimpoint) / body_radius
     if not 0.0 < theta < np.pi:
         msg = (
             "launch and target must be separated by less than 180 deg, got "
@@ -192,9 +273,25 @@ def ballistic_trajectory(
     mean = np.unwrap(eccentric - eccentricity * np.sin(eccentric))
     times = (mean - mean[0]) / np.sqrt(_MU / semi_major**3)
 
-    bearing = great_circle_bearing(launch, target)
+    bearing = great_circle_bearing(launch, aimpoint)
     swept = np.linspace(0.0, theta, samples)
-    subpoints = [great_circle_point(launch, bearing, float(s)) for s in swept]
+    inertial = [great_circle_point(launch, bearing, float(s)) for s in swept]
+    if earth_rotation:
+        subpoints = [
+            GeodeticPosition(
+                point.latitude,
+                float(
+                    (point.longitude - EARTH_ROTATION_RATE * float(t) + np.pi)
+                    % (2.0 * np.pi)
+                    - np.pi
+                ),
+                point.altitude,
+                point.label,
+            )
+            for point, t in zip(inertial, times, strict=True)
+        ]
+    else:
+        subpoints = inertial
     return Trajectory(
         label="ballistic",
         times=np.asarray(times, dtype=np.float64),
@@ -215,6 +312,7 @@ def fobs_trajectory(
     entry_altitude: float = 100.0e3,
     samples: int = 400,
     body_radius: float = WGS84_MEAN_RADIUS,
+    earth_rotation: bool = True,
 ) -> Trajectory:
     """A fractional orbital profile taking the long way round.
 
@@ -231,6 +329,23 @@ def fobs_trajectory(
         Altitude at which the descent is taken to reach the atmosphere; the
         last part of the profile drops from parking to this and then to the
         surface.
+    earth_rotation:
+        Whether to carry the sub-vehicle track in the **rotating** frame.
+        A fractional profile spends the better part of an hour aloft, over
+        which the planet turns roughly 15 degrees per hour — some 1600 km at
+        the equator. The orbit plane is inertial; the ground beneath it is
+        not, so the track walks west relative to a non-rotating calculation.
+
+        This matters here for a specific reason: the whole warning
+        comparison is about *which* sensors the track passes near, and a
+        1600 km westward walk is comparable to a site's entire horizon
+        radius at parking altitude. Leaving it out was the largest
+        remaining approximation in the fractional profile.
+
+        The rotation is applied to the ground track only; the trajectory
+        itself is still flown on a fixed great circle in inertial space,
+        which is correct to the extent that the plane does not precess
+        appreciably inside one revolution.
     """
     if not (np.isfinite(parking_altitude) and parking_altitude > entry_altitude > 0.0):
         msg = (
@@ -238,16 +353,46 @@ def fobs_trajectory(
             f"{parking_altitude} and {entry_altitude}"
         )
         raise ValueError(msg)
-    short = great_circle_range(launch, target) / body_radius
-    theta = 2.0 * np.pi - short
     radius = body_radius + parking_altitude
     speed = float(np.sqrt(_MU / radius))
 
-    # Away from the target: reversed bearing, so the approach arrives from
-    # the opposite side. This is the defining geometry of the profile.
-    bearing = float((great_circle_bearing(launch, target) + np.pi) % (2.0 * np.pi))
+    def elapsed_for(aim: GeodeticPosition) -> float:
+        arc = 2.0 * np.pi - great_circle_range(launch, aim) / body_radius
+        return float(arc * radius / speed)
+
+    if earth_rotation:
+        aimpoint, _ = leading_aimpoint(launch, target, elapsed_for)
+    else:
+        aimpoint = target
+    theta = 2.0 * np.pi - great_circle_range(launch, aimpoint) / body_radius
+
+    # Away from the aim point: reversed bearing, so the approach arrives
+    # from the opposite side. This is the defining geometry of the profile.
+    bearing = float((great_circle_bearing(launch, aimpoint) + np.pi) % (2.0 * np.pi))
     swept = np.linspace(0.0, theta, samples)
-    subpoints = [great_circle_point(launch, bearing, float(s)) for s in swept]
+    inertial = [great_circle_point(launch, bearing, float(s)) for s in swept]
+
+    # Times first, because the rotation correction needs them.
+    elapsed = swept * radius / speed
+
+    if earth_rotation:
+        # The plane is inertial; the ground turns eastward beneath it, so
+        # the sub-vehicle longitude walks west by omega * t.
+        subpoints = [
+            GeodeticPosition(
+                point.latitude,
+                float(
+                    (point.longitude - EARTH_ROTATION_RATE * float(t) + np.pi)
+                    % (2.0 * np.pi)
+                    - np.pi
+                ),
+                point.altitude,
+                point.label,
+            )
+            for point, t in zip(inertial, elapsed, strict=True)
+        ]
+    else:
+        subpoints = inertial
 
     # Altitude: constant on the parking arc, then a descent over the final
     # stretch. The descent arc is taken from the deorbit transfer geometry
@@ -260,11 +405,9 @@ def fobs_trajectory(
         fraction = (swept[descending] - (theta - descent_arc)) / descent_arc
         altitudes[descending] = np.maximum(parking_altitude * (1.0 - fraction), 0.0)
 
-    # Time: parking arc at orbital speed, descent at the same ground rate.
-    times = swept * radius / speed
     return Trajectory(
         label="fractional-orbital",
-        times=np.asarray(times, dtype=np.float64),
+        times=np.asarray(elapsed, dtype=np.float64),
         altitudes=altitudes,
         subpoints=subpoints,
         range_angle=float(theta),
@@ -307,13 +450,19 @@ def warning_comparison(
     sites: tuple[RadarSite, ...] = EARLY_WARNING_SITES,
     samples: int = 400,
     body_radius: float = WGS84_MEAN_RADIUS,
+    earth_rotation: bool = True,
 ) -> WarningComparison:
     """Fly both profiles between the same points, past the same sensors."""
     ballistic = ballistic_trajectory(
-        launch, target, flight_path_angle, samples, body_radius
+        launch, target, flight_path_angle, samples, body_radius, earth_rotation
     )
     fobs = fobs_trajectory(
-        launch, target, parking_altitude, samples=samples, body_radius=body_radius
+        launch,
+        target,
+        parking_altitude,
+        samples=samples,
+        body_radius=body_radius,
+        earth_rotation=earth_rotation,
     )
     return WarningComparison(
         ballistic=ballistic,

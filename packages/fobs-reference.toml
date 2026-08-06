@@ -1,0 +1,51 @@
+# A fractional-orbital reference scenario.
+#
+# Everything below is a *choice*; nothing derivable from these choices is
+# recorded here, so this file and a version of the repository together
+# reproduce a run exactly.
+
+schema = "passes.launch-package/1"
+
+# Root-level scalars MUST appear before the first [table] header: in TOML a
+# bare key written after one belongs to that table. The loader rejects
+# unknown keys precisely so that this mistake cannot pass silently — it
+# caught exactly this error in the first draft of this file.
+arrival_time_s = 4200.0
+objectives = ["warning_time", "burnout_speed"]
+
+[metadata]
+name = "fractional-orbital reference"
+description = """
+Mid-latitude continental launch against a coastal aimpoint, flown as a
+fractional-orbital profile. Used as the default scenario in
+notebooks/fobs-warning-analysis.ipynb.
+"""
+author = "PASSES"
+created = "2026-08-06"
+
+[launch]
+latitude_deg = 51.8
+longitude_deg = 59.5
+altitude_m = 0.0
+label = "launch site"
+
+[[aimpoints]]
+latitude_deg = 38.9
+longitude_deg = -77.0
+altitude_m = 0.0
+label = "aimpoint"
+
+[profile]
+architecture = "fractional-orbital-single"
+parking_altitude_m = 150e3
+entry_interface_altitude_m = 100e3
+ballistic_entry_angle_deg = 21.8
+# burnout_flight_path_angle_deg omitted -> minimum-energy gamma*.
+# Omission is meaningful: it delegates the choice, and survives a change
+# of range in a way that writing the current gamma* as a number would not.
+
+[vehicle]
+ballistic_coefficient_kg_m2 = 20000.0
+lift_to_drag = 0.0
+imu_grade = "aviation"
+boost_burn_time_s = 300.0
