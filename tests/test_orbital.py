@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from passes.geodesy import GeodeticPosition, great_circle_range
 from passes.orbital import (
     EARTH,
     EARTH_ROTATION_RATE,
@@ -29,6 +30,9 @@ from passes.orbital import (
     two_body_acceleration,
 )
 from passes.orbital.fobs import fractional_insertion
+from passes.orbital.radar import EARLY_WARNING_SITES, coverage
+from passes.orbital.radar import site as radar_site
+from passes.orbital.scenario import ballistic_trajectory, warning_comparison
 from passes.orbital.warning import (
     detection_window,
     horizon_central_angle,
@@ -845,3 +849,92 @@ class TestRadarHorizon:
             horizon_central_angle(-1.0)
         with pytest.raises(ValueError, match="strictly increasing"):
             detection_window([1.0, 0.0], [1e5, 1e5], [0.0, 0.0])
+
+
+class TestRadarCoverage:
+    """The sensor network, and the composed warning comparison."""
+
+    _LAUNCH = GeodeticPosition(np.deg2rad(51.8), np.deg2rad(59.5), 0.0, "launch")
+    _TARGET = GeodeticPosition(np.deg2rad(38.9), np.deg2rad(-77.0), 0.0, "target")
+
+    def test_site_lookup_is_by_prefix_and_rejects_ambiguity(self):
+        assert radar_site("Fylingdales").name == "Fylingdales"
+        assert radar_site("beale").name == "Beale"
+        with pytest.raises(KeyError, match="no early-warning site"):
+            radar_site("Nowhere")
+
+    def test_every_catalogued_site_is_on_the_ellipsoid_and_masked(self):
+        """Guards the transcription of the site list: a swapped
+        latitude/longitude or a degrees/radians slip would show here."""
+        for entry in EARLY_WARNING_SITES:
+            assert -0.5 * np.pi <= entry.position.latitude <= 0.5 * np.pi
+            assert -np.pi < entry.position.longitude <= np.pi
+            assert 0.0 <= entry.mask_elevation < np.deg2rad(30.0)
+            assert entry.note
+
+    def test_a_ballistic_arc_is_seen_by_much_of_the_network(self):
+        """A minimum-energy intercontinental arc peaks near 1300 km, where
+        the horizon radius is nearly 3800 km, so it is visible to many
+        widely separated sites."""
+        trajectory = ballistic_trajectory(self._LAUNCH, self._TARGET)
+        result = coverage(trajectory.times, trajectory.altitudes, trajectory.subpoints)
+        assert result.detected
+        assert len(result.detecting_sites) >= 5
+        assert trajectory.apogee / 1e3 == pytest.approx(1300.0, abs=100.0)
+
+    def test_the_fractional_profile_concedes_much_less_warning(self):
+        """The whole point of the concept, measured rather than asserted:
+        a low profile arriving from the opposite bearing is seen late and
+        by few sites."""
+        comparison = warning_comparison(self._LAUNCH, self._TARGET)
+        assert comparison.fobs_coverage.warning_time < comparison.ballistic_coverage.warning_time
+        assert len(comparison.fobs_coverage.detecting_sites) < len(
+            comparison.ballistic_coverage.detecting_sites
+        )
+        assert comparison.warning_reduction > 10.0 * 60.0
+
+    def test_and_pays_for_it_in_time_and_energy(self):
+        """The other side of the trade. A profile that only reduced warning
+        would be strictly better and there would be nothing to analyse."""
+        comparison = warning_comparison(self._LAUNCH, self._TARGET)
+        assert comparison.flight_time_penalty > 20.0 * 60.0
+        assert comparison.fobs.burnout_speed > comparison.ballistic.burnout_speed
+        assert comparison.fobs.range_angle > comparison.ballistic.range_angle
+
+    def test_the_fractional_profile_really_does_go_the_long_way(self):
+        """Range angles must sum to a full revolution: the two profiles are
+        the minor and major arcs of the same great circle."""
+        comparison = warning_comparison(self._LAUNCH, self._TARGET)
+        total = comparison.ballistic.range_angle + comparison.fobs.range_angle
+        assert total == pytest.approx(2.0 * np.pi, abs=1e-9)
+
+    def test_both_profiles_end_at_the_target(self):
+        """A comparison between different endpoints would be meaningless."""
+        comparison = warning_comparison(self._LAUNCH, self._TARGET)
+        for trajectory in (comparison.ballistic, comparison.fobs):
+            arrival = trajectory.subpoints[-1]
+            miss = great_circle_range(arrival, self._TARGET)
+            assert miss < 50.0e3, f"{trajectory.label} arrives {miss / 1e3:.0f} km off"
+
+    def test_depressing_the_ballistic_arc_lowers_apogee_and_warning(self):
+        """The ballistic profile has its own warning lever, and it is the
+        one an ICBM actually uses: fly depressed. This checks the framework
+        prices that too, rather than treating a fractional profile as the
+        only way to shorten warning."""
+        minimum_energy = warning_comparison(self._LAUNCH, self._TARGET)
+        depressed = warning_comparison(
+            self._LAUNCH, self._TARGET, flight_path_angle=np.deg2rad(12.0)
+        )
+        assert depressed.ballistic.apogee < minimum_energy.ballistic.apogee
+        assert (
+            depressed.ballistic_coverage.warning_time
+            <= minimum_energy.ballistic_coverage.warning_time
+        )
+        assert depressed.ballistic.burnout_speed > minimum_energy.ballistic.burnout_speed
+
+    def test_coverage_validation(self):
+        trajectory = ballistic_trajectory(self._LAUNCH, self._TARGET, samples=20)
+        with pytest.raises(ValueError, match="subpoints"):
+            coverage(trajectory.times, trajectory.altitudes, trajectory.subpoints[:-1])
+        with pytest.raises(ValueError, match="at least one radar site"):
+            coverage(trajectory.times, trajectory.altitudes, trajectory.subpoints, ())

@@ -862,19 +862,51 @@ enough to say what they are worth and what the catch is.
       bound** — geometry only, with no power-aperture, cross-section or
       track-quality requirement, so a real defence does worse.
 
-- [ ] **Warning time end to end, against a real trajectory pair.** The
-      geometry exists but nothing yet drives it with an actual FOBS profile
-      and an actual minimum-energy ballistic arc to the same target, through
-      a named radar site. That comparison — the one number the whole concept
-      turns on — is now a matter of composing `fobs_profile`,
-      `lofting_trade` and `detection_window`, and is the natural next step.
+- [x] ~~**Warning time end to end, against a real trajectory pair.**~~
+      ~~**Azimuth denial as distinct from warning time.**~~ **Both done.**
+      [`radar.py`](src/passes/orbital/radar.py) carries a network of
+      publicly documented early-warning sites, and
+      [`scenario.py`](src/passes/orbital/scenario.py) composes
+      `lofting`, `fobs`, `warning` and `radar` into the comparison the whole
+      concept turns on: both profiles between the same two points, past the
+      same sensors.
 
-- [ ] **Azimuth denial as distinct from warning time.** `approach_azimuth`
-      gives the free-approach property and `warning.py` gives the horizon,
-      but nothing combines them: the operational claim is that a fractional
-      profile arrives with short warning *and* from a bearing the defence is
-      not covering. Coverage is a function of where the radars are, which
-      this framework has no representation of.
+      For a mid-latitude Eurasian launch against a US east-coast aimpoint:
+
+      | | ballistic | fractional |
+      |---|---|---|
+      | range angle | 81.7° | 278.3° |
+      | apogee | 1308 km | 150 km |
+      | flight time | 30.3 min | 67.5 min |
+      | burnout speed | 7034 m/s | 7818 m/s |
+      | **sites detecting** | **7** | **1** |
+      | **warning** | **27.9 min** | **4.3 min** |
+
+      The trade priced rather than asserted: **24 minutes of warning removed,
+      paid for with 37 minutes of flight time and 780 m/s of burnout speed.**
+      And the azimuth-denial half falls straight out of the same run — the
+      ballistic arc is seen by seven widely separated sites, the fractional
+      one by a single site, because it arrives from the reversed bearing over
+      a hemisphere the network does not face.
+
+      `coverage` composes sites by *earliest detection*, which is right for
+      warning (one site raises the alarm) and explicitly wrong for track
+      quality or discrimination, which need favourable multi-site geometry
+      and are not modelled.
+
+- [ ] **Earth rotation under the fractional parking arc.** `scenario.py`
+      flies the parking arc on a fixed great circle. The planet turns ~22°
+      per low revolution, so the real sub-vehicle track walks east-west by up
+      to a couple of thousand kilometres. That changes *which* site detects
+      first more than *when*, which is why the comparison stands — but
+      `fobs.ground_track` already does the rotation and composing it in is
+      straightforward.
+
+- [ ] **Boost-phase infrared detection.** The single largest omission in the
+      warning analysis, and it cuts against the fractional profile: a real
+      boost is detectable from space long before any ground radar sees the
+      vehicle, and a longer, higher-energy boost is *more* detectable. The
+      notebook says so in its limitations; the model carries nothing.
 
 ## 9.8 Boost, staging and propulsion dispersion
 
@@ -914,6 +946,34 @@ Recorded so the survey does not have to be repeated.
 - **The slug-calorimeter ASTM standard** documents the measurement behind
   the arcjet heat-flux column. Worth reading only if the calibration chain
   in §9.5 turns out to be the thing blocking the effective-radius question.
+
+### 9.10 Interactive analysis
+
+- [x] ~~**A composed, runnable scenario notebook.**~~ **Done** —
+      [`fobs-warning-analysis.ipynb`](notebooks/fobs-warning-analysis.ipynb),
+      25 cells, executes end to end with 6 figures and no errors. Configurable
+      launch site and aimpoint at the top; ground tracks with horizon circles,
+      altitude profiles with first-detection marks, per-site detection bars, a
+      burnout-angle sweep across four objectives, a parking-altitude sweep
+      against four mask assumptions, and the fractional-insertion table.
+
+      Its §5 makes the point the whole backlog has been circling: **the
+      objectives disagree.** Minimum energy sits at γ*, which is also where
+      `∂R/∂γ` vanishes; depression buys warning-time compression; lofting buys
+      insensitivity to burnout speed error. There is no trajectory that wins
+      on every count, and the notebook prices the choice rather than making
+      it.
+
+      §6 sweeps the **assumed** radar mask precisely because it is the least
+      defensible number in the model, and the spread it produces is the
+      honest uncertainty band on every warning figure quoted.
+
+- [ ] **A basemap for the ground-track figure.** Plotted on a bare
+      equirectangular grid: `cartopy` needs a C++ toolchain not present here,
+      and a coastline would in any case imply more precision than a spherical
+      trajectory model has. Worth revisiting only alongside the Earth-rotation
+      item above, since that is what would make the track worth locating
+      precisely.
 
 ---
 

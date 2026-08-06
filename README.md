@@ -265,6 +265,18 @@ Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ 
 
 `passes.tex`, `passes-hgv.tex`, and `references.bib` are earlier drafts retained for history. They contain the citation errors documented in the audit and should not be built or cited.
 
+## Notebooks
+
+[`notebooks/fobs-warning-analysis.ipynb`](notebooks/fobs-warning-analysis.ipynb) composes the orbital, guidance and sensor-geometry modules into a runnable warning-time comparison: a fractional-orbital profile against a ballistic arc between the same two points, past a network of publicly documented early-warning sites. Launch site and aimpoint are configurable at the top; the notebook sweeps burnout flight-path angle across four objectives, parking altitude against four radar-mask assumptions, and reports the fractional-insertion condition.
+
+The headline trade for a mid-latitude Eurasian launch against a US east-coast aimpoint: **24 minutes of warning removed, paid for with 37 minutes of flight time and 780 m/s of burnout speed** — and seven detecting sites reduced to one, because the profile arrives from the reversed bearing.
+
+This is a **strategic-stability analysis** of the kind published openly in the arms-control literature: line-of-sight geometry only, with no power-aperture, cross-section, track-initiation or decision-latency model, so every warning figure is an upper bound. Radar mask elevations are assumed rather than published, which is why the notebook sweeps them. Boost-phase infrared detection — the largest omission, and one that cuts against the fractional profile — is not modelled at all.
+
+Run it with `jupyter lab notebooks/`, after `pip install -e .`.
+
+---
+
 ## Building the papers
 
 Requires a TeX Live distribution with `latexmk` and `biber`.
@@ -300,7 +312,7 @@ The verification runners are the authoritative record: each writes a markdown re
 
 Ordered by dependency, not ambition. What is *not yet* built but is supportable
 from the sources already in [`reference/`](reference/) is tracked separately in
-[`TODO.md`](TODO.md) — 48 open items and 14 closed, each naming what is currently
+[`TODO.md`](TODO.md) — 49 open items and 16 closed, each naming what is currently
 assumed, which source closes it, and what measurably changes. Its §9 is a full
 survey of every reference not yet drawn on, including the ones judged not worth
 mining and why.
