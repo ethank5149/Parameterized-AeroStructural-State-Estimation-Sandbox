@@ -36,60 +36,68 @@ pressure and the two factors combine. Integrating inward from the surface,
 with :math:`\\dot m(x)` the accumulated gas mass flux, which is zero at the
 back face and grows as the flow gathers everything decomposing above it.
 
-The permeability we do not have
--------------------------------
+The permeability, which is now measured
+---------------------------------------
 
-**PICA's permeability is not in this repository's references, and this
-module does not pretend otherwise.** Park & Lawrence's measurements (in
-``reference/``) are for MX4926 carbon *cloth* phenolic — a dense rocket
-nozzle liner near 1.45 g/cm³ — and give :math:`10^{-17}` to
-:math:`10^{-21}` m². PICA is a low-density fibrous preform near 270 kg/m³
-at roughly 90 % porosity, and is more permeable by many orders of
-magnitude; using a nozzle-liner number for it would be wrong in the
-direction that matters most. Lachaud and Mansour cite Marschall & Milos,
-*Gas Permeability of Rigid Fibrous Refractory Insulations*, for the
-correct value; that paper is not held here.
+This module was originally written around a *missing* number. Park &
+Lawrence's measurements (in ``reference/``) are for MX4926 carbon *cloth*
+phenolic — a dense rocket nozzle liner near 1.45 g/cm³ — and give
+:math:`10^{-17}` to :math:`10^{-21}` m²; using a nozzle-liner value for a
+90 %-porous preform would be wrong in the direction that matters most. So
+permeability was an explicit argument with no default, and
+:func:`pore_pressure_sensitivity` existed to answer the question that
+absence raises: *does it change anything?*
 
-So permeability is an explicit argument with no default, and
-:func:`pore_pressure_sensitivity` exists to answer the question that
-missing number raises: *does it change anything?* Sweeping it across the
-plausible range and watching what the conductivity does is a better use of
-an unknown than picking a value and hoping.
+The number has since arrived. Marschall & Milos measure **FiberForm**, the
+carbon preform PICA is made from, and
+:mod:`passes.thermal.fiat.permeability` carries their table — including
+why the preform rather than the composite is the right material for *this*
+calculation, since the transport path that sets pore pressure runs outward
+through resin-free char.
 
-The measured answer: it is real, and it is small
-------------------------------------------------
+**The measured value is 79 to 550 × 10⁻¹² m², two to three orders of
+magnitude above where the sweep's lower bound sat.** The old placeholder
+bracket of :math:`10^{-12}`–:math:`10^{-10}` m², inferred from porosity,
+had roughly the right top end and was 79× too tight at the bottom.
 
-That sweep has been run, against real pyrolysis profiles taken from the
-solver on two of the Milos & Chen arcjet conditions. The pore-to-surface
-pressure ratio is large — up to 31 at low permeability — but the
-conductivity error it causes is not:
+The measured answer: it is real, and it is smaller than the sweep suggested
+--------------------------------------------------------------------------
+
+Re-run against real pyrolysis profiles from the solver on two Milos & Chen
+arcjet conditions, at the measured permeability rather than a swept one:
 
 .. code-block:: text
 
-    surface p    permeability   peak P/Ps   virgin k error
-    27.3 kPa     1e-10 m^2          1.06            0.1 %
-    27.3 kPa     1e-11 m^2          1.53            1.0 %
-    27.3 kPa     1e-13 m^2         11.61            3.0 %
-     2.3 kPa     1e-10 m^2          3.3             2.9 %
-     2.3 kPa     1e-11 m^2         10.0             5.6 %
-     2.3 kPa     1e-12 m^2         31.5             8.4 %
+    surface p    orientation    K_0 (m^2)   peak P/Ps   virgin k error
+    27.3 kPa     transverse     1.16e-10        1.020          0.07 %
+    27.3 kPa     in-plane       5.14e-10        1.004          0.02 %
+     2.3 kPa     transverse     1.16e-10        1.793          2.43 %
+     2.3 kPa     in-plane       5.14e-10        1.224          0.84 %
 
-Two things bound it. The MEDLI2 model interpolates in *log* pressure, so a
-tenfold pressure error is a fraction of one decade out of the three its
-anchors span. And it **clamps** at the 1 atm anchor rather than
-extrapolating — a decision taken when it was implemented, for unrelated
-reasons, which turns out to cap this error too. The effect grows as
-surface pressure falls, exactly as expected, and even at the lowest arcjet
-pressure with an implausibly tight permeability it stays under 10 %.
+**The worst case is 2.4 %**, against the 8.4 % the speculative bracket
+produced — and that is the *continuum* figure. Including Klinkenberg slip
+(:func:`~passes.thermal.fiat.permeability.effective_permeability`) cuts the
+2.3 kPa transverse ratio further, 1.79 → 1.39, because pyrolysis gas is
+light and hot and therefore deep in the slip regime: its slip parameter is
+around 11 kPa at 2000 K, so permeability is more than doubled anywhere the
+pore pressure is below that. Rarefaction lets gas escape more easily than
+Darcy alone allows, so neglecting it is conservative.
+
+Three things bound the error. The MEDLI2 model interpolates in *log*
+pressure, so even a large pressure ratio is a fraction of one decade out of
+the three its anchors span. It **clamps** at the 1 atm anchor rather than
+extrapolating — a decision taken for unrelated reasons, which caps this
+error too. And the measured permeability is high enough that the pressure
+ratio itself never gets far from unity at flight-relevant pressures.
 
 **This module is therefore a diagnostic, not a correction, and is
-deliberately not wired into the solver.** Doing so would inject an
-unmeasured parameter into the main solve path to buy a change smaller than
-the 27 % experimental scatter the recession comparison already lives
-inside. Introducing an unknown to fix a known-small error makes the answer
-less defensible, not more. If Marschall & Milos is ever obtained and PICA
-turns out to sit below :math:`10^{-12}` m², this becomes worth revisiting
-and the sweep above says by how much.
+deliberately not wired into the solver.** That decision was originally
+made to avoid injecting an *unmeasured* parameter into the main solve path.
+The measurement has since removed that objection but strengthened the
+conclusion it was protecting: the effect is 2.4 % at worst, against 27 %
+experimental scatter in the recession data the comparison lives inside.
+Wiring it in would add a Darcy solve per step to move an answer by a tenth
+of its own uncertainty.
 """
 
 from __future__ import annotations
@@ -113,25 +121,38 @@ _R_UNIVERSAL = 8.314462618
 
 #: Measured permeabilities, with the material each belongs to.
 #:
-#: The point of this table is the *gap* in it. Park & Lawrence is a real
-#: measurement of the wrong material; the PICA entry is a placeholder
-#: bracket inferred from porosity, not a measurement, and is labelled so
-#: that nothing quotes it as one.
+#: The FiberForm entry is the one that applies to PICA, and it is a
+#: measurement. The other two are kept for contrast: Park & Lawrence
+#: because it is the wrong material and was once mistaken for the right
+#: one, and the retired placeholder because the gap between an inferred
+#: bracket and the measurement that replaced it is worth being able to see.
 PORE_PRESSURE_REFERENCES: dict[str, tuple[float, float, str]] = {
+    "FiberForm (PICA carbon preform)": (
+        7.91e-11,
+        5.49e-10,
+        "Marschall & Milos, JTHT 12(4) 1998, Table 1. MEASURED, room "
+        "temperature air, four specimens per orientation over 145-161 "
+        "kg/m3. Transverse (through-thickness, the heatshield direction) "
+        "spans 7.9e-11 to 3.6e-10; in-plane 5.0e-10 to 5.5e-10. K_0 "
+        "uncertainty +11%/-16%. See passes.thermal.fiat.permeability.",
+    ),
     "MX4926 carbon cloth phenolic": (
         1e-21,
         1e-17,
         "Park & Lawrence, AIAA 2003-5242, measured 22-260 C. Dense RSRM "
         "nozzle liner near 1.45 g/cm3 -- NOT PICA, and not a substitute "
-        "for it.",
+        "for it. Retained as a counterexample: it is a real measurement of "
+        "the wrong material, which is the failure mode this entry exists "
+        "to make visible.",
     ),
-    "PICA (placeholder bracket)": (
+    "PICA (retired placeholder bracket)": (
         1e-12,
         1e-10,
-        "NOT MEASURED. An order-of-magnitude bracket for a ~90% porous "
-        "fibrous preform, used only to sweep. The measured value is in "
-        "Marschall & Milos, 'Gas Permeability of Rigid Fibrous Refractory "
-        "Insulations', which this repository does not hold.",
+        "SUPERSEDED by the FiberForm entry above. An order-of-magnitude "
+        "bracket inferred from porosity, used only to sweep before the "
+        "measurement was held. Its top end was within 5.5x; its bottom end "
+        "was 79x too tight, which is why the swept worst case (8.4% "
+        "conductivity error) overstated the measured one (2.4%).",
     ),
 }
 

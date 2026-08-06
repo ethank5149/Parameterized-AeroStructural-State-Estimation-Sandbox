@@ -21,6 +21,8 @@ from passes.aerothermal.stagnation import (
     LEWIS_EXPONENT_EQUILIBRIUM,
     LEWIS_EXPONENT_FROZEN_CATALYTIC,
     SUTTON_GRAVES_EARTH,
+    WallCatalycity,
+    catalycity_bracket,
 )
 from passes.thermal.surface import STEFAN_BOLTZMANN
 
@@ -117,6 +119,125 @@ class TestFayRiddell:
             fay_riddell(**bad)
         with pytest.raises(ValueError, match="lewis_exponent"):
             fay_riddell(**FR_ARGS, lewis_exponent=1.5)
+
+
+class TestWallCatalycity:
+    """Fay & Riddell's third correlation -- the noncatalytic wall -- and
+    why it needed a new argument rather than a new exponent."""
+
+    def test_noncatalytic_bracket_is_unreachable_by_any_lewis_exponent(self):
+        """The catalytic bracket is 1 + (Le^b - 1)f and the noncatalytic
+        one is 1 - f. Matching them for f > 0 would need Le^b = 0, which no
+        finite exponent gives for Le > 0. This is the whole reason
+        catalycity is an enum: the old signature could not express the
+        case at all, and would have failed silently by producing a number
+        close to 1 instead of one close to 1 - f."""
+        h0e, h_d = 2.5e7, 1.5e7
+        noncatalytic = float(catalycity_bracket(h_d, h0e, WallCatalycity.FROZEN_NONCATALYTIC))
+        assert noncatalytic == pytest.approx(0.4)
+        # Sweep the whole admissible exponent range: nothing comes close.
+        for exponent in np.linspace(0.01, 0.99, 99):
+            catalytic = 1.0 + (1.4**exponent - 1.0) * h_d / h0e
+            assert catalytic > 1.0
+            assert abs(catalytic - noncatalytic) > 0.5
+
+    def test_reproduces_andersons_factor_of_two(self):
+        """Anderson Fig. 17.5, curve 2: heat transfer drops 'by more than a
+        factor of two' between a catalytic and a noncatalytic wall as the
+        boundary layer goes frozen. That is a property of the brackets, and
+        it holds once dissociation carries about half the edge enthalpy --
+        which is the regime Fay & Riddell's 5800-22,800 ft/s calculations
+        cover."""
+        h0e = 2.5e7
+        ratios = {}
+        for fraction in (0.3, 0.5, 0.6, 0.9):
+            catalytic = float(
+                catalycity_bracket(fraction * h0e, h0e, WallCatalycity.FROZEN_CATALYTIC)
+            )
+            noncatalytic = float(
+                catalycity_bracket(fraction * h0e, h0e, WallCatalycity.FROZEN_NONCATALYTIC)
+            )
+            ratios[fraction] = catalytic / noncatalytic
+        assert ratios[0.3] < 2.0
+        assert ratios[0.5] > 2.0
+        assert ratios[0.6] > 2.5
+        # Monotone in dissociation fraction, as it must be.
+        assert sorted(ratios.values()) == list(ratios.values())
+
+    def test_all_three_agree_when_nothing_is_dissociated(self):
+        """With h_D = 0 there is no chemical energy to deliver or withhold,
+        so catalycity cannot matter and all three correlations must
+        coincide exactly. This is the limit that says the bracket is about
+        chemistry rather than an arbitrary knob."""
+        h0e = 2.5e7
+        values = [
+            float(catalycity_bracket(0.0, h0e, case)) for case in WallCatalycity
+        ]
+        assert values == pytest.approx([1.0, 1.0, 1.0], rel=1e-15)
+
+    def test_noncatalytic_wall_reduces_the_flux(self):
+        """End to end through fay_riddell, not just the bracket: a
+        noncatalytic wall must see less heating than a catalytic one at
+        identical flow conditions, and the ratio must be exactly the
+        bracket ratio because nothing else in the correlation changes."""
+        q_catalytic = fay_riddell(**FR_ARGS, catalycity=WallCatalycity.FROZEN_CATALYTIC)
+        q_noncatalytic = fay_riddell(
+            **FR_ARGS, catalycity=WallCatalycity.FROZEN_NONCATALYTIC
+        )
+        assert float(q_noncatalytic) < float(q_catalytic)
+        expected = float(
+            catalycity_bracket(
+                FR_ARGS["dissociation_enthalpy"],
+                FR_ARGS["total_enthalpy_edge"],
+                WallCatalycity.FROZEN_NONCATALYTIC,
+            )
+            / catalycity_bracket(
+                FR_ARGS["dissociation_enthalpy"],
+                FR_ARGS["total_enthalpy_edge"],
+                WallCatalycity.FROZEN_CATALYTIC,
+            )
+        )
+        assert float(q_noncatalytic / q_catalytic) == pytest.approx(expected, rel=1e-14)
+
+    def test_default_is_unchanged_by_the_new_argument(self):
+        """The equilibrium case was the framework's only behaviour before
+        catalycity existed. Adding the argument must not have moved it."""
+        assert float(fay_riddell(**FR_ARGS)) == pytest.approx(
+            float(fay_riddell(**FR_ARGS, lewis_exponent=LEWIS_EXPONENT_EQUILIBRIUM)),
+            rel=1e-15,
+        )
+        assert float(fay_riddell(**FR_ARGS, catalycity=WallCatalycity.EQUILIBRIUM)) == (
+            pytest.approx(float(fay_riddell(**FR_ARGS)), rel=1e-15)
+        )
+
+    def test_enum_carries_the_published_exponents(self):
+        assert WallCatalycity.EQUILIBRIUM.lewis_exponent == LEWIS_EXPONENT_EQUILIBRIUM
+        assert (
+            WallCatalycity.FROZEN_CATALYTIC.lewis_exponent
+            == LEWIS_EXPONENT_FROZEN_CATALYTIC
+        )
+        # None rather than a placeholder number: the Lewis number genuinely
+        # does not appear in Anderson Eq. (17.91).
+        assert WallCatalycity.FROZEN_NONCATALYTIC.lewis_exponent is None
+
+    def test_rejects_a_lewis_exponent_for_a_noncatalytic_wall(self):
+        """Silently ignoring it would be the dangerous behaviour: the
+        caller would believe they had selected a Lewis exponent and get a
+        result that does not depend on it."""
+        with pytest.raises(ValueError, match="no Lewis exponent"):
+            fay_riddell(
+                **FR_ARGS,
+                catalycity=WallCatalycity.FROZEN_NONCATALYTIC,
+                lewis_exponent=0.63,
+            )
+
+    def test_bracket_validates_its_inputs(self):
+        with pytest.raises(ValueError, match="h_D"):
+            catalycity_bracket(3.0e7, 2.5e7)
+        with pytest.raises(ValueError, match="h_D"):
+            catalycity_bracket(-1.0, 2.5e7)
+        with pytest.raises(ValueError, match="lewis"):
+            catalycity_bracket(1.0e7, 2.5e7, WallCatalycity.EQUILIBRIUM, lewis=0.0)
 
 
 class TestSuttonGraves:

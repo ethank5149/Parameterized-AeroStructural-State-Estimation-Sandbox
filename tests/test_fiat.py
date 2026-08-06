@@ -68,6 +68,14 @@ from passes.thermal.fiat.materials import (
     structural_material,
 )
 from passes.thermal.fiat.mutationpp import read_mutationpp_bprime
+from passes.thermal.fiat.permeability import (
+    FIBERFORM_SAMPLES,
+    MARSCHALL_MILOS_SAMPLES,
+    effective_permeability,
+    fiberform_permeability,
+    knudsen_regime_pressure,
+    slip_parameter,
+)
 from passes.thermal.fiat.pica_kinetics import (
     COMPETITIVE_PICA_BAYESIAN,
     COMPETITIVE_PICA_DETERMINISTIC,
@@ -2194,15 +2202,36 @@ class TestPorePressure:
         assert abs(worst / base - 1.0) < 0.10
 
     def test_reference_table_flags_the_material_it_does_not_cover(self):
-        """The table exists for the gap in it. Park & Lawrence measured a
-        dense nozzle liner, not PICA, and must not be quoted as PICA."""
-        assert "NOT PICA" in PORE_PRESSURE_REFERENCES["MX4926 carbon cloth phenolic"][2]
-        low, high, note = PORE_PRESSURE_REFERENCES["PICA (placeholder bracket)"]
-        assert "NOT MEASURED" in note
-        assert low < high
-        # PICA is far more permeable than the dense material, as porosity
-        # demands; a table that got this backwards would be worse than none.
-        assert low > PORE_PRESSURE_REFERENCES["MX4926 carbon cloth phenolic"][1]
+        """The table used to exist for the gap in it; it now exists to keep
+        the measurement and the two things it replaced distinguishable.
+        Park & Lawrence measured a dense nozzle liner, not PICA, and must
+        never be quoted as PICA."""
+        wrong_material = PORE_PRESSURE_REFERENCES["MX4926 carbon cloth phenolic"]
+        assert "NOT PICA" in wrong_material[2]
+
+        measured = PORE_PRESSURE_REFERENCES["FiberForm (PICA carbon preform)"]
+        assert "MEASURED" in measured[2]
+        assert measured[0] < measured[1]
+        # PICA's preform is far more permeable than the dense nozzle liner,
+        # as porosity demands; a table that got this backwards would be
+        # worse than none.
+        assert measured[0] > wrong_material[1]
+
+    def test_retired_placeholder_records_how_wrong_the_inference_was(self):
+        """The superseded bracket is kept rather than deleted, because the
+        distance between an inferred range and the measurement that replaced
+        it is the useful part. Its top end was close; its bottom end was 79x
+        too tight, which is why the swept worst case overstated the measured
+        one."""
+        low, high, note = PORE_PRESSURE_REFERENCES["PICA (retired placeholder bracket)"]
+        assert "SUPERSEDED" in note
+        measured_low, measured_high, _ = PORE_PRESSURE_REFERENCES[
+            "FiberForm (PICA carbon preform)"
+        ]
+        # The inferred floor was far below anything measured.
+        assert measured_low / low > 75.0
+        # The inferred ceiling was within an order of magnitude.
+        assert measured_high / high < 10.0
 
     def test_inputs_are_validated(self):
         x, source, temperature = self._uniform()
@@ -2216,3 +2245,217 @@ class TestPorePressure:
             pore_pressure(x, source, temperature, 1e4, 0.0)
         with pytest.raises(ValueError, match="must match depth"):
             pore_pressure(x, source[:-1], temperature, 1e4, 1e-11)
+
+
+class TestPermeability:
+    """Marschall & Milos measured permeability, and the two experiments
+    they published that let the scaling law be checked rather than trusted."""
+
+    def test_reproduces_the_published_helium_prediction(self):
+        """The authors measure b for air and helium on the *same* LI-2200
+        specimen, then predict one from the other with Eq. (5) and state
+        the answer. Both viscosities and both molar masses are given in the
+        text, so this reproduces their arithmetic exactly -- there is no
+        free parameter to absorb a mistake."""
+        b_helium = slip_parameter(
+            7420.0,  # measured in air on this specimen
+            temperature=290.0,
+            viscosity=19.42e-6,
+            molar_mass=0.00400,
+        )
+        # Their stated prediction is 21,490 Pa; we get 21,484 on unrounded
+        # inputs, which is their rounding and nothing else.
+        assert b_helium == pytest.approx(21490.0, rel=1e-3)
+        # And their measurement was 21,800 Pa -- the 1.5% they call
+        # "within 2%".
+        assert abs(b_helium - 21800.0) / 21800.0 < 0.02
+
+    def test_continuum_permeability_is_independent_of_temperature(self):
+        """Table 2: the same AETB-12 specimen at 293-1200 K. K_0 is
+        geometry, so it must not move; the authors claim within 5% and
+        that is what the data shows. This is the half of the model that
+        justifies carrying a single K_0 into a solve where the gas spans
+        thousands of kelvin."""
+        k0 = np.array([25.9, 24.5, 24.5, 26.8])
+        ratio = k0 / k0[0]
+        assert np.max(np.abs(ratio - 1.0)) < 0.055
+
+    def test_slip_parameter_temperature_scaling_matches_the_furnace_series(self):
+        """The other half of Table 2: b rises 5.3x over 293-1200 K, and
+        Eq. (5) says the rise is entirely mu*sqrt(T).
+
+        Checking this needs nitrogen viscosity, which the authors take from
+        their Ref. 8 and do not print. Using Sutherland instead leaves a
+        residual that grows with temperature -- 0%, 1.0%, 1.8%, 2.0% -- and
+        the next test shows that residual *is* the viscosity correlation
+        rather than a failure of the scaling. So the assertion here is
+        against the authors' own stated claim, "within 10% of unity",
+        allowing the Sutherland offset on top of it.
+        """
+        temperature = np.array([293.0, 600.0, 900.0, 1200.0])
+        b_measured = np.array([3370.0, 8780.0, 14000.0, 18000.0])
+        mu = 1.663e-5 * (temperature / 273.0) ** 1.5 * (273.0 + 107.0) / (temperature + 107.0)
+
+        predicted = np.array(
+            [
+                slip_parameter(
+                    b_measured[0],
+                    temperature=float(t),
+                    viscosity=float(m),
+                    molar_mass=0.028014,
+                    reference_temperature=293.0,
+                    reference_viscosity=float(mu[0]),
+                    reference_molar_mass=0.028014,
+                )
+                for t, m in zip(temperature, mu, strict=True)
+            ]
+        )
+        ratio = b_measured / predicted
+        assert np.max(np.abs(ratio - 1.0)) < 0.11
+        # Without the scaling the data is not remotely constant -- a 5.3x
+        # rise is what the law is absorbing.
+        assert b_measured[-1] / b_measured[0] > 5.0
+
+    def test_the_residual_in_the_furnace_series_is_the_viscosity_correlation(self):
+        """Eq. (5) can be inverted: given the measured b and the authors'
+        published normalisation column, the viscosity ratio they used falls
+        out. If the scaling law were wrong, that back-solved ratio would be
+        some arbitrary number. It is not -- it agrees with Sutherland's law
+        for nitrogen to within 2%, drifting exactly as Sutherland is known
+        to drift above ~1000 K.
+
+        This is what separates "our implementation disagrees by 1.8%" from
+        "the reference used a better viscosity table", and it is worth a
+        test because the first would be a bug.
+        """
+        temperature = np.array([293.0, 600.0, 900.0, 1200.0])
+        b_measured = np.array([3370.0, 8780.0, 14000.0, 18000.0])
+        # Marschall & Milos Table 2, column 5: b/(mu sqrt(T)) normalised.
+        published = np.array([1.00, 1.09, 1.09, 1.02])
+
+        implied = (b_measured / b_measured[0]) * np.sqrt(temperature[0] / temperature) / published
+        mu = 1.663e-5 * (temperature / 273.0) ** 1.5 * (273.0 + 107.0) / (temperature + 107.0)
+        sutherland = mu / mu[0]
+
+        assert np.max(np.abs(sutherland / implied - 1.0)) < 0.025
+        # Monotonic drift, not scatter: Sutherland runs progressively low.
+        drift = sutherland / implied - 1.0
+        assert np.all(np.diff(drift) < 0.0)
+
+    def test_klinkenberg_enhancement_is_always_an_enhancement(self):
+        """K = K_0(1 + b/P) exceeds K_0 at every finite pressure and tends
+        to it from above. A Darcy solve using K_0 alone therefore
+        *over*-predicts pore pressure, which is the direction that makes
+        neglecting slip conservative."""
+        k0, b = 1.0e-10, 1000.0
+        pressures = np.array([1e2, 1e3, 1e4, 1e5, 1e7])
+        k = effective_permeability(k0, b, pressures)
+        assert np.all(k > k0)
+        assert np.all(np.diff(k) < 0.0)
+        assert k[-1] == pytest.approx(k0, rel=1e-3)
+        # At b itself the permeability is exactly doubled.
+        assert float(effective_permeability(k0, b, b)[0]) == pytest.approx(2.0 * k0)
+
+    def test_fiberform_sits_far_above_the_threshold_that_would_matter(self):
+        """The pore-pressure module was left as a diagnostic on the stated
+        condition that it would be worth revisiting only if PICA turned out
+        below 1e-12 m^2. Every measured FiberForm specimen is at least 79x
+        above that, so the condition is not met -- and this test is what
+        keeps that conclusion tied to the data rather than to a memory of
+        having checked."""
+        assert len(FIBERFORM_SAMPLES) == 8
+        lowest = min(s.continuum_permeability for s in FIBERFORM_SAMPLES)
+        assert lowest > 79.0e-12
+        highest = max(s.continuum_permeability for s in FIBERFORM_SAMPLES)
+        assert highest < 6.0e-10
+
+    def test_transverse_is_the_conservative_orientation(self):
+        """Fibres align normal to the pressing axis, so flow along that
+        axis is the more obstructed. A heatshield is cut with that axis
+        pointing out through the surface, which is the direction pyrolysis
+        gas must travel -- so the default must be the transverse value and
+        it must be the smaller one."""
+        k_transverse, _ = fiberform_permeability(155.0, "transverse")
+        k_in_plane, _ = fiberform_permeability(155.0, "in-plane")
+        assert k_transverse < k_in_plane
+        assert fiberform_permeability(155.0) == fiberform_permeability(155.0, "transverse")
+        # The anisotropy is far stronger than the ceramic tiles' 1.25-1.5,
+        # because FiberForm's 15 micron carbon fibres make a coarser and
+        # more directional structure.
+        assert k_in_plane / k_transverse > 3.0
+
+    def test_density_interpolation_is_logarithmic_and_does_not_extrapolate(self):
+        """The transverse specimens fall into two groups a factor of four
+        apart across an 11% density change. Interpolating K_0 linearly
+        across that gap would sit well above the geometric mean; log
+        interpolation is the right treatment for a multiplicative spread.
+        Outside the measured range the endpoints are held, because
+        extrapolating a slope this steep past four points would invent
+        precision."""
+        k_lo, _ = fiberform_permeability(145.0, "transverse")
+        k_hi, _ = fiberform_permeability(161.0, "transverse")
+        assert k_lo == pytest.approx(3.59e-10)
+        assert k_hi == pytest.approx(7.91e-11)
+        # Midway in density between the two measured groups, log
+        # interpolation lands below the arithmetic mean.
+        k_mid, _ = fiberform_permeability(153.0, "transverse")
+        assert k_mid < 0.5 * (3.23e-10 + 8.23e-11)
+        # Held, not extrapolated.
+        assert fiberform_permeability(100.0, "transverse")[0] == pytest.approx(k_lo)
+        assert fiberform_permeability(400.0, "transverse")[0] == pytest.approx(k_hi)
+
+    def test_pyrolysis_gas_is_deep_in_the_slip_regime(self):
+        """The tabulated b is for room-temperature air. Pyrolysis gas is
+        hot and light, and Eq. (5) scales b by mu*sqrt(T/M) -- so the slip
+        parameter in service is an order of magnitude above the laboratory
+        value, and the pressure below which permeability doubles moves from
+        around 1 kPa to above 10 kPa. That is inside the range of in-depth
+        pore pressures during entry, which is why slip is not a small
+        correction here."""
+        _, b_air = fiberform_permeability(155.0, "transverse")
+        b_hot = slip_parameter(
+            b_air, temperature=2000.0, viscosity=6.0e-5, molar_mass=0.0103
+        )
+        assert b_hot > 10.0 * b_air
+        assert knudsen_regime_pressure(b_air) < 2.0e3
+        assert knudsen_regime_pressure(b_hot) > 1.0e4
+
+    def test_the_full_table_is_transcribed_with_its_published_structure(self):
+        """Guards the transcription. Two orientations are absent from the
+        source for AIM-18 (transverse only), and the counts per material
+        are not uniform -- so a table that came out tidy would mean it had
+        been tidied."""
+        assert len(MARSCHALL_MILOS_SAMPLES) == 38
+        materials = {s.material for s in MARSCHALL_MILOS_SAMPLES}
+        assert materials == {
+            "LI-900",
+            "LI-2200",
+            "AIM-18",
+            "FRCI-12",
+            "AETB-12",
+            "FiberForm",
+        }
+        aim = [s for s in MARSCHALL_MILOS_SAMPLES if s.material == "AIM-18"]
+        assert all(s.orientation == "transverse" for s in aim)
+        # The denser silica tiles are the least permeable; FiberForm the most.
+        by_material = {
+            m: np.mean(
+                [s.continuum_permeability for s in MARSCHALL_MILOS_SAMPLES if s.material == m]
+            )
+            for m in materials
+        }
+        assert by_material["FiberForm"] > 50.0 * by_material["LI-2200"]
+
+    def test_rejects_unphysical_inputs(self):
+        with pytest.raises(ValueError, match="temperature must be positive"):
+            slip_parameter(1000.0, temperature=0.0, viscosity=1e-5, molar_mass=0.03)
+        with pytest.raises(ValueError, match="molar_mass must be positive"):
+            slip_parameter(1000.0, temperature=300.0, viscosity=1e-5, molar_mass=0.0)
+        with pytest.raises(ValueError, match="continuum permeability"):
+            effective_permeability(0.0, 1000.0, 1e4)
+        with pytest.raises(ValueError, match="pressure must be positive"):
+            effective_permeability(1e-10, 1000.0, 0.0)
+        with pytest.raises(ValueError, match="enhancement must exceed 1"):
+            knudsen_regime_pressure(1000.0, 1.0)
+        with pytest.raises(ValueError, match="unknown orientation"):
+            fiberform_permeability(155.0, "diagonal")  # type: ignore[arg-type]

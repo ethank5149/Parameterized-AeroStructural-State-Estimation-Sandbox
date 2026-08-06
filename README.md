@@ -168,7 +168,11 @@ At $N = 32$ that factor is $\sim 10^6$. Continuity does not rescue you from this
 
 ### Aerothermodynamics
 
-Stagnation convective heating follows **Fay–Riddell**, with the Lewis exponent stated ($\beta = 0.52$ equilibrium, $0.63$ frozen/catalytic) and the stagnation velocity gradient supplied by the modified Newtonian estimate. **Tauber–Sutton** gives the radiative component, and **Lees** the distribution away from stagnation.
+Stagnation convective heating follows **Fay–Riddell**, with the stagnation velocity gradient supplied by the modified Newtonian estimate. **Tauber–Sutton** gives the radiative component, and **Lees** the distribution away from stagnation.
+
+All **three** of Fay & Riddell's correlations are carried, selected by `WallCatalycity` — Anderson Eqs. (17.89)–(17.91). The first two differ only in the Lewis exponent ($\beta = 0.52$ equilibrium, $0.63$ frozen with an equilibrium catalytic wall). The third, a frozen boundary layer over a **noncatalytic** wall, has a structurally different bracket, $1 - h_D/h_{0e}$, that no choice of exponent can reach: matching it would need $Le^\beta = 0$. Carrying catalycity as an exponent therefore could not express the case at all, which is why it is an enum.
+
+This matters by more than a modelling nicety. At $h_D/h_{0e} = 0.6$ the catalytic wall sees **2.85×** the heating of the noncatalytic one, reproducing the "more than a factor of two" Anderson reports from Fay & Riddell Fig. 17.5 — and PICA's charred carbon surface is not fully catalytic. Assuming a catalytic wall stays conservative for sizing, but now by a factor the framework can state.
 
 Note the trade the papers make explicit: recession increases $R_\mathrm{eff}$, which *reduces* convective heating as $R_\mathrm{eff}^{-1/2}$ but *increases* radiative heating. A framework modeling only convection will systematically favor over-blunted geometries.
 

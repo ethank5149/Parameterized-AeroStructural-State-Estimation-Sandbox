@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import TypedDict
 
 import numpy as np
 
@@ -53,13 +54,33 @@ from passes.aerothermal.stagnation import (
     FAY_RIDDELL_NUSSELT_COEFFICIENT,
     LEWIS_EXPONENT_EQUILIBRIUM,
     LEWIS_EXPONENT_FROZEN_CATALYTIC,
+    WallCatalycity,
 )
 from passes.thermal.surface import STEFAN_BOLTZMANN
 from passes.verification.common import VerificationReport, write_csv
 
 __all__ = ["run_p2v8"]
 
-_FR_BASE = {
+
+class _FayRiddellState(TypedDict):
+    """The flow state shared by every Fay-Riddell check below.
+
+    A ``TypedDict`` rather than a plain ``dict[str, float]`` so that
+    ``**_FR_BASE`` stays checkable: with a bare float-valued dict, mypy must
+    assume the unpacking could supply *any* keyword, including the
+    ``catalycity`` enum, and rejects the call.
+    """
+
+    edge_density: float
+    edge_viscosity: float
+    wall_density: float
+    wall_viscosity: float
+    total_enthalpy_edge: float
+    wall_enthalpy: float
+    dissociation_enthalpy: float
+
+
+_FR_BASE: _FayRiddellState = {
     "edge_density": 0.05,
     "edge_viscosity": 6.0e-5,
     "wall_density": 0.3,
@@ -97,9 +118,11 @@ def run_p2v8(output_dir: Path) -> VerificationReport:
 
     # driving-potential linearity
     dudx0 = float(newtonian_velocity_gradient(0.5, p_s, p_inf, rho_s))
-    args = dict(_FR_BASE)
-    q1 = float(fay_riddell(velocity_gradient=dudx0, **args))
-    args["wall_enthalpy"] = 0.5 * (_FR_BASE["total_enthalpy_edge"] + _FR_BASE["wall_enthalpy"])
+    q1 = float(fay_riddell(velocity_gradient=dudx0, **_FR_BASE))
+    args: _FayRiddellState = {
+        **_FR_BASE,
+        "wall_enthalpy": 0.5 * (_FR_BASE["total_enthalpy_edge"] + _FR_BASE["wall_enthalpy"]),
+    }
     q2 = float(fay_riddell(velocity_gradient=dudx0, **args))
     expect = (_FR_BASE["total_enthalpy_edge"] - args["wall_enthalpy"]) / (
         _FR_BASE["total_enthalpy_edge"] - _FR_BASE["wall_enthalpy"]
@@ -115,6 +138,43 @@ def run_p2v8(output_dir: Path) -> VerificationReport:
     lewis_delta = q_fr / q_eq - 1.0
     checks.append(("frozen/catalytic vs equilibrium bracket shift (expect ~1%)",
                    lewis_delta, 0.011, 0.002 < lewis_delta < 0.1))
+
+    # Wall catalycity — Fay & Riddell's third correlation, via Anderson
+    # Eq. (17.91). Structurally distinct from the other two: no choice of
+    # Lewis exponent reaches it, so this check exists to confirm the branch
+    # is real rather than a relabelling.
+    q_noncat = float(fay_riddell(velocity_gradient=dudx0, **_FR_BASE,
+                                 catalycity=WallCatalycity.FROZEN_NONCATALYTIC))
+    catalytic_gain = q_fr / q_noncat
+    fraction = _FR_BASE["dissociation_enthalpy"] / _FR_BASE["total_enthalpy_edge"]
+    expected_gain = (1.0 + (1.4**LEWIS_EXPONENT_FROZEN_CATALYTIC - 1.0) * fraction) / (
+        1.0 - fraction
+    )
+    checks.append(("catalytic/noncatalytic heating ratio at h_D/h_0e = 0.25",
+                   catalytic_gain, expected_gain,
+                   abs(catalytic_gain - expected_gain) < 1e-12))
+
+    # At h_D/h_0e = 0.6 the ratio must exceed the "more than a factor of
+    # two" Anderson reports from Fay & Riddell Fig. 17.5.
+    hot: _FayRiddellState = {**_FR_BASE, "dissociation_enthalpy": 1.2e7}
+    q_fr_hot = float(fay_riddell(velocity_gradient=dudx0, **hot,
+                                 catalycity=WallCatalycity.FROZEN_CATALYTIC))
+    q_nc_hot = float(fay_riddell(velocity_gradient=dudx0, **hot,
+                                 catalycity=WallCatalycity.FROZEN_NONCATALYTIC))
+    hot_ratio = q_fr_hot / q_nc_hot
+    checks.append(("catalytic/noncatalytic at h_D/h_0e = 0.6 (Anderson: > 2)",
+                   hot_ratio, 2.854, hot_ratio > 2.0))
+
+    # With nothing dissociated, catalycity cannot matter: all three
+    # correlations must coincide exactly.
+    cold: _FayRiddellState = {**_FR_BASE, "dissociation_enthalpy": 0.0}
+    q_cold = [
+        float(fay_riddell(velocity_gradient=dudx0, **cold, catalycity=case))
+        for case in WallCatalycity
+    ]
+    cold_spread = max(q_cold) / min(q_cold) - 1.0
+    checks.append(("catalycity spread at h_D = 0 (expect exactly 0)",
+                   cold_spread, 0.0, cold_spread == 0.0))
 
     # Lees continuity at x = R_eff
     r_eff = 0.4

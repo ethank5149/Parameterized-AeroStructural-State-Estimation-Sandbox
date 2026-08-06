@@ -248,7 +248,14 @@ The convective heat flux at the stagnation point follows Fay and Riddell \cite{f
 The terms require specification, since \cref{eq:fayriddell} is frequently quoted without them:
 \begin{itemize}
     \item $\Pr \approx 0.71$ for air; $Le \approx 1.4$.
-    \item $\beta_{Le} = 0.52$ for an equilibrium boundary layer, $\beta_{Le} = 0.63$ for a frozen boundary layer with a fully catalytic wall. The choice matters: the bracketed factor differs by several percent between them, and by considerably more for a non-catalytic wall, for which the bracket reduces toward unity.
+    \item $\beta_{Le} = 0.52$ for an equilibrium boundary layer, $\beta_{Le} = 0.63$ for a frozen boundary layer with a fully catalytic wall. The choice matters: the bracketed factor differs by about one percent between them.
+
+    A non-catalytic wall is \emph{not} a third value of $\beta_{Le}$, and an earlier version of this passage was wrong to imply that its bracket ``reduces toward unity.'' Fay and Riddell give a separate correlation for that case \cite[Eq.~(17.91)]{anderson2006}, whose bracket is
+    \begin{equation}
+    \label{eq:noncatalytic}
+    1 - \frac{h_D}{h_{0e}},
+    \end{equation}
+    a structurally different form that no choice of $\beta_{Le}$ can reach --- matching it would require $Le^{\beta_{Le}} = 0$. It reduces \emph{below} unity, not toward it, and does so without bound as dissociation grows: at $h_D/h_{0e} = 0.6$ the bracket is $0.4$ against $1.14$ for the catalytic wall, a ratio of $2.85$. That reproduces the ``more than a factor of two'' drop reported from Fay and Riddell's Fig.~5 \cite[Fig.~17.5]{anderson2006}, and it is the reason catalycity is carried in this framework as a choice of correlation rather than as a parameter of one. The two brackets agree exactly at $h_D = 0$, as they must: catalycity cannot matter if there is nothing to recombine.
     \item $h_D$ is the enthalpy of dissociation of the free-stream mixture, evaluated at edge conditions.
     \item The stagnation velocity gradient is supplied by the modified Newtonian estimate
     \begin{equation}

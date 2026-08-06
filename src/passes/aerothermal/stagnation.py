@@ -14,9 +14,40 @@ The Sutton–Graves correlation is provided as the screening fallback the
 Remark in §4.1 describes, as a *separate function*: it is a correlation,
 not a theory, and results obtained with it must not be reported as
 Fay–Riddell results.
+
+Wall catalycity is a bracket, not an exponent
+---------------------------------------------
+
+Fay & Riddell give **three** correlations, not two — Anderson
+Eqs. (17.89)–(17.91) sets them out side by side. The first two differ only
+in the Lewis exponent (0.52 equilibrium, 0.63 frozen with an equilibrium
+catalytic wall) and share the bracket
+:math:`1 + (Le^{\\beta}-1)h_D/h_{0e}`. The third — a frozen boundary layer
+over a **noncatalytic** wall — has a structurally different bracket,
+
+.. math:: 1 - h_D/h_{0e}
+
+which no choice of :math:`\\beta` can reach: matching it would need
+:math:`Le^{\\beta} = 0`. Carrying catalycity as an exponent therefore
+cannot express the noncatalytic case at all, which is why
+:class:`WallCatalycity` exists and why ``lewis_exponent`` is now derived
+from it rather than passed alongside it.
+
+The distinction is worth this much machinery because it is large. Anderson
+(Fig. 17.5, curve 2) reports heat transfer dropping **by more than a factor
+of two** between a catalytic and a noncatalytic wall as the boundary layer
+goes from equilibrium to frozen, and PICA's charred carbon surface is not
+fully catalytic. Assuming a catalytic wall is conservative for sizing, but
+conservative by a factor that should be stated rather than absorbed.
+
+The two brackets meet where the physics says they should: with no
+dissociation (:math:`h_D = 0`) both reduce to 1, because catalycity can
+only matter if there is something to recombine.
 """
 
 from __future__ import annotations
+
+from enum import Enum
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -31,6 +62,8 @@ __all__ = [
     "LEWIS_EXPONENT_EQUILIBRIUM",
     "LEWIS_EXPONENT_FROZEN_CATALYTIC",
     "SUTTON_GRAVES_EARTH",
+    "WallCatalycity",
+    "catalycity_bracket",
     "fay_riddell",
     "newtonian_velocity_gradient",
     "sutton_graves",
@@ -38,12 +71,51 @@ __all__ = [
 
 _FloatArray = NDArray[np.float64]
 
+
 #: Lewis exponent for an equilibrium boundary layer — Fay & Riddell Eq. (60)
 #: and (62), verified against the source PDF in ``reference/``.
 LEWIS_EXPONENT_EQUILIBRIUM = 0.52
 #: Lewis exponent for a frozen boundary layer with a fully catalytic wall —
 #: Fay & Riddell Eq. (65) and Fig. 4.
 LEWIS_EXPONENT_FROZEN_CATALYTIC = 0.63
+
+
+class WallCatalycity(Enum):
+    """Which of Fay & Riddell's three correlations applies.
+
+    Selecting the correlation by name rather than by exponent keeps the
+    noncatalytic case reachable — its bracket is not of the same form, so
+    an exponent alone cannot express it (see the module docstring).
+
+    Members
+    -------
+    EQUILIBRIUM:
+        Equilibrium boundary layer, :math:`Le^{0.52}` — Anderson
+        Eq. (17.89), Fay & Riddell Eqs. (60) and (62).
+    FROZEN_CATALYTIC:
+        Frozen boundary layer over an equilibrium catalytic wall,
+        :math:`Le^{0.63}` — Anderson Eq. (17.90), Fay & Riddell Eq. (65).
+    FROZEN_NONCATALYTIC:
+        Frozen boundary layer over a noncatalytic wall — Anderson
+        Eq. (17.91). Bracket :math:`1 - h_D/h_{0e}`, with no Lewis
+        dependence at all: if the wall will not recombine atoms and the
+        boundary layer will not either, the dissociation enthalpy simply
+        never reaches the surface, and how fast species *would* diffuse
+        stops mattering.
+    """
+
+    EQUILIBRIUM = "equilibrium"
+    FROZEN_CATALYTIC = "frozen-catalytic"
+    FROZEN_NONCATALYTIC = "frozen-noncatalytic"
+
+    @property
+    def lewis_exponent(self) -> float | None:
+        """:math:`\\beta_{Le}`, or ``None`` where the Lewis number drops out."""
+        if self is WallCatalycity.EQUILIBRIUM:
+            return LEWIS_EXPONENT_EQUILIBRIUM
+        if self is WallCatalycity.FROZEN_CATALYTIC:
+            return LEWIS_EXPONENT_FROZEN_CATALYTIC
+        return None
 
 #: Leading coefficient of Fay & Riddell Eq. (63).
 #:
@@ -137,6 +209,59 @@ def newtonian_velocity_gradient(
     return np.asarray(np.sqrt(2.0 * (p_s - p_inf) / rho_s) / r_eff)
 
 
+def catalycity_bracket(
+    dissociation_enthalpy: ArrayLike,
+    total_enthalpy_edge: ArrayLike,
+    catalycity: WallCatalycity = WallCatalycity.EQUILIBRIUM,
+    lewis: float = 1.4,
+) -> _FloatArray:
+    """The chemical-energy bracket of Fay & Riddell, by wall condition.
+
+    .. math::
+
+        \\text{catalytic:}\\quad & 1 + (Le^{\\beta_{Le}} - 1)\\,h_D/h_{0e} \\\\
+        \\text{noncatalytic:}\\quad & 1 - h_D/h_{0e}
+
+    Separated from :func:`fay_riddell` because it is the whole of the
+    catalycity effect: everything else in the correlation is identical
+    across the three cases. Isolating it makes the factor-of-two Anderson
+    reports directly inspectable rather than buried in a flux.
+
+    Parameters
+    ----------
+    dissociation_enthalpy, total_enthalpy_edge:
+        :math:`h_D` and :math:`h_{0e}` (J/kg). Their ratio is the fraction
+        of the edge total enthalpy tied up as chemical energy in
+        dissociated species.
+    catalycity:
+        Which correlation. See :class:`WallCatalycity`.
+    lewis:
+        :math:`Le \\approx 1.4` for air. Ignored for the noncatalytic case,
+        where it does not appear.
+
+    Returns
+    -------
+    numpy.ndarray
+        The dimensionless bracket. Above 1 for a catalytic wall (Le > 1
+        means atoms diffuse to the wall faster than heat conducts away
+        from it, so recombination *adds* to the flux) and below 1 for a
+        noncatalytic one.
+    """
+    h0e = _positive(total_enthalpy_edge, "total_enthalpy_edge")
+    h_d = np.asarray(dissociation_enthalpy, dtype=np.float64)
+    if np.any(h_d < 0.0) or np.any(h_d > h0e):
+        raise ValueError("dissociation enthalpy must satisfy 0 <= h_D <= h_0e")
+    if not (np.isfinite(lewis) and lewis > 0.0):
+        raise ValueError(f"lewis must be finite and > 0, got {lewis}")
+
+    fraction = h_d / h0e
+    if catalycity is WallCatalycity.FROZEN_NONCATALYTIC:
+        return np.asarray(1.0 - fraction)
+    exponent = catalycity.lewis_exponent
+    assert exponent is not None
+    return np.asarray(1.0 + (lewis**exponent - 1.0) * fraction)
+
+
 def fay_riddell(
     edge_density: ArrayLike,
     edge_viscosity: ArrayLike,
@@ -148,8 +273,9 @@ def fay_riddell(
     dissociation_enthalpy: ArrayLike,
     prandtl: float = 0.71,
     lewis: float = 1.4,
-    lewis_exponent: float = LEWIS_EXPONENT_EQUILIBRIUM,
+    lewis_exponent: float | None = None,
     coefficient: float = FAY_RIDDELL_COEFFICIENT_LITERATURE,
+    catalycity: WallCatalycity = WallCatalycity.EQUILIBRIUM,
 ) -> _FloatArray:
     """Fay–Riddell stagnation convective heat flux (Paper II, Eq. 4.1), W/m².
 
@@ -179,22 +305,37 @@ def fay_riddell(
     prandtl, lewis:
         :math:`\\Pr \\approx 0.71`, :math:`Le \\approx 1.4` for air.
     lewis_exponent:
-        :math:`\\beta_{Le}`: 0.52 equilibrium, 0.63 frozen/catalytic —
-        an explicit choice, not a default hidden in a constant, because
-        the bracket differs by several percent between them.
+        :math:`\\beta_{Le}`, overriding the value implied by
+        ``catalycity``. Left as ``None`` normally — the exponent and the
+        bracket form have to agree, and ``catalycity`` sets both. Supply it
+        only to explore a value the three published correlations do not
+        name, and not at all for a noncatalytic wall, where the Lewis
+        number does not enter.
     coefficient:
         Leading constant, defaulting to the widely quoted 0.763. See
         :data:`FAY_RIDDELL_COEFFICIENT_SOURCE` for why the primary source
         supports either 0.76 or 0.7654 depending on which of its two
         mutually inconsistent statements is taken as authoritative, and
         why 0.763 is in neither.
+    catalycity:
+        Which of the three correlations applies — see
+        :class:`WallCatalycity`. Defaults to the equilibrium boundary
+        layer, which is what the framework assumed before the noncatalytic
+        case was reachable at all.
     """
     if not (np.isfinite(prandtl) and prandtl > 0.0):
         raise ValueError(f"prandtl must be finite and > 0, got {prandtl}")
     if not (np.isfinite(lewis) and lewis > 0.0):
         raise ValueError(f"lewis must be finite and > 0, got {lewis}")
-    if not (np.isfinite(lewis_exponent) and 0.0 < lewis_exponent < 1.0):
-        raise ValueError(f"lewis_exponent must be in (0, 1), got {lewis_exponent}")
+    if lewis_exponent is not None:
+        if catalycity is WallCatalycity.FROZEN_NONCATALYTIC:
+            raise ValueError(
+                "a noncatalytic wall has no Lewis exponent: its bracket is "
+                "1 - h_D/h_0e, with no Le dependence at all. Passing one "
+                "would silently be ignored."
+            )
+        if not (np.isfinite(lewis_exponent) and 0.0 < lewis_exponent < 1.0):
+            raise ValueError(f"lewis_exponent must be in (0, 1), got {lewis_exponent}")
     rho_mu_e = _positive(edge_density, "edge_density") * _positive(
         edge_viscosity, "edge_viscosity"
     )
@@ -204,13 +345,16 @@ def fay_riddell(
     dudx = _positive(velocity_gradient, "velocity_gradient")
     h0e = _positive(total_enthalpy_edge, "total_enthalpy_edge")
     h_w = np.asarray(wall_enthalpy, dtype=np.float64)
-    h_d = np.asarray(dissociation_enthalpy, dtype=np.float64)
     if np.any(h_w >= h0e):
         raise ValueError("wall enthalpy must be below edge total enthalpy (heating case)")
-    if np.any(h_d < 0.0) or np.any(h_d > h0e):
-        raise ValueError("dissociation enthalpy must satisfy 0 <= h_D <= h_0e")
 
-    bracket = 1.0 + (lewis**lewis_exponent - 1.0) * h_d / h0e
+    if lewis_exponent is None:
+        bracket = catalycity_bracket(dissociation_enthalpy, h0e, catalycity, lewis)
+    else:
+        h_d = np.asarray(dissociation_enthalpy, dtype=np.float64)
+        if np.any(h_d < 0.0) or np.any(h_d > h0e):
+            raise ValueError("dissociation enthalpy must satisfy 0 <= h_D <= h_0e")
+        bracket = np.asarray(1.0 + (lewis**lewis_exponent - 1.0) * h_d / h0e)
     if not (np.isfinite(coefficient) and coefficient > 0.0):
         raise ValueError(f"coefficient must be finite and > 0, got {coefficient}")
     return np.asarray(

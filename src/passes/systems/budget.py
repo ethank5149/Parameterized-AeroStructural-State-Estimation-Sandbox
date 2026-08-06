@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
+from passes.flight.ballistic_entry import ballistic_entry_range
 from passes.geodesy import (
     WGS84_MEAN_RADIUS,
     GeodeticPosition,
@@ -74,10 +75,14 @@ __all__ = [
 
 _FloatArray = NDArray[np.float64]
 
-#: Ground range a ballistic reentry covers between the entry interface and
-#: impact. Short compared with any other leg, and roughly geometry-fixed
-#: for a steep entry, so it is a constant here rather than a model.
-_BALLISTIC_ENTRY_RANGE = 300.0e3
+#: Entry interface altitude (m) for the ballistic leg.
+#:
+#: The ballistic leg's ground range used to be a hardcoded 300 km, defended
+#: as "roughly geometry-fixed for a steep entry". It is now computed from
+#: the entry angle by :func:`~passes.flight.ballistic_entry.ballistic_entry_range`,
+#: and the old constant turns out to correspond to one specific angle —
+#: 21.8 degrees from this interface — rather than to a geometric invariant.
+_ENTRY_INTERFACE_ALTITUDE = 120.0e3
 #: Terminal homing is a correction, not a transport leg.
 _TERMINAL_RANGE = 0.0
 
@@ -365,6 +370,7 @@ def evaluate(
     terminal_closing_speed: float = 2000.0,
     terminal_lateral_acceleration: float = 20.0 * 9.80665,
     target_location_sigma: float = 0.0,
+    ballistic_entry_angle: float = np.deg2rad(21.8),
 ) -> MissionBudget:
     """Charge each phase and test whether the architecture closes.
 
@@ -379,6 +385,17 @@ def evaluate(
     boost_range, boost_delta_v:
         The booster's capability. For a suborbital architecture these are
         what closure is tested against, since boost is the slack leg.
+    ballistic_entry_angle:
+        Flight-path angle (rad, positive below horizontal) at the entry
+        interface, from which the ballistic leg's ground range is computed
+        by :func:`passes.flight.ballistic_entry.ballistic_entry_range`.
+
+        The default of 21.8 degrees is not a physical preference — it is
+        the angle that reproduces the 300 km constant this argument
+        replaced, chosen so that existing results do not move silently.
+        Any real study should set it. The range varies from 448 km at the
+        15 degree floor to 69 km at 60 degrees, so treating it as fixed was
+        worth up to a factor of 6.5.
 
     Notes
     -----
@@ -471,10 +488,15 @@ def evaluate(
         atmospheric.append(
             LegBudget(
                 phase=Phase.BALLISTIC,
-                ground_range=_BALLISTIC_ENTRY_RANGE,
+                ground_range=ballistic_entry_range(
+                    ballistic_entry_angle, _ENTRY_INTERFACE_ALTITUDE
+                ),
                 delta_v=0.0,
                 duration=float("nan"),
-                note="entry interface to impact",
+                note=(
+                    "entry interface to impact, Allen-Eggers at "
+                    f"{np.rad2deg(ballistic_entry_angle):.1f} deg (upper bound)"
+                ),
             )
         )
     if len(atmospheric) > 1:

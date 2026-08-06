@@ -78,10 +78,28 @@ source sitting unread in `reference/`.
       Lawrence does not close it** — that paper measures MX4926 carbon
       *cloth* phenolic, a dense ~1.45 g/cm³ nozzle liner at 10⁻¹⁷–10⁻²¹ m²,
       not a ~90 % porous PICA preform. And it does **not** block I-V4.
-      The correct source is Marschall & Milos, *Gas Permeability of Rigid
-      Fibrous Refractory Insulations* (cited by Lachaud & Mansour), which
-      this repository does not hold — worth obtaining only if PICA turns out
-      to sit below 10⁻¹² m².
+
+      **Update — Marschall & Milos has since been obtained, and settles it
+      against the stated condition.** The condition written above was
+      "worth obtaining only if PICA turns out to sit below 10⁻¹² m²." It
+      does not. They measure **FiberForm**, the carbon preform PICA is made
+      from, at **7.9×10⁻¹¹ to 5.5×10⁻¹⁰ m²** — the *lowest* specimen is 79×
+      above the threshold. The old placeholder bracket had roughly the right
+      top end (within 5.5×) and was 79× too tight at the bottom, which is
+      exactly why the swept worst case (8.4 %) overstated the measured one.
+      Re-running the sweep at the measured permeability gives a peak
+      pore/surface ratio of **1.02** at 27.3 kPa and **1.79** at 2.3 kPa,
+      for conductivity errors of **0.07 % and 2.43 %**. Including
+      Klinkenberg slip cuts the worst ratio further, 1.79 → 1.39, because
+      pyrolysis gas is light and hot and therefore deep in the slip regime
+      (b ≈ 11 kPa at 2000 K). Implemented in
+      [`permeability.py`](src/passes/thermal/fiat/permeability.py) and
+      verified against both of the authors' own experiments: the helium
+      prediction (**21,484 Pa** against their stated 21,490, and 1.45 % from
+      their measurement) and the 293–1200 K furnace series. The pore-pressure
+      module stays a diagnostic — the measurement removed the objection that
+      kept it out of the solver, and strengthened the conclusion that
+      objection was protecting.
 - [ ] **Moisture and water phase change.** Omidy et al., *Effects of water
       phase change on the material response of low-density carbon-phenolic
       ablators* (in `reference/`, uncited). We model no moisture at all — and
@@ -120,6 +138,25 @@ I-V4 comparison beyond the seven Milos & Chen analysis cases.
       against a 10.15 cm physical radius and stop short of claiming agreement.
 
 ## 4. Aerothermal fidelity
+
+- [x] ~~**Wall catalycity.**~~ **Done — and the framework could not express
+      the case at all before.** Fay & Riddell publish *three* correlations;
+      Anderson Eqs. (17.89)–(17.91) sets them side by side. We carried the
+      two that differ only in Lewis exponent. The third — frozen boundary
+      layer over a **noncatalytic** wall — has bracket `1 − h_D/h_0e`, which
+      no exponent reaches, since matching it needs `Le^β = 0`. Catalycity is
+      now a `WallCatalycity` enum rather than an exponent. The effect is
+      large: **2.85× at h_D/h_0e = 0.6**, reproducing the "more than a factor
+      of two" Anderson reports from Fig. 17.5, and PICA's char is not fully
+      catalytic. Wired into II-V8 as three new checks.
+
+- [ ] **Surface catalytic efficiency for PICA specifically.** The
+      noncatalytic case now exists, but which of the three applies to a
+      charred PICA surface is not established here — real surfaces are
+      *partially* catalytic, between the two bounds, and the framework
+      offers no way to sit between them. A finite-rate recombination
+      coefficient would; Anderson's Fig. 17.5 abscissa (the recombination
+      rate parameter) is the axis that interpolation would run along.
 
 - [ ] **A real Navier-Stokes solution to check the correlations against.**
       Wright et al., *Data-Parallel Line Relaxation Method for the
@@ -207,15 +244,45 @@ papers in `reference/` are uncited and would replace that with flight data.
       turn *and carries a worked numerical example* to verify against; the
       Minotaur and Falcon user guides in `reference/` give real staging
       masses and performance curves as a second check.
-- [ ] **The ballistic entry leg is a hard-coded 300 km.**
-      `_BALLISTIC_ENTRY_RANGE` in [`budget.py`](src/passes/systems/budget.py)
-      is a stated constant standing in for entry-interface-to-impact range,
-      justified as "roughly geometry-fixed for a steep entry" — which is true
-      enough to be plausible and not true enough to be derived. Zarchan
-      **Ch. 11** (*Strategic Considerations*) gives closed-form ballistic
-      solutions, a hit equation and flight time, which would replace the
-      constant with a function of entry angle and speed. It is currently the
-      only leg in the budget whose range is neither computed nor sourced.
+- [x] ~~**The ballistic entry leg is a hard-coded 300 km.**~~ **Done — and
+      the "roughly geometry-fixed" defence was wrong by up to 6.5×.** The
+      leg is now computed by
+      [`ballistic_entry.py`](src/passes/flight/ballistic_entry.py) from the
+      Allen–Eggers closed form (NACA TN 4047, via Gallais), giving
+      `R = h_E/tan γ_E`. The old constant turns out to encode one specific
+      entry angle — **21.8° from a 120 km interface** — not a geometric
+      invariant: the range runs 448 km at 15° to 69 km at 60°. The default
+      reproduces 300.02 km so no existing result moved silently.
+
+      Three findings, two of them corrections to this implementation:
+
+      * **A factor-of-two error in the peak-deceleration altitude**, caught
+        by numerical cross-check rather than inspection. The critical
+        density is `β sin γ/H`, not `2β sin γ/H`, which placed every peak
+        exactly `H ln 2` = 4.85 km too low — a *constant* offset, and so
+        invisible in any single case. It is also invisible in `a_max`, which
+        is stationary there by construction, so the headline result was
+        right while the altitude was not.
+      * **The geometric range is an upper bound, not an estimate.** The real
+        trajectory steepens under gravity, so it lands short. Measured
+        against numerical integration: 1.8–3 % for a heavy vehicle at 45–60°,
+        but 11–41 % at 20° and 22–73 % for a low-β capsule at any angle. The
+        error table is published in the docstring and the floor was set from
+        it at 15° rather than guessed.
+      * **`a_max = V_E² sin γ/(2eH)` contains no vehicle property at all** —
+        verified to 0.1 % across a 100× span in ballistic coefficient. A
+        ballistic entry's peak load cannot be improved by changing the
+        vehicle, only by arriving slower or shallower. Ballistic coefficient
+        sets *where* the peak happens, not how hard.
+
+      One limitation is now explicit rather than silent: the closed form
+      neglects gravity, so for a low-β vehicle it decelerates toward zero
+      where a real one settles at terminal velocity.
+      `allen_eggers_applicable_at_impact` flags that, because the failure
+      mode is returning a plausible small number rather than a NaN.
+
+      Zarchan **Ch. 11** (*Strategic Considerations*) remains the route to
+      a *flight-time* model for this leg, which is still `nan`.
 - [ ] **Aerodynamics from the panel model instead of a fixed L/D.** The glide
       and cruise vehicles carry a constant lift-to-drag ratio.
       `passes.aerodynamics` already has the blended Newtonian/Prandtl-Meyer
@@ -238,6 +305,49 @@ papers in `reference/` are uncited and would replace that with flight data.
       conditions with tabulated equilibrium-air properties (ρₑμₑ, ρ_wμ_w, h_D);
       the source presents its results as figures, not tables. Either transcribe
       the figures, or substitute a DPLR solution (§4 above) as the reference.
+
+---
+
+## 9. Newly available sources, not yet mined
+
+A large reference drop landed after this list was written. These are the
+items it makes reachable that are *not* already covered above, ordered by
+what they would change.
+
+- [ ] **Arcjet facility calibration from the primary guide.** Terrazas-Salinas
+      et al., *Test Planning Guide for NASA Ames Research Center Arc Jet
+      Complex and Range Complex*. This is the facility document the
+      Balter-Peterson item above wanted: it should carry the calibration
+      chain that would let the Zoby-derived **9.0 cm effective radius** be
+      confirmed against the 10.15 cm physical radius rather than left as a
+      consistent-but-uncorroborated inference. Supersedes the second half of
+      §3's Balter-Peterson item.
+- [ ] **Launch-vehicle dispersion as a Monte Carlo, not a tolerance.**
+      Hanson & Beard, *Applying Monte Carlo Simulation to Launch Vehicle
+      Design and Requirements Analysis*, and Pinier, *A New Aerodynamic Data
+      Dispersion Method for Launch Vehicle Design*. The budget's boost
+      dispersion is derived from IMU grade alone; these give the *method* for
+      a full ascent dispersion, and Pinier specifically addresses aerodynamic
+      database uncertainty, which we carry as nothing at all. Also the
+      honest answer to why our Falcon 9 cross-check is order-of-magnitude
+      only: user guides publish worst-case tolerances, not 1σ budgets.
+- [ ] **Waypoint and no-fly-zone constrained glide.** Jorris, *Common Aero
+      Vehicle Autonomous Reentry Trajectory Optimization Satisfying Waypoint
+      and No-Fly Zone Constraints*. Our glide guidance flies to a target with
+      a crossrange deadband; it cannot express an intermediate waypoint or a
+      keep-out region, both of which are first-order constraints on a real
+      HGV trajectory and would interact directly with the bank-reversal
+      schedule the accuracy work is built on.
+- [ ] **Boost-phase guidance error analysis.** Siouris, *Missile Guidance
+      and Control Systems*, complementing the Zarchan Ch. 12 item in §7.
+- [ ] **Stage separation.** Pamadi et al. and Couchman. Boost is currently
+      one leg with a stated ΔV; staging events are where a real dispersion
+      budget picks up contributions we model as zero.
+- [ ] **The reentry-dynamics texts as cross-checks rather than sources.**
+      Regan, Gallais, Mooij, Loh, Hankey, Tewari, Teofilatto. Gallais is
+      already cited for Allen-Eggers. These overlap heavily with each other
+      and with what is implemented; the value is in finding where they
+      *disagree* with our closed forms, not in adding citations.
 
 ---
 
