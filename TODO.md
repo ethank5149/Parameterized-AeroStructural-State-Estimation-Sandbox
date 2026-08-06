@@ -335,13 +335,42 @@ separate open items above are chapters in it.
       own propagator, and nothing for the other five components. This is the
       item that would let the accuracy chain be sourced end to end rather
       than sourced at the ends.
-- [ ] **REP, DEP and their relationship to CEP (§5.7.3).**
-      [`dispersion.py`](src/passes/systems/dispersion.py) computes CEP and R95
-      from downrange/crossrange sigmas via an exact elliptical containment
-      integral, which is a *better* method than the classical ratios — but
-      nothing checks it against the classical ratios in the regime where they
-      are valid. Siouris states them; that is a free verification of an
-      integral we currently only self-check.
+- [x] ~~**REP, DEP and their relationship to CEP (§5.7.3).**~~ **Done — and
+      it turned out to supply a 126-point verification, not just a ratio.**
+      Siouris §5.7.3 gives the classical relations, but the section also
+      carries **Table 5.2**: :math:`K` such that
+      :math:`P(R \le K\sigma_L) = P`, over 21 aspect ratios from degenerate
+      to circular and six probability levels. That spans the entire domain
+      [`dispersion.py`](src/passes/systems/dispersion.py) covers, and it is
+      an entirely independent computation of an integral that previously
+      self-checked only against its own circular limit.
+
+      **Our exact elliptical integral reproduces every entry to within one
+      unit in the last printed place**, with 122 of 126 inside ideal
+      four-decimal rounding. Both endpoints land on their closed forms —
+      1.1774 = √(2 ln 2) in the circular column; 0.6745 and 1.9600 (the
+      one-dimensional probable error and 1.96σ) in the degenerate one.
+
+      The four exceptions are **the source's rounding, not ours**, and are
+      identifiable rather than merely tolerated: in each case the exact
+      value rounds to a different last digit than the one printed (2.4478
+      against 2.4477468, and three like it). All four are high by
+      5.1–5.3×10⁻⁵; across all 126 the signed deviations split 69 positive
+      to 57 negative with mean +6.4×10⁻⁶, so this is four last-place
+      roundings and not a bias in our integral. They are pinned as their own
+      test, so a real drift would move the other 122 and be distinguishable.
+
+      Also added, with their errors *measured* rather than asserted:
+      `probable_error` (REP/DEP), `cep_from_probable_errors` (Eq. 5.17) and
+      `cep_small_ratio` (Eq. 5.13). Two things the source does not state
+      fell out. Siouris says Eq. (5.17) holds "even when REP and DEP differ
+      by a factor as much as two" — true, 1.5 % there — but **the error is
+      not monotone**: it peaks near 2 % at 3:1, crosses zero near 5:1, then
+      diverges, so anyone extrapolating by watching the error shrink would
+      be walking into the divergence. The function refuses past 5:1 for that
+      reason. And Eq. (5.13), published for σ_S/σ_L < 0.28, is **better than
+      advertised** — within 0.1 % out to at least 0.35. We keep the
+      published bound anyway.
 - [ ] **Correlated velocity and velocity-to-be-gained (§6.5), i.e.
       Q-guidance.** The classical ballistic-missile guidance law, and the
       thing that actually decides when boost cutoff occurs. Our boost leg has
@@ -363,12 +392,40 @@ separate open items above are chapters in it.
 An AIAA Education Series text whose chapter list maps almost one-to-one onto
 this backlog's gaps.
 
-- [ ] **Impact equation, time of flight, and error analysis (Ch. V,
-      §§5.3–5.5).** The ballistic leg's `duration` is `nan` in every budget
-      row. §5.4 is the closed form that fills it, and §5.5 is a second,
-      independent treatment of the error analysis Siouris gives in §6.4.3 —
-      worth having both, since agreement between two texts is worth more here
-      than either alone.
+- [x] ~~**Time of flight (Ch. V §5.4).**~~ **Done, but not from Regan — the
+      leg turned out to be atmospheric, not Keplerian.** The ballistic
+      `duration` was `nan` in every budget row. Regan §5.4 gives the
+      *Keplerian* free-flight time, which is the wrong leg: the budget's
+      ballistic entry is entry-interface-to-impact, i.e. the atmospheric
+      descent. That follows from the Allen–Eggers profile already
+      implemented in §7, by one quadrature on `1/V` given
+      `dh/dt = −V sin γ`.
+
+      `BallisticEntry.descent_time` matches numerical integration of the
+      full point-mass equations (gravity off, the like-for-like comparison)
+      to **better than 0.1 %** across entry angles 30–60° and ballistic
+      coefficients 7500–20 000 kg/m²; the gravity-on trajectory is 2–11 %
+      quicker, in the expected direction. At the default 21.8° the leg is
+      **52.0 s** over its 300 km.
+
+      One case is refused rather than answered: the integrand goes as
+      `1/V`, so a **low-β vehicle that decelerates to terminal velocity
+      above the ground gives a divergent integral** dominated by the regime
+      Allen–Eggers omits. Those still report `nan` — but now with a note
+      saying which vehicle and why, where before every architecture got a
+      silent `nan`.
+
+      Regan's OCR is too degraded to transcribe his Eqs. (5.27b)/(5.28)
+      reliably, which is worth recording: the scan mangles the equations
+      into unusable fragments even though the surrounding prose is legible.
+
+- [ ] **Impact equation and Keplerian error analysis (Ch. V §§5.3, 5.5).**
+      Still open, and distinct from the item above: §5.3/§5.5 cover the
+      *exo-atmospheric* arc, which the budget currently charges through the
+      deorbit transfer rather than as a ballistic free-flight leg. §5.5 is
+      also a second, independent treatment of the error analysis Siouris
+      gives in §6.4.3 — worth having both, since agreement between two texts
+      is worth more here than either alone.
 - [ ] **Angular motion during re-entry (Ch. XIII), and configuration
       asymmetries (Ch. X §10.1).** These are the classical RV dispersion
       mechanisms — roll resonance, roll-through-zero, asymmetry-induced trim

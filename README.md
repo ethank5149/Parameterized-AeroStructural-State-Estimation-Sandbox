@@ -200,7 +200,11 @@ in the velocity-random-walk, accelerometer-bias, and gyro-bias-through-gravity c
 
 ### Dispersion statistics
 
-Terminal footprints are characterized by the eigendecomposition of the sample impact covariance. $R_{95}$ uses $\chi^2_{2,0.95} = 5.991$, giving semi-axes $2.4477\,\sigma_i$. CEP uses the linear approximation $0.5887(\sigma_1 + \sigma_2)$ — **but only where $0.25 \le \sigma_2/\sigma_1 \le 1$**, which lifting reentry footprints routinely violate. Outside that range the framework falls back to the direct order statistic rather than reporting a CEP the approximation does not support.
+Terminal footprints are characterized by the eigendecomposition of the sample impact covariance. Containment radii come from the **exact elliptical integral** — the radial part integrates analytically, leaving a one-dimensional quadrature — rather than from the classical linear approximation $0.5887(\sigma_1 + \sigma_2)$, which holds only for near-circular ellipses that lifting reentry footprints routinely violate.
+
+That integral is verified against **Siouris Table 5.2**: 126 published values of $K$ such that $P(R \le K\sigma_L) = P$, spanning 21 aspect ratios from degenerate to circular and six probability levels. Our quadrature reproduces every entry to within one unit in the last printed place, 122 of 126 inside ideal four-decimal rounding, with both endpoints recovering their closed forms ($1.1774 = \sqrt{2\ln 2}$ circular; $0.6745$ and $1.9600$ degenerate). The four exceptions are the source's own rounding — in each case the exact value rounds to a different final digit.
+
+The classical approximations are kept for reading against the weapon-delivery literature, where dispersion is quoted as range and deflection *probable errors* ($0.6745\sigma$). Their errors are measured rather than asserted, and two properties emerged that the source does not state: the $0.873(\mathrm{REP}+\mathrm{DEP})$ relation's error is **non-monotone** in aspect ratio — it peaks near 2% at 3:1, crosses zero near 5:1, then diverges — so the implementation refuses past 5:1; and the strongly-elongated formula, published for $\sigma_S/\sigma_L < 0.28$, holds to 0.1% out to at least 0.35.
 
 Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ — 0.7% at $N_\mathrm{MC} = 10^4$. Any dispersion figure quoted without a sample size, or to more significant figures than that bound supports, is not meaningful.
 
@@ -296,7 +300,7 @@ The verification runners are the authoritative record: each writes a markdown re
 
 Ordered by dependency, not ambition. What is *not yet* built but is supportable
 from the sources already in [`reference/`](reference/) is tracked separately in
-[`TODO.md`](TODO.md) — 48 open items and 5 closed, each naming what is currently
+[`TODO.md`](TODO.md) — 47 open items and 7 closed, each naming what is currently
 assumed, which source closes it, and what measurably changes. Its §9 is a full
 survey of every reference not yet drawn on, including the ones judged not worth
 mining and why.

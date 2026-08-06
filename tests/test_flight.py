@@ -409,6 +409,39 @@ class TestBallisticEntry:
         hide it."""
         assert peak_deceleration_altitude(np.deg2rad(60.0), 25000.0) < 0.0
 
+    def test_descent_time_matches_numerical_integration(self):
+        """The closed form neglects gravity, so the gravity-free reference
+        is the like-for-like check; it should agree to the integrator.
+        Gravity-on is then reported for scale: it is 2-11% shorter, because
+        gravity accelerates the descent, which is the right direction."""
+        for gamma_deg, beta in ((30.0, 7500.0), (45.0, 7500.0), (60.0, 20000.0)):
+            gamma = np.deg2rad(gamma_deg)
+            entry = BallisticEntry(6500.0, gamma, ballistic_coefficient=beta)
+            reference = self._integrate(6500.0, gamma, beta, gravity=False).t[-1]
+            assert entry.descent_time == pytest.approx(reference, rel=1e-3)
+            with_gravity = self._integrate(6500.0, gamma, beta, gravity=True).t[-1]
+            assert with_gravity < entry.descent_time
+            assert (entry.descent_time - with_gravity) / with_gravity < 0.15
+
+    def test_descent_time_refuses_where_the_integrand_diverges(self):
+        """The integrand goes as 1/V, so a vehicle the closed form
+        decelerates toward zero gives a divergent integral dominated by the
+        regime the model omits. Returning a large float would look like an
+        answer; raising says it is not one."""
+        shallow = BallisticEntry(6500.0, np.deg2rad(30.0), ballistic_coefficient=2000.0)
+        assert not shallow.allen_eggers_applicable_at_impact
+        with pytest.raises(ValueError, match="does not reach the ground"):
+            _ = shallow.descent_time
+
+    def test_descent_time_shortens_with_steepness(self):
+        """A steeper entry covers the same altitude over a shorter path at
+        higher speed, so it must take less time."""
+        times = [
+            BallisticEntry(6500.0, np.deg2rad(d), ballistic_coefficient=20000.0).descent_time
+            for d in (20.0, 30.0, 45.0, 60.0)
+        ]
+        assert times == sorted(times, reverse=True)
+
     def test_validation(self):
         with pytest.raises(ValueError, match="entry_velocity"):
             BallisticEntry(-1.0, np.deg2rad(30.0))

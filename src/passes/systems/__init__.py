@@ -20,12 +20,19 @@ from passes.systems.budget import (
 )
 from passes.systems.dispersion import (
     CEP_OVER_SIGMA,
+    PROBABLE_ERROR_OVER_SIGMA,
     R95_OVER_SIGMA,
+    SIOURIS_TABLE_5_2,
+    SIOURIS_TABLE_5_2_PROBABILITIES,
+    SIOURIS_TABLE_5_2_RATIOS,
     AccuracyStatistics,
     accuracy_statistics,
+    cep_from_probable_errors,
+    cep_small_ratio,
     containment_probability,
     containment_radius,
     containment_ratio,
+    probable_error,
 )
 
 __all__ = [
@@ -33,7 +40,11 @@ __all__ = [
     "DISPERSION_RESETS",
     "DISPERSION_SOURCES",
     "NAMED_ARCHITECTURES",
+    "PROBABLE_ERROR_OVER_SIGMA",
     "R95_OVER_SIGMA",
+    "SIOURIS_TABLE_5_2",
+    "SIOURIS_TABLE_5_2_PROBABILITIES",
+    "SIOURIS_TABLE_5_2_RATIOS",
     "AccuracyStatistics",
     "Architecture",
     "LegBudget",
@@ -43,11 +54,14 @@ __all__ = [
     "Phase",
     "PhaseRegime",
     "accuracy_statistics",
+    "cep_from_probable_errors",
+    "cep_small_ratio",
     "containment_probability",
     "containment_radius",
     "containment_ratio",
     "describe",
     "enumerate_architectures",
     "evaluate",
+    "probable_error",
     "validate",
 ]

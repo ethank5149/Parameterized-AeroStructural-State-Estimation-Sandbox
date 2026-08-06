@@ -10,18 +10,24 @@ from passes.systems import (
     DISPERSION_SOURCES,
     NAMED_ARCHITECTURES,
     R95_OVER_SIGMA,
+    SIOURIS_TABLE_5_2,
+    SIOURIS_TABLE_5_2_PROBABILITIES,
+    SIOURIS_TABLE_5_2_RATIOS,
     Architecture,
     MissionRequest,
     Payload,
     Phase,
     PhaseRegime,
     accuracy_statistics,
+    cep_from_probable_errors,
+    cep_small_ratio,
     containment_probability,
     containment_radius,
     containment_ratio,
     describe,
     enumerate_architectures,
     evaluate,
+    probable_error,
     validate,
 )
 
@@ -633,3 +639,215 @@ class TestBudgetDispersion:
         finally:
             DISPERSION_SOURCES[Phase.BOOST] = original
         assert large > 5.0 * small
+
+
+class TestAgainstSiourisTable52:
+    """The containment integral against 126 published numbers.
+
+    Before this, `containment_radius` was checked only against its own
+    circular closed form and its own consistency with
+    `containment_probability`. Siouris Table 5.2 spans the entire domain —
+    21 aspect ratios from degenerate to circular, six probability levels —
+    and is an entirely independent computation.
+    """
+
+    def test_reproduces_every_non_degenerate_entry(self):
+        """All 120 two-dimensional entries, to one unit in the table's last
+        printed place.
+
+        The bound is 1e-4 rather than the 5e-5 of ideal rounding because
+        three of these 120 entries are one unit high in the source — see
+        `test_the_four_entries_the_source_rounds_up`. Every other entry is
+        inside 5e-5, i.e. agreement to every digit published.
+        """
+        worst = 0.0
+        for i, ratio in enumerate(SIOURIS_TABLE_5_2_RATIOS):
+            if ratio == 0.0:
+                continue  # degenerate row, handled separately
+            for j, probability in enumerate(SIOURIS_TABLE_5_2_PROBABILITIES):
+                ours = containment_radius(probability, 1.0, ratio)
+                worst = max(worst, abs(ours - SIOURIS_TABLE_5_2[i][j]))
+        assert worst < 1.0e-4, f"worst deviation from Table 5.2 is {worst:.2e}"
+
+    def test_the_four_entries_the_source_rounds_up(self):
+        """Four of the 126 entries sit just over half a unit in the last
+        place from the exact value, and in every case the exact value
+        rounds to a *different* last digit — so the discrepancy is the
+        table's rounding, not ours.
+
+        Pinned rather than absorbed into a loose tolerance: if our integral
+        ever drifted, these four would move and the rest would not, which
+        distinguishes a real regression from this known artefact.
+        """
+        from scipy.stats import norm
+
+        known = {
+            (0.00, 0.75): 1.1504,
+            (0.05, 0.50): 0.6764,
+            (0.75, 0.90): 1.9034,
+            (1.00, 0.95): 2.4478,
+        }
+        for (ratio, probability), published in known.items():
+            if ratio == 0.0:
+                exact = float(norm.ppf(0.5 + 0.5 * probability))
+            else:
+                exact = containment_radius(probability, 1.0, ratio)
+            deviation = published - exact
+            assert 5.0e-5 < deviation < 6.0e-5
+            # The tell: the exact value rounds to a different last digit.
+            assert round(exact, 4) != published
+
+        # And they are the *only* four. Everything else is inside ideal
+        # rounding, so this is not a systematic bias in our integral.
+        outliers = 0
+        for i, ratio in enumerate(SIOURIS_TABLE_5_2_RATIOS):
+            for j, probability in enumerate(SIOURIS_TABLE_5_2_PROBABILITIES):
+                if ratio == 0.0:
+                    exact = float(norm.ppf(0.5 + 0.5 * probability))
+                else:
+                    exact = containment_radius(probability, 1.0, ratio)
+                if abs(SIOURIS_TABLE_5_2[i][j] - exact) > 5.0e-5:
+                    outliers += 1
+        assert outliers == 4
+
+    def test_degenerate_row_is_the_one_dimensional_normal(self):
+        """The sigma_S = 0 row is not a two-dimensional result at all: with
+        no spread on one axis the miss distance is a folded normal on the
+        other, so the entries must be normal quantiles. That the table and
+        the closed form agree here is what makes the rest of it credible."""
+        from scipy.stats import norm
+
+        for j, probability in enumerate(SIOURIS_TABLE_5_2_PROBABILITIES):
+            quantile = float(norm.ppf(0.5 + 0.5 * probability))
+            assert quantile == pytest.approx(SIOURIS_TABLE_5_2[0][j], abs=1e-4)
+        # The two entries everyone recognises.
+        assert SIOURIS_TABLE_5_2[0][1] == pytest.approx(0.6745, abs=5e-5)
+        assert SIOURIS_TABLE_5_2[0][4] == pytest.approx(1.9600, abs=5e-5)
+
+    def test_circular_column_is_the_rayleigh_closed_form(self):
+        """The other endpoint. The published 1.1774 and 2.4478 must be
+        sqrt(2 ln 2) and sqrt(-2 ln 0.05) exactly."""
+        circular = SIOURIS_TABLE_5_2[-1]
+        assert circular[1] == pytest.approx(CEP_OVER_SIGMA, abs=5e-5)
+        # 2.4478 is one of the four entries the source rounds up.
+        assert circular[4] == pytest.approx(R95_OVER_SIGMA, abs=1e-4)
+        for j, probability in enumerate(SIOURIS_TABLE_5_2_PROBABILITIES):
+            closed_form = float(np.sqrt(-2.0 * np.log(1.0 - probability)))
+            assert closed_form == pytest.approx(circular[j], abs=1e-4)
+
+    def test_table_is_monotone_in_both_directions(self):
+        """Guards the transcription against a transposed or shuffled row.
+        K must rise with probability across a row, and rise with aspect
+        ratio down a column — a rounder distribution needs a larger radius
+        to contain the same fraction."""
+        for row in SIOURIS_TABLE_5_2:
+            assert list(row) == sorted(row)
+        for j in range(len(SIOURIS_TABLE_5_2_PROBABILITIES)):
+            column = [row[j] for row in SIOURIS_TABLE_5_2]
+            assert column == sorted(column)
+
+    def test_probable_error_is_the_one_dimensional_half(self):
+        """REP and DEP are per-axis 50% points; CEP is the radial one and is
+        always larger. Conflating them is the classic error this pair of
+        names exists to prevent."""
+        assert probable_error(1.0) == pytest.approx(0.6745, abs=5e-5)
+        assert probable_error(0.0) == 0.0
+        assert probable_error(250.0) == pytest.approx(0.6745 * 250.0, rel=1e-4)
+        assert accuracy_statistics(1.0, 1.0).cep > probable_error(1.0)
+
+    def test_classical_cep_approximation_holds_where_it_is_claimed_to(self):
+        """Siouris states Eq. (5.17) is usable out to a REP/DEP ratio of 2.
+        Checked against our exact integral rather than taken on trust: at
+        exactly that ratio the error is 1.5%."""
+        for ratio in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5):
+            exact = accuracy_statistics(1.0, ratio).cep
+            approximate = cep_from_probable_errors(
+                probable_error(1.0), probable_error(ratio)
+            )
+            assert abs(approximate - exact) / exact < 0.016
+
+    def test_classical_approximation_refuses_where_it_diverges(self):
+        """The error is non-monotone: it shrinks again near a 5:1 ratio
+        before diverging. Refusing past 5:1 stops a caller reading that
+        accidental near-zero as validity."""
+        with pytest.raises(ValueError, match="beyond where"):
+            cep_from_probable_errors(1.0, 0.1)
+        with pytest.raises(ValueError, match="degenerate"):
+            cep_from_probable_errors(1.0, 0.0)
+        # ...and the non-monotonicity itself, which is why the guard exists.
+        error_at = {}
+        for ratio in (0.5, 0.35, 0.2, 0.11):
+            exact = accuracy_statistics(1.0, ratio).cep
+            error_at[ratio] = (0.873 * 0.6745 * (1.0 + ratio) - exact) / exact
+        assert error_at[0.35] > error_at[0.5] > 0.0
+        assert error_at[0.2] < error_at[0.35]
+        assert error_at[0.11] < 0.0
+
+    def test_small_ratio_formula_is_better_than_its_stated_range(self):
+        """Eq. (5.13) is published for sigma_S/sigma_L < 0.28 and holds to
+        0.1% throughout. We keep the published bound rather than widening
+        it on our own spot checks, but the accuracy is worth pinning."""
+        for ratio in (0.02, 0.05, 0.10, 0.15, 0.20, 0.25, 0.27):
+            exact = accuracy_statistics(1.0, ratio).cep
+            assert abs(cep_small_ratio(1.0, ratio) - exact) / exact < 0.0011
+        with pytest.raises(ValueError, match="outside the range"):
+            cep_small_ratio(1.0, 0.28)
+
+    def test_the_two_approximations_bracket_the_exact_answer_together(self):
+        """Neither formula covers the whole range, but between them they do:
+        Eq. (5.13) below 0.28 and Eq. (5.17) above it. This checks the
+        handover is seamless rather than leaving a gap where a caller has
+        to use a formula outside its range."""
+        below = accuracy_statistics(1.0, 0.27).cep
+        above = accuracy_statistics(1.0, 0.29).cep
+        assert abs(cep_small_ratio(1.0, 0.27) - below) / below < 0.0011
+        approximate_above = cep_from_probable_errors(
+            probable_error(1.0), probable_error(0.29)
+        )
+        assert abs(approximate_above - above) / above < 0.025
+
+
+class TestBallisticLegDuration:
+    """The one budget entry that used to be `nan` for every architecture."""
+
+    @staticmethod
+    def _request():
+        return MissionRequest(
+            GeodeticPosition(np.deg2rad(45.0), np.deg2rad(-100.0), 0.0),
+            (GeodeticPosition(np.deg2rad(50.0), np.deg2rad(40.0), 0.0),),
+            3000.0,
+        )
+
+    def _ballistic_leg(self, **kwargs):
+        budget = evaluate(NAMED_ARCHITECTURES["ballistic-single"], self._request(), **kwargs)
+        return next(leg for leg in budget.legs if leg.phase is Phase.BALLISTIC)
+
+    def test_duration_is_now_finite(self):
+        leg = self._ballistic_leg()
+        assert np.isfinite(leg.duration)
+        assert 30.0 < leg.duration < 90.0
+
+    def test_range_and_duration_both_fall_with_a_steeper_entry(self):
+        """They come from the same Allen-Eggers profile, so they must move
+        together; a steeper entry is both shorter and quicker."""
+        legs = [self._ballistic_leg(ballistic_entry_angle=np.deg2rad(d))
+                for d in (20.0, 30.0, 45.0, 60.0)]
+        ranges = [leg.ground_range for leg in legs]
+        durations = [leg.duration for leg in legs]
+        assert ranges == sorted(ranges, reverse=True)
+        assert durations == sorted(durations, reverse=True)
+
+    def test_low_ballistic_coefficient_still_reports_nan_and_says_why(self):
+        """A light body decelerates to terminal velocity above the ground,
+        where the closed form's descent-time integral diverges. Reporting
+        `nan` is right; reporting it *silently* was the old behaviour and is
+        what the note now fixes."""
+        leg = self._ballistic_leg(ballistic_coefficient=2000.0)
+        assert np.isnan(leg.duration)
+        assert "duration unavailable" in leg.note
+        assert "terminal" in leg.note
+
+    def test_the_default_still_reproduces_the_old_constant_range(self):
+        """The 300 km constant this replaced corresponded to 21.8 degrees.
+        The default must not have moved any existing result."""
+        assert self._ballistic_leg().ground_range == pytest.approx(300.0e3, rel=1e-4)

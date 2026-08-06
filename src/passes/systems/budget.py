@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
-from passes.flight.ballistic_entry import ballistic_entry_range
+from passes.flight.ballistic_entry import BallisticEntry, ballistic_entry_range
 from passes.geodesy import (
     WGS84_MEAN_RADIUS,
     GeodeticPosition,
@@ -371,6 +371,8 @@ def evaluate(
     terminal_lateral_acceleration: float = 20.0 * 9.80665,
     target_location_sigma: float = 0.0,
     ballistic_entry_angle: float = np.deg2rad(21.8),
+    ballistic_entry_speed: float = 6.5e3,
+    ballistic_coefficient: float = 20.0e3,
 ) -> MissionBudget:
     """Charge each phase and test whether the architecture closes.
 
@@ -396,6 +398,15 @@ def evaluate(
         Any real study should set it. The range varies from 448 km at the
         15 degree floor to 69 km at 60 degrees, so treating it as fixed was
         worth up to a factor of 6.5.
+    ballistic_entry_speed, ballistic_coefficient:
+        Entry-interface speed (m/s) and :math:`m/(C_D A)` (kg/m²) for the
+        ballistic leg, used only to compute its **duration** — the range
+        depends on neither. The default 20,000 kg/m² is a heavy reentry
+        vehicle, which is the regime where the Allen-Eggers closed form
+        reaches the ground and the duration is therefore available at all;
+        a lighter body decelerates to terminal velocity high up and the
+        leg's duration is reported as ``nan``, as it was for every vehicle
+        before this.
 
     Notes
     -----
@@ -485,6 +496,18 @@ def evaluate(
             )
         )
     if Phase.BALLISTIC in regimes:
+        # Duration comes from the same Allen-Eggers profile as the range,
+        # by quadrature on 1/V. It is reported as `nan` — as it always was
+        # — only where the closed form does not reach the ground, which is
+        # a low ballistic coefficient decelerating to terminal velocity
+        # high up. That is a statement about the vehicle, not a gap.
+        entry = BallisticEntry(
+            entry_velocity=ballistic_entry_speed,
+            entry_angle=ballistic_entry_angle,
+            entry_altitude=_ENTRY_INTERFACE_ALTITUDE,
+            ballistic_coefficient=ballistic_coefficient,
+        )
+        applicable = entry.allen_eggers_applicable_at_impact
         atmospheric.append(
             LegBudget(
                 phase=Phase.BALLISTIC,
@@ -492,10 +515,18 @@ def evaluate(
                     ballistic_entry_angle, _ENTRY_INTERFACE_ALTITUDE
                 ),
                 delta_v=0.0,
-                duration=float("nan"),
+                duration=entry.descent_time if applicable else float("nan"),
                 note=(
                     "entry interface to impact, Allen-Eggers at "
-                    f"{np.rad2deg(ballistic_entry_angle):.1f} deg (upper bound)"
+                    f"{np.rad2deg(ballistic_entry_angle):.1f} deg (range is an "
+                    "upper bound)"
+                    if applicable
+                    else (
+                        "entry interface to impact, Allen-Eggers at "
+                        f"{np.rad2deg(ballistic_entry_angle):.1f} deg; duration "
+                        f"unavailable, beta = {ballistic_coefficient:.0f} kg/m^2 "
+                        "decelerates to terminal above the ground"
+                    )
                 ),
             )
         )

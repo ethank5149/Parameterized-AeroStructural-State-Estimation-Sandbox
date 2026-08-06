@@ -265,6 +265,48 @@ class BallisticEntry:
         """
         return self.impact_velocity > 5.0 * self.terminal_velocity
 
+    @property
+    def descent_time(self) -> float:
+        """Entry interface to impact, in seconds.
+
+        With the flight-path angle constant, altitude falls at
+        :math:`\\dot h = -V\\sin\\gamma`, so the time follows from the
+        closed-form velocity profile by one quadrature:
+
+        .. math::
+
+            t = \\int_0^{h_E} \\frac{\\mathrm{d}h}{V(h)\\,\\sin\\gamma}
+
+        This fills the one entry the mission budget previously carried as
+        ``nan``: the ballistic leg had a range and no duration, so a
+        ballistic architecture could be checked for closure in distance but
+        not in time.
+
+        Raises
+        ------
+        ValueError
+            If :attr:`allen_eggers_applicable_at_impact` is false. The
+            integrand goes as :math:`1/V`, so a vehicle the closed form
+            decelerates toward zero gives a *divergent* integral -- the
+            answer would be dominated by the region where the neglected
+            gravity term is the whole physics. That is a case where the
+            model does not apply, not a case where the number is merely
+            imprecise, so it raises rather than returning a large float.
+        """
+        if not self.allen_eggers_applicable_at_impact:
+            msg = (
+                "Allen-Eggers does not reach the ground for this vehicle: the "
+                f"closed-form impact velocity is {self.impact_velocity:.2f} m/s "
+                f"against a terminal velocity of {self.terminal_velocity:.2f} m/s. "
+                "The descent-time integrand goes as 1/V, so the result would be "
+                "dominated by the regime the model omits."
+            )
+            raise ValueError(msg)
+        altitudes = np.linspace(0.0, self.entry_altitude, 4001)
+        speeds = self.velocity(altitudes)
+        integrand = 1.0 / (speeds * np.sin(self.entry_angle))
+        return float(np.trapezoid(integrand, altitudes))
+
 
 def allen_eggers_velocity(
     altitude: float | _FloatArray,
