@@ -265,9 +265,21 @@ Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ 
 
 `passes.tex`, `passes-hgv.tex`, and `references.bib` are earlier drafts retained for history. They contain the citation errors documented in the audit and should not be built or cited.
 
+## Launch packages
+
+A scenario is a file, not a block of Python. [`packages/`](packages/) holds **launch packages** — versioned, unit-annotated TOML documents stating everything chosen about a run: launch site, aimpoints, architecture, vehicle, sensors, objectives. `passes.systems.package` loads and validates them, and round-trips through JSON for interchange.
+
+Units live in the key names (`latitude_deg`, `parking_altitude_m`) because the error this project keeps hitting is a number of the right magnitude in the wrong unit — a bare `latitude = 0.9` is unfalsifiable where `latitude_deg = 0.9` is obviously wrong. Angles are degrees on disk and radians in memory, converted once at the boundary. The schema version is required, so a format change fails loudly instead of silently reinterpreting old files. Vocabularies (`architecture`, `imu_grade`) are closed and checked against the code, with the valid options listed on error.
+
+**Unknown keys are refused**, and that rule caught a real bug in the first package written for the format: in TOML a bare key written after a `[table]` header belongs to that table, so `arrival_time_s` placed at the end of the file silently became `vehicle.arrival_time_s`, meaning nothing, and the loader used the default without complaint. The error message now names the trap.
+
+A package records only what was *chosen*. Nothing derivable from those choices is stored, so a package plus a version of this repository reproduces a run exactly, and the file can never disagree with the code about a computed quantity.
+
+---
+
 ## Notebooks
 
-[`notebooks/fobs-warning-analysis.ipynb`](notebooks/fobs-warning-analysis.ipynb) composes the orbital, guidance and sensor-geometry modules into a runnable warning-time comparison: a fractional-orbital profile against a ballistic arc between the same two points, past a network of publicly documented early-warning sites. Launch site and aimpoint are configurable at the top; the notebook sweeps burnout flight-path angle across four objectives, parking altitude against four radar-mask assumptions, and reports the fractional-insertion condition.
+[`notebooks/fobs-warning-analysis.ipynb`](notebooks/fobs-warning-analysis.ipynb) is driven entirely by a launch package and composes the orbital, guidance and sensor-geometry modules into a runnable warning-time comparison: a fractional-orbital profile against a ballistic arc between the same two points, past a network of publicly documented early-warning sites. Launch site and aimpoint are configurable at the top; the notebook sweeps burnout flight-path angle across four objectives, parking altitude against four radar-mask assumptions, and reports the fractional-insertion condition.
 
 The headline trade for a mid-latitude Eurasian launch against a US east-coast aimpoint: **24 minutes of warning removed, paid for with 37 minutes of flight time and 780 m/s of burnout speed** — and seven detecting sites reduced to one, because the profile arrives from the reversed bearing.
 
@@ -312,7 +324,7 @@ The verification runners are the authoritative record: each writes a markdown re
 
 Ordered by dependency, not ambition. What is *not yet* built but is supportable
 from the sources already in [`reference/`](reference/) is tracked separately in
-[`TODO.md`](TODO.md) — 49 open items and 16 closed, each naming what is currently
+[`TODO.md`](TODO.md) — 50 open items and 18 closed, each naming what is currently
 assumed, which source closes it, and what measurably changes. Its §9 is a full
 survey of every reference not yet drawn on, including the ones judged not worth
 mining and why.

@@ -894,13 +894,30 @@ enough to say what they are worth and what the catch is.
       quality or discrimination, which need favourable multi-site geometry
       and are not modelled.
 
-- [ ] **Earth rotation under the fractional parking arc.** `scenario.py`
-      flies the parking arc on a fixed great circle. The planet turns ~22°
-      per low revolution, so the real sub-vehicle track walks east-west by up
-      to a couple of thousand kilometres. That changes *which* site detects
-      first more than *when*, which is why the comparison stands — but
-      `fobs.ground_track` already does the rotation and composing it in is
-      straightforward.
+- [x] ~~**Earth rotation under the fractional parking arc.**~~ **Done — and
+      it exposed a targeting gap, not just a plotting one.** Turning the
+      ground beneath a fixed inertial plane made the fractional profile
+      **miss by 1463 km**, because a trajectory must be aimed at where the
+      target *will be*. `leading_aimpoint` solves that fixed point — the lead
+      depends on the flight time, which depends on the range to the lead
+      point — and both profiles now carry it: **7.4 deg of lead for the
+      half-hour ballistic arc, 17.3 deg (about 1500 km) for the 69-minute
+      fractional one.** Both now arrive within 5 km of the aimpoint.
+
+      The prediction made when this was deferred is now **measured rather
+      than asserted**: warning time moves by under a minute while the number
+      of detecting sites changes (7 to 6), so rotation changes *which* site
+      sees it more than *when*, and the earlier comparison stands.
+
+      One earlier test had to be corrected rather than merely re-run. It
+      asserted the two profiles' range angles sum exactly to 2*pi, which
+      holds only on a non-rotating Earth: with leads applied each profile
+      aims at its own point and the sum drifts by the difference of the
+      leads. The exact identity was an overreach and now holds only where it
+      should.
+
+      The orbit plane is still fixed in inertial space, which is right to the
+      extent that it does not precess inside one revolution.
 
 - [ ] **Boost-phase infrared detection.** The single largest omission in the
       warning analysis, and it cuts against the fractional profile: a real
@@ -974,6 +991,56 @@ Recorded so the survey does not have to be repeated.
       trajectory model has. Worth revisiting only alongside the Earth-rotation
       item above, since that is what would make the track worth locating
       precisely.
+
+### 9.11 Configuration as a first-class artefact
+
+- [x] ~~**A portable launch-package format.**~~ **Done.**
+      [`package.py`](src/passes/systems/package.py) defines a versioned,
+      unit-annotated scenario document — TOML for authoring (read by stdlib
+      `tomllib`), JSON for interchange, both round-tripping through one
+      dataclass with a test asserting they agree.
+      [`packages/fobs-reference.toml`](packages/fobs-reference.toml) is the
+      worked example and drives the notebook.
+
+      Four design rules, each earning its keep:
+
+      * **Units in the key names** — `latitude_deg`, `parking_altitude_m`.
+        The error class this repository keeps getting bitten by is a number
+        of the right magnitude in the wrong unit; a bare `latitude = 0.9` is
+        unfalsifiable where `latitude_deg = 0.9` is obviously wrong.
+      * **Degrees on disk, radians in memory**, converted once at the
+        boundary.
+      * **Schema version required** — an unversioned file is refused, so a
+        format change fails loudly rather than silently reinterpreting old
+        data.
+      * **Closed vocabularies checked against the code** — `architecture`
+        and `imu_grade` must name real entries, with the valid options
+        listed on error.
+
+      **Unknown keys are refused**, and that rule caught a real bug in the
+      first example package written for this format. In TOML a bare key
+      written *after* a `[table]` header belongs to that table, not to the
+      document root — so `arrival_time_s` and `objectives` placed at the end
+      of the file silently became `vehicle.arrival_time_s` and
+      `vehicle.objectives`, meaning nothing, and the loader used the
+      defaults without complaint. The summary quietly showed one objective
+      where the file listed two. The error message now names the trap.
+
+      A package records only what was *chosen*; nothing derivable from those
+      choices is stored, so a package can never disagree with the code about
+      a computed quantity.
+
+- [ ] **Packages for the other architectures.** Only the fractional-orbital
+      reference exists. The format covers all
+      eleven named architectures, but nothing exercises the glide, cruise or
+      mixed-payload paths through it, so their keys are validated and
+      untested end to end.
+
+- [ ] **Sensor definitions in the package.** `[[sensors]]` is parsed and
+      round-trips, but the notebook still builds its network from
+      `EARLY_WARNING_SITES` and overrides the mask in Python. A package that
+      carried its own threat picture would make a scenario fully
+      self-contained, which is the point of the format.
 
 ---
 

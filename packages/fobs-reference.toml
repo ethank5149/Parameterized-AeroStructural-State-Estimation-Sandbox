@@ -23,16 +23,70 @@ notebooks/fobs-warning-analysis.ipynb.
 author = "PASSES"
 created = "2026-08-06"
 
+# ## 13th Missile Division (Dombarovskiy)
+# | Facility / Silo Name | Launch Group / Regiment | Precise Coordinates (DMS) | Altitude (Elevation) |
+# | --- | --- | --- | --- |
+# | **Alternate Command Post (Silo 44G)** | Division Command | 51°31′21″N, 59°58′33″E | 260–335 m (Regional Average) |
+# | **Silo 15C (Control Site)** | R-36 ICBM Node | 50°45′36″N, 59°36′00″E | 260–335 m (Regional Average) |
+# | **Silo 1A** | Group A (621st Regiment) | 50°58′21″N, 59°33′01″E | ~265 m (869 ft) |
+# | **Silo 2A** | Group A (621st Regiment) | 51°01′49″N, 59°41′23″E | ~290 m (951 ft) |
+# | **Silo 3A (Original Control Node)** | Group A (621st Regiment) | 51°06′53″N, 59°38′04″E | 260–335 m (Regional Average) |
+# | **Silo 4A** | Group A (621st Regiment) | 51°11′35″N, 59°38′06″E | 260–335 m (Regional Average) |
+# | **Silo 6A** | Group A (621st Regiment) | 51°04′10″N, 59°29′00″E | 260–335 m (Regional Average) |
+# | **Silo 7A** | Group A (621st Regiment) | 51°09′12″N, 59°31′29″E | 260–335 m (Regional Average) |
+# | **Silo 8B** | Group B (368th Regiment) | 51°02′11″N, 59°57′30″E | 260–335 m (Regional Average) |
+# | **Silo 9B (Former Control Node)** | Group B (368th Regiment) | 51°05′37″N, 59°50′41″E | 260–335 m (Regional Average) |
+# | **Silo 10B** | Group B (368th Regiment) | 51°09′17″N, 59°44′54″E | 260–335 m (Regional Average) |
+# | **Silo 11B** | Group B (368th Regiment) | 51°12′24″N, 59°50′59″E | 260–335 m (Regional Average) |
+# | **Silo 12B** | Group B (368th Regiment) | 51°10′06″N, 59°58′01″E | 260–335 m (Regional Average) |
+# | **Silo 13B** | Group B (368th Regiment) | 51°05′48″N, 60°05′13″E | 260–335 m (Regional Average) |
+# | **Silo 21D (Former Control Node)** | Group D (252nd Regiment) | 50°51′46″N, 59°59′38″E | 260–335 m (Regional Average) |
+# | **Silo 22D** | Group D (252nd Regiment) | 50°46′23″N, 59°55′08″E | 260–335 m (Regional Average) |
+# | **Silo 23D** | Group D (252nd Regiment) | 50°44′49″N, 60°04′20″E | 260–335 m (Regional Average) |
+# | **Silo 24D** | Group D (252nd Regiment) | 50°51′40″N, 59°51′43″E | 260–335 m (Regional Average) |
+# | **Silo 25D** | Group D (252nd Regiment) | 50°46′42″N, 60°13′46″E | 260–335 m (Regional Average) |
+# ## 62nd Missile Division (Uzhur)
+# | Facility / Silo Name | Launch Group / Regiment | Precise Coordinates (DMS) | Altitude (Elevation) |
+# | --- | --- | --- | --- |
+# | **Alternate Command Post (Silo 34F)** | Division Command | 55°12′21″N, 90°15′16″E | 380–595 m (Regional Average) |
+# | **Silo 19X (Training / Prototype)** | Division Command | 55°16′16″N, 89°44′36″E | 380–595 m (Regional Average) |
+# | **Silo 1A (Control Site)** | Historic Group A | 55°20′00″N, 89°44′00″E | ~410 m (1,345 ft) |
+# | **Silo 3A** | Historic Group A | 55°19′00″N, 89°34′00″E | ~480 m (1,575 ft) |
+# | **Silo 7B** | Group B (197th Regiment) | 55°22′18″N, 89°27′02″E | 380–595 m (Regional Average) |
+# | **Silo 8B (Former Control Node)** | Group B (197th Regiment) | 55°18′47″N, 89°19′42″E | 380–595 m (Regional Average) |
+# | **Silo 9B** | Group B (197th Regiment) | 55°12′50″N, 89°22′02″E | 380–595 m (Regional Average) |
+# | **Silo 10B** | Group B (197th Regiment) | 55°20′14″N, 89°08′56″E | ~550 m (1,804 ft) |
+# | **Silo 26E** | Group E (229th Regiment) | 55°19′17″N, 89°57′34″E | 380–595 m (Regional Average) |
+# | **Silo 27E (Launch Control Center)** | Group E (229th Regiment) | 55°14′42″N, 89°55′08″E | 380–595 m (Regional Average) |
+# | **Silo 28E** | Group E (229th Regiment) | 55°10′01″N, 89°54′23″E | 380–595 m (Regional Average) |
+# | **Silo 29E** | Group E (229th Regiment) | 55°20′12″N, 90°05′43″E | 380–595 m (Regional Average) |
+# | **Silo 30E** | Group E (229th Regiment) | 55°15′20″N, 90°04′35″E | 380–595 m (Regional Average) |
+# | **Silo 31E** | Group E (229th Regiment) | 55°11′10″N, 90°08′13″E | 380–595 m (Regional Average) |
+# | **Silo 44H** | Group H (772nd Regiment) | 55°26′50″N, 89°29′18″E | 380–595 m (Regional Average) |
+# | **Silo 45H** | Group H (772nd Regiment) | 55°28′57″N, 89°35′43″E | 380–595 m (Regional Average) |
+# | **Silo 46H (Control Site)** | Group H (772nd Regiment) | 55°34′09″N, 89°30′55″E | 380–595 m (Regional Average) |
+# | **Silo 47H** | Group H (772nd Regiment) | 55°34′17″N, 89°20′19″E | 380–595 m (Regional Average) |
+# | **Silo 50I** | Group I (790th Regiment) | 55°34′58″N, 89°56′25″E | 380–595 m (Regional Average) |
+# | **Silo 51I** | Group I (790th Regiment) | 55°29′05″N, 89°43′55″E | 380–595 m (Regional Average) |
+# | **Silo 52I (Control Site)** | Group I (790th Regiment) | 55°33′00″N, 89°48′16″E | 380–595 m (Regional Average) |
+# | **Silo 53I** | Group I (790th Regiment) | 55°37′46″N, 89°49′38″E | 380–595 m (Regional Average) |
+
 [launch]
-latitude_deg = 51.8
-longitude_deg = 59.5
-altitude_m = 0.0
+latitude_deg = 55.245
+longitude_deg = 89.919
+altitude_m = 487.5
 label = "launch site"
 
+# | Location | Latitude / Longitude (DMS) | Latitude / Longitude (Decimal) | Altitude / Elevation (MSL) |
+# | --- | --- | --- | --- |
+# | **Camp David** | 39° 38′ 54″ N, 77° 27′ 54″ W | 39.64833° N, -77.46500° W | ~1,850–1,900 ft (564–579 m) |
+# | **Pentagon** | 38° 52′ 16″ N, 77° 03′ 21″ W | 38.87099° N, -77.05596° W | ~30–40 ft (9–12 m) |
+# | **CENTCOM** | 27° 50′ 58″ N, 82° 31′ 16″ W | 27.84934° N, -82.52122° W | ~14 ft (4.3 m) |
+
 [[aimpoints]]
-latitude_deg = 38.9
-longitude_deg = -77.0
-altitude_m = 0.0
+latitude_deg = 38.897639
+longitude_deg = -77.036552
+altitude_m = 24.0
 label = "aimpoint"
 
 [profile]
