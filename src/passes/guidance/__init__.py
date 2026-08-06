@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from passes.guidance.apn import apn_acceleration, los_rate
+from passes.guidance.ballistic_errors import (
+    crossrange_from_lateral_offset,
+    crossrange_offset_sensitivity,
+    launch_position_error,
+    velocity_error_at_impact,
+)
 from passes.guidance.bus import (
     Aimpoint,
     DeploymentPlan,
@@ -103,6 +109,8 @@ __all__ = [
     "correction_maneuver",
     "crossover_mach",
     "crossrange_deadband",
+    "crossrange_from_lateral_offset",
+    "crossrange_offset_sensitivity",
     "cruise_altitude",
     "cruise_climb_altitude",
     "cruise_dynamic_pressure",
@@ -113,6 +121,7 @@ __all__ = [
     "gyrocompass_alignment",
     "homing_miss",
     "injection_error",
+    "launch_position_error",
     "linearize_trajectory",
     "los_rate",
     "miss_sensitivity",
@@ -130,4 +139,5 @@ __all__ = [
     "terminal_homing",
     "time_to_go",
     "time_to_go_naive",
+    "velocity_error_at_impact",
 ]

@@ -42,6 +42,12 @@ from passes.guidance import (
     time_to_go,
     time_to_go_naive,
 )
+from passes.guidance.ballistic_errors import (
+    crossrange_from_lateral_offset,
+    crossrange_offset_sensitivity,
+    launch_position_error,
+    velocity_error_at_impact,
+)
 from passes.guidance.entry import _MU as MU
 from passes.guidance.entry import _R_EARTH as R_EARTH
 from passes.guidance.entry import (
@@ -1675,3 +1681,169 @@ class TestInertialInjection:
             injection_error(IMU_GRADES["tactical"], burn_time).velocity,
         )
         assert bracket[0] < implied_dv < bracket[1]
+
+
+class TestBallisticErrorCoefficients:
+    """Siouris §6.4.3: burnout perturbations mapped to impact errors."""
+
+    @staticmethod
+    def _spherical_miss(range_angle: float, offset: float) -> float:
+        """Independent construction of the same quantity.
+
+        Displace the burnout point perpendicular to the trajectory plane,
+        fly the same range angle on the same initial heading, and measure
+        the great-circle separation of the two impact points. No formula
+        from the module under test is involved.
+
+        The separation is taken as ``2 arcsin(|a - b| / 2)`` rather than
+        ``arccos(a . b)``. Both are exact for unit vectors, but the second
+        is ill-conditioned for nearly coincident points -- which is every
+        case of interest here -- and written that way this reference is
+        *less* accurate than the code it is checking, by about 1.7e-11.
+        """
+        burnout = np.array([1.0, 0.0, 0.0])
+        heading = np.array([0.0, 1.0, 0.0])
+        impact = burnout * np.cos(range_angle) + heading * np.sin(range_angle)
+        displaced = np.array([np.cos(offset), 0.0, np.sin(offset)])
+        impact_displaced = displaced * np.cos(range_angle) + heading * np.sin(range_angle)
+        chord = float(np.linalg.norm(impact - impact_displaced))
+        return 2.0 * float(np.arcsin(np.clip(0.5 * chord, -1.0, 1.0)))
+
+    def test_matches_independent_spherical_construction(self):
+        """Eq. (6.116a) against direct vector geometry, over the whole
+        admissible range-angle span and three decades of offset."""
+        worst = 0.0
+        for psi_deg in (0.0, 30.0, 60.0, 89.0, 90.0, 91.0, 120.0, 150.0):
+            for offset_deg in (0.01, 0.1, 1.0, 5.0):
+                psi, offset = np.deg2rad(psi_deg), np.deg2rad(offset_deg)
+                ours = float(crossrange_from_lateral_offset(offset, psi)[0])
+                worst = max(worst, abs(ours - self._spherical_miss(psi, offset)))
+        assert worst < 1e-12
+
+    def test_crossrange_vanishes_exactly_at_a_quarter_circumference(self):
+        """The striking result, and it is exact rather than small-angle: at
+        a 90 degree range angle a lateral burnout offset produces *no*
+        crossrange miss, for any offset. Two great circles displaced
+        perpendicular at one point meet again a quarter turn later."""
+        for offset_deg in (0.1, 1.0, 5.0, 20.0):
+            miss = float(crossrange_from_lateral_offset(np.deg2rad(offset_deg), 0.5 * np.pi)[0])
+            assert miss == pytest.approx(0.0, abs=1e-15)
+        assert crossrange_offset_sensitivity(0.5 * np.pi) == pytest.approx(0.0, abs=1e-15)
+
+    def test_sensitivity_is_the_small_angle_limit_of_the_exact_relation(self):
+        """|cos psi| must be the derivative at zero offset."""
+        for psi_deg in (0.0, 20.0, 45.0, 70.0, 110.0, 160.0):
+            psi = np.deg2rad(psi_deg)
+            tiny = 1e-7
+            slope = float(crossrange_from_lateral_offset(tiny, psi)[0]) / tiny
+            assert slope == pytest.approx(crossrange_offset_sensitivity(psi), abs=1e-6)
+
+    def test_error_passes_through_undiminished_at_zero_range(self):
+        """With no free flight there is nothing to converge, so the miss is
+        the offset. The opposite limit to the 90 degree null."""
+        offset = np.deg2rad(3.0)
+        assert float(crossrange_from_lateral_offset(offset, 0.0)[0]) == pytest.approx(offset)
+        assert crossrange_offset_sensitivity(0.0) == pytest.approx(1.0)
+
+    def test_sensitivity_returns_past_ninety_degrees(self):
+        """The null is a single point, not a plateau: past a quarter
+        circumference the sensitivity grows again. A budget that treated
+        long range as uniformly forgiving would be wrong beyond 90 deg."""
+        assert crossrange_offset_sensitivity(np.deg2rad(89.0)) < 0.02
+        assert crossrange_offset_sensitivity(np.deg2rad(120.0)) == pytest.approx(0.5, abs=1e-12)
+        assert crossrange_offset_sensitivity(np.deg2rad(150.0)) > 0.85
+
+    def test_a_fixed_crossrange_budget_is_wrong_by_an_unbounded_factor(self):
+        """The practical consequence. Quoting crossrange dispersion as a
+        metre count implicitly assumes a range; the same burnout offset maps
+        to wildly different misses across the ranges one architecture might
+        fly."""
+        offset = 1.0e3 / 6378137.0  # 1 km lateral offset, as an angle
+        misses = {
+            deg: float(crossrange_from_lateral_offset(offset, np.deg2rad(deg))[0]) * 6378137.0
+            for deg in (10.0, 45.0, 80.0, 90.0)
+        }
+        assert misses[10.0] == pytest.approx(985.0, abs=5.0)
+        assert misses[45.0] == pytest.approx(707.0, abs=5.0)
+        assert misses[80.0] == pytest.approx(174.0, abs=5.0)
+        assert misses[90.0] < 1e-6
+
+    def test_velocity_error_integrates_over_the_free_flight_time(self):
+        assert velocity_error_at_impact(0.3, 850.0) == pytest.approx(255.0)
+        assert velocity_error_at_impact(0.0, 850.0) == 0.0
+        with pytest.raises(ValueError, match="time_of_flight"):
+            velocity_error_at_impact(1.0, -1.0)
+
+    def test_launch_survey_error_rotates_into_the_trajectory_frame(self):
+        """A north displacement is pure downrange on a due-north launch and
+        pure crossrange on a due-east one."""
+        arcsec = np.deg2rad(1.0 / 3600.0)
+        down, cross = launch_position_error(arcsec, 0.0, 0.0, 0.0)
+        assert down == pytest.approx(6378137.0 * arcsec)
+        assert cross == pytest.approx(0.0, abs=1e-9)
+        down, cross = launch_position_error(arcsec, 0.0, 0.0, 0.5 * np.pi)
+        assert down == pytest.approx(0.0, abs=1e-9)
+        assert cross == pytest.approx(-6378137.0 * arcsec)
+
+    def test_longitude_error_shrinks_with_latitude_and_vanishes_at_the_pole(self):
+        """A given longitude error subtends less distance the further north
+        the launch site is -- the cos(L) factor. At the pole it is nothing."""
+        arcsec = np.deg2rad(1.0 / 3600.0)
+        magnitudes = [
+            abs(launch_position_error(0.0, arcsec, np.deg2rad(lat), 0.0)[1])
+            for lat in (0.0, 45.0, 80.0, 90.0)
+        ]
+        assert magnitudes == sorted(magnitudes, reverse=True)
+        assert magnitudes[-1] == pytest.approx(0.0, abs=1e-9)
+        assert magnitudes[0] == pytest.approx(6378137.0 * arcsec)
+
+    def test_survey_error_has_no_range_dependent_suppression(self):
+        """Unlike a lateral burnout offset, a launch-site survey error
+        displaces the whole trajectory, so nothing converges it. This is why
+        a 10 m CEP is a survey problem rather than a guidance one."""
+        arcsec = np.deg2rad(1.0 / 3600.0)
+        _, cross = launch_position_error(0.0, arcsec, 0.0, 0.0)
+        assert abs(cross) == pytest.approx(30.9, abs=0.2)  # ~31 m per arcsecond
+
+    def test_half_angle_form_beats_the_printed_one_at_realistic_offsets(self):
+        """Siouris prints cos(dC) = sin^2(psi) + cos^2(psi) cos(dchi). Coded
+        literally that is useless at the offsets a dispersion budget cares
+        about: a 1 m lateral error is 1.6e-7 rad, where cos(dchi) differs
+        from 1 by ~1e-14 and arccos has unbounded derivative.
+
+        This pins the reason for the half-angle rewrite. If someone ever
+        "simplifies" the implementation back to the printed form, the loss
+        is four significant figures, and it is silent.
+        """
+        psi = np.deg2rad(30.0)
+        # Offsets small enough that the small-angle value is truth to well
+        # inside the tolerance: the leading correction is O(dchi^2).
+        for offset in (1.0e-8, 1.0e-7, 1.0e-6):
+            exact = offset * np.cos(psi)
+            ours = float(crossrange_from_lateral_offset(offset, psi)[0])
+            assert abs(ours - exact) / exact < 1e-12
+
+        def printed_form(offset: float) -> float:
+            argument = np.sin(psi) ** 2 + np.cos(psi) ** 2 * np.cos(offset)
+            return float(np.arccos(np.clip(argument, -1.0, 1.0)))
+
+        # A 6 m lateral offset: the printed form is 0.3% out.
+        assert abs(printed_form(1.0e-6) - 1.0e-6 * np.cos(psi)) / (
+            1.0e-6 * np.cos(psi)
+        ) < 1e-3
+        assert abs(printed_form(1.0e-7) - 1.0e-7 * np.cos(psi)) / (
+            1.0e-7 * np.cos(psi)
+        ) > 1e-3
+        # A 0.6 m offset: it returns exactly zero, i.e. 100% error, and
+        # would silently report a perfectly guided vehicle.
+        assert printed_form(1.0e-8) == 0.0
+
+    def test_validation(self):
+        with pytest.raises(ValueError, match="range_angle"):
+            crossrange_from_lateral_offset(0.01, np.pi)
+        with pytest.raises(ValueError, match="range_angle"):
+            crossrange_offset_sensitivity(-0.1)
+        with pytest.raises(ValueError, match="latitude"):
+            launch_position_error(0.0, 0.0, 2.0, 0.0)
+        with pytest.raises(ValueError, match="earth_radius"):
+            launch_position_error(0.0, 0.0, 0.0, 0.0, earth_radius=0.0)

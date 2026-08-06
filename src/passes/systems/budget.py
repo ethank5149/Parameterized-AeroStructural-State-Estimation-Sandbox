@@ -55,6 +55,7 @@ from passes.geodesy import (
     GeodeticPosition,
     great_circle_range,
 )
+from passes.guidance.ballistic_errors import crossrange_offset_sensitivity
 from passes.guidance.cruise import CruiseVehicle, cruise_range
 from passes.guidance.entry import EntryVehicle
 from passes.guidance.inertial import IMU_GRADES, injection_error
@@ -86,15 +87,27 @@ _ENTRY_INTERFACE_ALTITUDE = 120.0e3
 #: Terminal homing is a correction, not a transport leg.
 _TERMINAL_RANGE = 0.0
 
-#: Representative one-sigma error contributions (m), downrange and
-#: crossrange, keyed by the phase that produces them.
+#: One-sigma error contributions (m), downrange and crossrange, keyed by
+#: the phase that produces them.
 #:
-#: **These are parametric inputs, not derived results**, and the defaults
-#: are order-of-magnitude figures chosen to exercise the accounting. The
-#: one exception is dispensing, which is scaled from the bus execution
-#: model. Anyone quoting a CEP from this module is quoting these numbers
-#: plus arithmetic, and the honest thing is to say so rather than let a
-#: computed-looking figure imply a computed provenance.
+#: **Mixed provenance, and the mix is stated per entry below.** Boost,
+#: dispensing, deorbit and glide are now *derived* — from an IMU grade, the
+#: bus execution model, the Kepler transfer sensitivity and a closed-loop
+#: Monte Carlo respectively, each with its derivation recorded at the entry.
+#: Cruise and ballistic remain **order-of-magnitude figures chosen to
+#: exercise the accounting**, because no model in this repository produces
+#: them: `cruise.py` computes range and carries no navigation at all, and
+#: the ballistic entry leg has no attitude dynamics.
+#:
+#: Anyone quoting a CEP from this module is quoting whatever mixture applies
+#: to the architecture in question, and the honest thing is to say which
+#: rather than let a computed-looking figure imply a uniform provenance.
+#:
+#: The boost crossrange entry is completed at evaluation time rather than
+#: here: a lateral burnout position error reaches the impact point
+#: suppressed by :math:`\cos\psi` over the free-flight range angle
+#: (Siouris Eq. 6.116), and that factor is a property of the *mission*, not
+#: of the vehicle, so it cannot be baked into a constant.
 #: Phases that **reset** the error rather than adding to it.
 #:
 #: This distinction was got wrong first time and is worth stating. A
@@ -645,6 +658,20 @@ def evaluate(
         if source is None:
             continue
         d, c = source
+        if leg.phase is Phase.BOOST:
+            # The boost crossrange entry above carries only the velocity
+            # term. Siouris Eq. (6.116) says a *lateral position* error at
+            # burnout also reaches the impact point, but suppressed by
+            # cos(psi) over the free-flight range angle -- and suppressed
+            # to exactly zero at a quarter circumference. That factor is a
+            # property of the mission, not of the vehicle, so it can only
+            # be applied here where the requested range is known.
+            psi = request.required_range / WGS84_MEAN_RADIUS
+            if psi < np.pi:
+                lateral = injection_error(
+                    IMU_GRADES[_BOOST_GRADE], _BOOST_BURN_TIME
+                ).position
+                c = float(np.hypot(c, lateral * crossrange_offset_sensitivity(psi)))
         if d < 0.0:
             down *= -d
             cross *= -c

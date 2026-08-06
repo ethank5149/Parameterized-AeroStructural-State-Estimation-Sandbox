@@ -324,17 +324,68 @@ catalycity item in §4, and Gallais supplied Allen–Eggers for §7.
 The single highest-yield unread source in the directory, because four
 separate open items above are chapters in it.
 
-- [ ] **Ballistic error coefficients (§6.4.3, 22 pp.), and the hit equation
-      they attach to (§6.4.2).** `DISPERSION_SOURCES` in
-      [`budget.py`](src/passes/systems/budget.py) still says of itself that
-      its entries "are parametric inputs, not derived results". Ballistic
-      error coefficients are precisely the derivation that removes that
-      caveat: the partial derivatives of impact point with respect to burnout
-      position, velocity and time. We currently carry *one* such sensitivity,
-      the 850–3484 s velocity-to-impact amplification measured through our
-      own propagator, and nothing for the other five components. This is the
-      item that would let the accuracy chain be sourced end to end rather
-      than sourced at the ends.
+- [x] ~~**Ballistic error coefficients (§6.4.3), and the hit equation they
+      attach to (§6.4.2).**~~ **Partly done — the crossrange coefficient is
+      implemented and it contains a result worth the whole exercise.**
+      [`ballistic_errors.py`](src/passes/guidance/ballistic_errors.py)
+      carries Siouris Eq. (6.116) and Figs. 6.16–6.17.
+
+      **A lateral burnout position error does not map to impact
+      proportionally — it is suppressed by cos ψ over the free-flight range
+      angle, and vanishes *exactly* at ψ = 90°.** A quarter of the Earth's
+      circumference, about 10,000 km. The reason is geometric rather than
+      approximate: two great circles displaced perpendicular at one point
+      meet again a quarter turn later, because every pair of great circles
+      intersects. Past 90° the sensitivity grows again. Verified against
+      direct spherical vector construction to machine precision over range
+      angles 0–150° and offsets 0.01–5°, with the null exact for a 5°
+      offset.
+
+      A fixed crossrange budget therefore cannot be right: the same 1 km
+      burnout offset becomes **985 m at a 10° range angle, 707 m at 45°,
+      174 m at 80°, and zero at 90°**.
+
+      Wired into `evaluate` as a range-dependent term — it has to be applied
+      there rather than in `DISPERSION_SOURCES`, since cos ψ is a property
+      of the mission, not the vehicle. Measured effect at the aviation grade
+      the budget assumes: **0.17 m out of an 876 m CEP**, i.e. real but
+      negligible. At **tactical grade it would be 571 m at ψ = 30° against
+      the glide leg's 400 m** — it would set the crossrange budget outright,
+      and the cos ψ null would become a first-order design lever rather than
+      a rounding correction. Also confirmed: for architectures carrying a
+      midcourse correction the term has no effect at all, because a reset
+      nulls everything boost contributed.
+
+      **One implementation finding.** Siouris prints the relation as
+      `cos δC = sin²ψ + cos²ψ cos δχ`. Coded literally that is *numerically
+      useless at the offsets a dispersion budget cares about*: a 1 m lateral
+      error is 1.6×10⁻⁷ rad, where `cos δχ` differs from 1 by a few times
+      machine epsilon and `arccos` has unbounded derivative. It loses ~4
+      significant figures at 10⁻⁷ rad and returns **exactly zero** at 10⁻⁸ —
+      silently reporting a perfectly guided vehicle. The algebraically
+      identical half-angle form `δC = 2 arcsin(|cos ψ| sin(δχ/2))` is exact
+      throughout and makes the sensitivity manifest. Pinned as its own test,
+      because the printed form is the one a future simplification would
+      reach for.
+
+      Also implemented: `velocity_error_at_impact` (δV·t_ff, Fig. 6.16) —
+      which independently confirms the *form* of the budget's existing
+      crossrange mapping, previously justified only by our own propagator —
+      and `launch_position_error`, the survey-error rotation. The latter has
+      **no range-dependent suppression at all**, which is the structural
+      reason a 10 m CEP is a survey problem rather than a guidance one: a
+      survey error displaces the whole trajectory rather than one point on
+      it, so nothing converges it.
+
+- [ ] **The remaining in-plane coefficients (§6.4.3.1).** Downrange
+      sensitivities to burnout speed, flight-path angle and altitude —
+      Siouris derives them in polar coordinates with time entering
+      explicitly, unlike the out-of-plane ones. The downrange entry of
+      `DISPERSION_SOURCES[BOOST]` still carries a velocity term through our
+      own transfer sensitivity and nothing for δγ or δh. Fig. 6.16 gives the
+      form `δDR = δV·t_ff (cos φ + sin φ cot γ)`, but the archived scan does
+      not define φ unambiguously, so this needs the derivation read properly
+      rather than the figure transcribed.
 - [x] ~~**REP, DEP and their relationship to CEP (§5.7.3).**~~ **Done — and
       it turned out to supply a 126-point verification, not just a ratio.**
       Siouris §5.7.3 gives the classical relations, but the section also

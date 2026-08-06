@@ -5,6 +5,8 @@ import pytest
 
 from passes.geodesy import GeodeticPosition, great_circle_range
 from passes.guidance import CruiseVehicle, EntryVehicle
+from passes.guidance.ballistic_errors import crossrange_offset_sensitivity
+from passes.guidance.inertial import IMU_GRADES, injection_error
 from passes.systems import (
     CEP_OVER_SIGMA,
     DISPERSION_SOURCES,
@@ -851,3 +853,62 @@ class TestBallisticLegDuration:
         """The 300 km constant this replaced corresponded to 21.8 degrees.
         The default must not have moved any existing result."""
         assert self._ballistic_leg().ground_range == pytest.approx(300.0e3, rel=1e-4)
+
+
+class TestBoostLateralErrorIsRangeDependent:
+    """Siouris Eq. (6.116) wired into the budget: a lateral burnout position
+    error reaches the impact point suppressed by cos(psi), so the boost
+    crossrange contribution depends on how far the mission flies."""
+
+    @staticmethod
+    def _budget(target_longitude: float):
+        launch = GeodeticPosition(np.deg2rad(45.0), np.deg2rad(-100.0), 0.0)
+        target = GeodeticPosition(np.deg2rad(45.0), np.deg2rad(target_longitude), 0.0)
+        request = MissionRequest(launch, (target,), 3000.0)
+        return evaluate(
+            NAMED_ARCHITECTURES["boost-glide"],
+            request,
+            entry_vehicle=EntryVehicle(ballistic_coefficient=5000.0, lift_to_drag=2.0),
+        )
+
+    def test_crossrange_contribution_falls_with_range(self):
+        """Monotone over the span where cos(psi) is falling. The effect is
+        small at the aviation grade the budget assumes -- 0.17 m out of a
+        876 m CEP -- but it is derived rather than stated, and its size is
+        now a measurement rather than an assumption."""
+        ceps = [self._budget(lon).accuracy.cep for lon in (-70.0, -40.0, 0.0, 40.0, 80.0)]
+        assert ceps == sorted(ceps, reverse=True)
+        assert ceps[0] - ceps[-1] < 1.0
+
+    def test_a_midcourse_correction_makes_the_term_irrelevant(self):
+        """`ballistic-single` carries a midcourse reset, which nulls
+        everything boost contributed. The term must therefore have no
+        effect there at all -- a reset is not a multiplier."""
+        launch = GeodeticPosition(np.deg2rad(45.0), np.deg2rad(-100.0), 0.0)
+        ceps = set()
+        for lon in (-70.0, 0.0, 80.0):
+            target = GeodeticPosition(np.deg2rad(45.0), np.deg2rad(lon), 0.0)
+            request = MissionRequest(launch, (target,), 3000.0)
+            budget = evaluate(NAMED_ARCHITECTURES["ballistic-single"], request)
+            ceps.add(round(budget.accuracy.cep, 9))
+        assert len(ceps) == 1
+
+    def test_the_term_would_dominate_at_a_worse_imu_grade(self):
+        """Why it is worth carrying despite being small at aviation grade.
+        The lateral contribution scales with the IMU's position error, and
+        at tactical grade it is 571 m at a 30 degree range angle against the
+        glide leg's 400 m -- so it would set the crossrange budget, and the
+        cos(psi) suppression would become a first-order design lever rather
+        than a rounding correction."""
+        sensitivity = crossrange_offset_sensitivity(np.deg2rad(30.0))
+        contributions = {
+            grade: injection_error(IMU_GRADES[grade], 300.0).position * sensitivity
+            for grade in ("marine", "aviation", "intermediate", "tactical")
+        }
+        assert contributions["aviation"] < 20.0
+        assert contributions["tactical"] > 400.0
+        # ...and at a quarter circumference even the tactical case vanishes.
+        assert (
+            injection_error(IMU_GRADES["tactical"], 300.0).position
+            * crossrange_offset_sensitivity(0.5 * np.pi)
+        ) == pytest.approx(0.0, abs=1e-9)
