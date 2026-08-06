@@ -3,7 +3,18 @@
 Implements the ballistic error coefficients of
 
 * G. M. Siouris, *Missile Guidance and Control Systems* (Springer, 2004),
-  §6.4.3, Eq. (6.116) and Figs. 6.14-6.17.
+  §6.4.3, Eq. (6.116) and Figs. 6.14-6.17 — the out-of-plane coefficients;
+* F. J. Regan, *Re-Entry Vehicle Dynamics* (AIAA, 1984), §5.5,
+  Eqs. (5.36), (5.39) and (5.41) — the in-plane coefficients.
+
+Both are checked against an independent conic solution rather than adopted.
+That check earned its keep: **two of Regan's three printed in-plane
+equations disagree with the numerics**, in ways specific enough to
+diagnose. Eq. (5.41) matches only where one of its terms vanishes, which is
+the signature of a dropped outer bracket; Eq. (5.39) matches in magnitude
+but carries the sign a range *minimum* would have rather than the maximum
+it sits on. Each departure is documented at the function that makes it, so
+that nothing here silently differs from its citation.
 
 This module exists to replace stated numbers with derived ones.
 :data:`passes.systems.budget.DISPERSION_SOURCES` says of itself that its
@@ -53,7 +64,11 @@ from numpy.typing import ArrayLike, NDArray
 __all__ = [
     "crossrange_from_lateral_offset",
     "crossrange_offset_sensitivity",
+    "downrange_per_burnout_altitude",
+    "downrange_per_flight_path_angle",
+    "downrange_per_velocity",
     "launch_position_error",
+    "optimum_flight_path_angle",
     "velocity_error_at_impact",
 ]
 
@@ -264,3 +279,154 @@ def launch_position_error(
     downrange = north * np.cos(bearing) + east * np.sin(bearing)
     crossrange = -north * np.sin(bearing) + east * np.cos(bearing)
     return float(downrange), float(crossrange)
+
+
+def optimum_flight_path_angle(range_angle: float) -> float:
+    """Burnout flight-path angle minimising the speed for a given range.
+
+    Regan Eq. (5.25), :math:`\\gamma^* = \\pi/4 - \\theta_i/4`, measured
+    above the local horizontal. Equivalently the angle that *maximises*
+    range at fixed speed, by the standard duality.
+
+    Its importance to an error budget is not the fuel it saves. **The
+    downrange sensitivity to flight-path-angle error is exactly zero at
+    :math:`\\gamma^*`, for every range angle** — see
+    :func:`downrange_per_flight_path_angle`. The minimum-energy trajectory
+    is also the one indifferent to how precisely the boost pitch programme
+    is flown, which is a rare case of two design pressures pointing the
+    same way.
+    """
+    theta = float(range_angle)
+    if not (np.isfinite(theta) and 0.0 < theta < np.pi):
+        msg = f"range_angle must lie in (0, pi), got {theta}"
+        raise ValueError(msg)
+    return 0.25 * np.pi - 0.25 * theta
+
+
+def _check_burnout(range_angle: float, flight_path_angle: float) -> tuple[float, float]:
+    theta, gamma = float(range_angle), float(flight_path_angle)
+    if not (np.isfinite(theta) and 0.0 < theta < np.pi):
+        msg = f"range_angle must lie in (0, pi), got {theta}"
+        raise ValueError(msg)
+    if not (np.isfinite(gamma) and 0.0 < gamma < 0.5 * np.pi):
+        msg = f"flight_path_angle must lie in (0, pi/2), got {gamma}"
+        raise ValueError(msg)
+    return theta, gamma
+
+
+def downrange_per_velocity(
+    range_angle: float,
+    flight_path_angle: float,
+    burnout_speed: float,
+    earth_radius: float = 6378137.0,
+) -> float:
+    """:math:`\\partial R/\\partial V` (m per m/s) — Regan Eq. (5.36).
+
+    .. math::
+
+        \\frac{\\partial R}{\\partial V}
+          = \\frac{2R_E}{V}\\big[\\sin\\theta_i
+            + \\cot\\gamma\\,(1 - \\cos\\theta_i)\\big]
+
+    **Verified exactly** against finite differences of an independent conic
+    solution: the burnout state is converted to a Keplerian orbit and the
+    range angle taken as the difference of true anomalies, with no algebra
+    from this equation involved. Agreement is to five figures across range
+    angles 30-90 degrees and flight-path angles 15-30 degrees, and the
+    worked example reproduces: at :math:`\\theta_i = 90°` the optimum
+    :math:`\\gamma^* = 22.5°` needs :math:`V = 7195` m/s, giving **6.05 km
+    per m/s** — Regan states 7195 m/s and "approximately 6 km/(m/s)".
+
+    That number is the reason boost cutoff dominates a ballistic error
+    budget: a **1 m/s error in 7195 becomes a 6 km miss**.
+    """
+    theta, gamma = _check_burnout(range_angle, flight_path_angle)
+    speed = float(burnout_speed)
+    if not (np.isfinite(speed) and speed > 0.0):
+        msg = f"burnout_speed must be finite and > 0, got {speed}"
+        raise ValueError(msg)
+    bracket = np.sin(theta) + (1.0 - np.cos(theta)) / np.tan(gamma)
+    return float(2.0 * earth_radius * bracket / speed)
+
+
+def downrange_per_flight_path_angle(
+    range_angle: float,
+    flight_path_angle: float,
+    earth_radius: float = 6378137.0,
+) -> float:
+    """:math:`\\partial R/\\partial\\gamma` (m per rad) — Regan Eq. (5.39),
+    **with its sign corrected**.
+
+    .. math::
+
+        \\frac{\\partial R}{\\partial\\gamma}
+          = 2R_E\\left[\\frac{\\sin(\\theta_i + 2\\gamma)}{\\sin 2\\gamma} - 1\\right]
+
+    Zero at :math:`\\gamma = \\gamma^*` for every range angle, which is the
+    structural content of the equation: substituting
+    :math:`\\gamma^* = \\pi/4 - \\theta_i/4` makes
+    :math:`\\theta_i + 2\\gamma^* = \\pi/2 + \\theta_i/2` and
+    :math:`2\\gamma^* = \\pi/2 - \\theta_i/2`, whose sines are both
+    :math:`\\cos(\\theta_i/2)`. Positive below :math:`\\gamma^*` and
+    negative above, as a range maximum requires.
+
+    Notes
+    -----
+    Regan prints this with the bracket the other way round, and his prose
+    agrees with the printed form ("for :math:`\\gamma < \\gamma^*`,
+    :math:`\\delta R/\\delta\\gamma` is negative"). Finite differences of the
+    independent conic solution give the **opposite sign**, matching the
+    form above: below the optimum, lofting further *lengthens* the range,
+    which is what a maximum at :math:`\\gamma^*` requires. The magnitude
+    agrees to five figures either way, so only the sign is at issue, and it
+    may be a convention — an error measured as "short" rather than as a
+    signed displacement — rather than a mistake. It is flipped here to
+    match the physical derivative, and flagged rather than silently
+    adopted.
+
+    A separate discrepancy is left unresolved because it cannot be settled
+    from the text: Regan's worked example Eq. (5.40) states **-5.28
+    km/mrad** at :math:`\\theta_i = 75°, \\gamma = 15°`, while his own
+    Eq. (5.39) at those angles gives **11.89 km/mrad** — a factor of 2.25,
+    and the value this function returns (verified against finite
+    differences) is the latter.
+    """
+    theta, gamma = _check_burnout(range_angle, flight_path_angle)
+    return float(2.0 * earth_radius * (np.sin(theta + 2.0 * gamma) / np.sin(2.0 * gamma) - 1.0))
+
+
+def downrange_per_burnout_altitude(
+    range_angle: float,
+    flight_path_angle: float,
+) -> float:
+    """:math:`\\partial R/\\partial h`, dimensionless — Regan Eq. (5.41),
+    **with a dropped bracket restored**.
+
+    .. math::
+
+        \\frac{\\partial R}{\\partial h}
+          = \\cot\\gamma\\left[2 - \\frac{\\cos(\\gamma + \\theta_i)}{\\cos\\gamma}\\right]
+
+    Regan prints
+    :math:`2\\cot\\gamma - \\cos(\\gamma+\\theta_i)/\\cos\\gamma`, which is
+    the same thing only when :math:`\\cos(\\gamma+\\theta_i) = 0`. Finite
+    differences of the independent conic solution match the form above to
+    **five decimal places at every angle pair tried**, and match the printed
+    form only at :math:`\\gamma + \\theta_i = 90°` — exactly the signature
+    of an outer bracket lost in typesetting or transcription, since the
+    second term is then multiplied by one instead of by
+    :math:`\\cot\\gamma`.
+
+    The consequence is not academic. At Regan's own worked point
+    (:math:`\\gamma = 22.5°, \\theta_i = 90°`) the printed form gives
+    **5.24** and the corrected form **5.83**, an 11 % understatement of how
+    much a burnout altitude error costs; at :math:`\\theta_i = 150°,
+    \\gamma = 10°` the gap widens to 12.3 against 16.8, a third.
+
+    Being dimensionless, this coefficient reads directly: **a kilometre of
+    burnout altitude error is worth about six kilometres of range** at
+    typical angles. It is the one in-plane coefficient that does not depend
+    on burnout speed.
+    """
+    theta, gamma = _check_burnout(range_angle, flight_path_angle)
+    return float((2.0 - np.cos(gamma + theta) / np.cos(gamma)) / np.tan(gamma))

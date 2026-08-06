@@ -45,7 +45,11 @@ from passes.guidance import (
 from passes.guidance.ballistic_errors import (
     crossrange_from_lateral_offset,
     crossrange_offset_sensitivity,
+    downrange_per_burnout_altitude,
+    downrange_per_flight_path_angle,
+    downrange_per_velocity,
     launch_position_error,
+    optimum_flight_path_angle,
     velocity_error_at_impact,
 )
 from passes.guidance.entry import _MU as MU
@@ -1847,3 +1851,161 @@ class TestBallisticErrorCoefficients:
             launch_position_error(0.0, 0.0, 2.0, 0.0)
         with pytest.raises(ValueError, match="earth_radius"):
             launch_position_error(0.0, 0.0, 0.0, 0.0, earth_radius=0.0)
+
+
+class TestInPlaneErrorCoefficients:
+    """Regan §5.5 downrange sensitivities, checked against an independent
+    conic solution rather than against his algebra.
+
+    Two of the three printed equations disagree with the numerics in
+    specific, diagnosable ways. Those disagreements are pinned here as
+    tests, because they are the reason this module does not simply
+    transcribe the source.
+    """
+
+    _MU = 3.986004418e14
+    _RE = 6378137.0
+
+    @classmethod
+    def _range_angle(cls, speed, gamma, r0=None, r_impact=None):
+        """Free-flight range angle from Keplerian conic geometry.
+
+        Burnout state -> orbital elements -> true anomaly at each radius,
+        ascending at burnout and descending at impact. Shares no algebra
+        with the equations under test.
+        """
+        r0 = cls._RE if r0 is None else r0
+        r_impact = cls._RE if r_impact is None else r_impact
+        h = r0 * speed * np.cos(gamma)
+        energy = 0.5 * speed * speed - cls._MU / r0
+        p = h * h / cls._MU
+        semi_major = -cls._MU / (2.0 * energy)
+        eccentricity_sq = 1.0 - p / semi_major
+        if eccentricity_sq <= 0.0:
+            return np.nan
+        eccentricity = np.sqrt(eccentricity_sq)
+        cos_nu0 = (p / r0 - 1.0) / eccentricity
+        cos_nui = (p / r_impact - 1.0) / eccentricity
+        if abs(cos_nu0) > 1.0 or abs(cos_nui) > 1.0:
+            return np.nan
+        return (2.0 * np.pi - np.arccos(cos_nui)) - np.arccos(cos_nu0)
+
+    @classmethod
+    def _speed_for(cls, range_angle, gamma):
+        low, high = 1000.0, 11000.0
+        for _ in range(200):
+            mid = 0.5 * (low + high)
+            angle = cls._range_angle(mid, gamma)
+            if not np.isfinite(angle):
+                high = mid
+            elif angle < range_angle:
+                low = mid
+            else:
+                high = mid
+        return 0.5 * (low + high)
+
+    @staticmethod
+    def _central(f, x, step):
+        return (f(x + step) - f(x - step)) / (2.0 * step)
+
+    def test_velocity_coefficient_is_exact(self):
+        """Eq. (5.36) against finite differences of the conic solution."""
+        for theta_deg, gamma_deg in ((90.0, 22.5), (75.0, 15.0), (60.0, 30.0), (30.0, 25.0)):
+            theta, gamma = np.deg2rad(theta_deg), np.deg2rad(gamma_deg)
+            speed = self._speed_for(theta, gamma)
+            numerical = self._RE * self._central(
+                lambda v, g=gamma: self._range_angle(v, g), speed, 0.05
+            )
+            assert downrange_per_velocity(theta, gamma, speed) == pytest.approx(
+                numerical, rel=1e-4
+            )
+
+    def test_reproduces_regans_worked_velocity_example(self):
+        """Regan Eqs. (5.23a) and (5.37): at a 90 degree range angle the
+        optimum burnout is 22.5 degrees, needs 7195 m/s, and gives about
+        6 km of range error per m/s. All three reproduce."""
+        theta = np.deg2rad(90.0)
+        gamma = optimum_flight_path_angle(theta)
+        assert np.rad2deg(gamma) == pytest.approx(22.5, abs=1e-9)
+        speed = self._speed_for(theta, gamma)
+        assert speed == pytest.approx(7195.0, abs=2.0)
+        assert downrange_per_velocity(theta, gamma, speed) / 1e3 == pytest.approx(6.05, abs=0.05)
+
+    def test_flight_path_angle_coefficient_vanishes_at_the_optimum(self):
+        """The structural result: dR/dgamma = 0 at gamma*, for every range
+        angle. A minimum-energy trajectory is also the one indifferent to
+        boost pitch error."""
+        for theta_deg in (30.0, 60.0, 90.0, 120.0, 150.0):
+            theta = np.deg2rad(theta_deg)
+            gamma_star = optimum_flight_path_angle(theta)
+            assert downrange_per_flight_path_angle(theta, gamma_star) == pytest.approx(
+                0.0, abs=1e-6
+            )
+
+    def test_flight_path_angle_coefficient_has_the_sign_a_maximum_requires(self):
+        """Regan prints this coefficient, and describes it in prose, with
+        the opposite sign: negative below gamma*. That cannot be right for a
+        range *maximum* at gamma* -- below the optimum, lofting further must
+        lengthen the range. Finite differences confirm the sign used here."""
+        theta = np.deg2rad(75.0)
+        gamma_star = optimum_flight_path_angle(theta)
+        speed = self._speed_for(theta, np.deg2rad(15.0))
+        for gamma_deg, expected_positive in ((15.0, True), (35.0, False)):
+            gamma = np.deg2rad(gamma_deg)
+            assert bool(gamma < gamma_star) is expected_positive
+            ours = downrange_per_flight_path_angle(theta, gamma)
+            numerical = self._RE * self._central(
+                lambda g, v=speed: self._range_angle(v, g), gamma, 1e-5
+            )
+            assert np.sign(ours) == np.sign(numerical)
+            assert bool(ours > 0.0) is expected_positive
+
+    def test_the_unresolved_discrepancy_in_regans_worked_angle_example(self):
+        """Regan Eq. (5.40) states -5.28 km/mrad at theta=75, gamma=15,
+        while his own Eq. (5.39) at those angles gives 11.89. The factor of
+        2.25 cannot be settled from the text; the value here is the one that
+        matches finite differences, and this test records the gap so it is
+        not quietly forgotten."""
+        theta, gamma = np.deg2rad(75.0), np.deg2rad(15.0)
+        ours = abs(downrange_per_flight_path_angle(theta, gamma)) / 1e6
+        assert ours == pytest.approx(11.887, abs=0.01)
+        assert ours / 5.28 == pytest.approx(2.25, abs=0.01)
+
+    def test_altitude_coefficient_needs_the_restored_bracket(self):
+        """Eq. (5.41) is printed as `2 cot g - cos(g+th)/cos g`, which
+        matches the numerics only where cos(g+th) = 0. The form used here,
+        `cot g [2 - cos(g+th)/cos g]`, matches everywhere -- the signature
+        of a dropped outer bracket."""
+        cases = ((90.0, 22.5), (75.0, 15.0), (60.0, 30.0), (120.0, 20.0), (150.0, 10.0))
+        for theta_deg, gamma_deg in cases:
+            theta, gamma = np.deg2rad(theta_deg), np.deg2rad(gamma_deg)
+            speed = self._speed_for(theta, gamma)
+            numerical = self._RE * self._central(
+                lambda z, v=speed, g=gamma: self._range_angle(v, g, self._RE + z, self._RE),
+                0.0,
+                50.0,
+            )
+            assert downrange_per_burnout_altitude(theta, gamma) == pytest.approx(
+                numerical, rel=1e-4
+            )
+            printed = 2.0 / np.tan(gamma) - np.cos(gamma + theta) / np.cos(gamma)
+            if abs(np.cos(gamma + theta)) > 1e-9:
+                assert printed != pytest.approx(numerical, rel=1e-3)
+
+    def test_altitude_coefficient_is_dimensionless_and_order_unity_times_ten(self):
+        """A kilometre of burnout altitude error is worth several kilometres
+        of range. It is the one in-plane coefficient independent of speed."""
+        value = downrange_per_burnout_altitude(np.deg2rad(90.0), np.deg2rad(22.5))
+        assert value == pytest.approx(5.828, abs=0.01)
+        # Regan's printed form would have said 5.24 -- an 11% understatement.
+        assert value / 5.243 == pytest.approx(1.11, abs=0.01)
+
+    def test_validation(self):
+        with pytest.raises(ValueError, match="range_angle"):
+            optimum_flight_path_angle(0.0)
+        with pytest.raises(ValueError, match="flight_path_angle"):
+            downrange_per_velocity(1.0, 0.0, 7000.0)
+        with pytest.raises(ValueError, match="burnout_speed"):
+            downrange_per_velocity(1.0, 0.4, 0.0)
+        with pytest.raises(ValueError, match="range_angle"):
+            downrange_per_burnout_altitude(np.pi, 0.4)

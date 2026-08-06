@@ -13,6 +13,7 @@ from passes.batch import (
     sample_dispersions,
     summarize_dispersion,
 )
+from passes.systems.dispersion import containment_radius
 
 
 class TestSampling:
@@ -193,10 +194,13 @@ class TestDispersionSummary:
         sigma = 40.0
         pts = sigma * rng.standard_normal((20000, 2))
         rep = summarize_dispersion(pts, seed=1)
-        # CEP = 1.1774 sigma for the isotropic case (Eq. 6.2); the linear
-        # approximation gives 2*0.5887 = 1.1774 as well
+        # CEP = 1.1774 sigma for the isotropic case (Eq. 6.2). The exact
+        # elliptical integral and the linear approximation agree here --
+        # 2*0.5887 = 1.1774 -- which is precisely why the circular case
+        # cannot distinguish them and why the anisotropic test below is the
+        # one that matters.
         assert rep.cep == pytest.approx(np.sqrt(2 * np.log(2)) * sigma, rel=0.03)
-        assert rep.cep_method == "linear-approximation"
+        assert rep.cep_method == "exact-elliptical"
         assert rep.r95 == pytest.approx(2.4477 * sigma, rel=0.03)
         assert rep.relative_standard_error == pytest.approx(1 / np.sqrt(2 * 20000))
         # empirical containment of the R95 ellipse
@@ -213,20 +217,39 @@ class TestDispersionSummary:
     def test_r95_multiplier_matches_paper_constant(self):
         assert np.sqrt(scipy.stats.chi2.ppf(0.95, 2)) == pytest.approx(2.4477, abs=2e-4)
 
-    def test_cep_fallback_outside_validity_band(self):
-        """Aspect ratio < 0.25 must switch to the order statistic and the
-        result must match the direct median radius."""
+    def test_cep_is_exact_outside_the_classical_validity_band(self):
+        """Below an aspect ratio of 0.25 the classical route fell back to a
+        sample median. The exact elliptical integral needs no fallback, so
+        the estimate must now match `containment_radius` rather than the
+        median -- and the label must still record that the footprint is
+        outside the band Eq. (6.4) was stated for, since that is what makes
+        results comparable with literature computed the old way.
+        """
         rng = np.random.default_rng(8)
         pts = np.column_stack(
             [100.0 * rng.standard_normal(5000), 5.0 * rng.standard_normal(5000)]
         )
         rep = summarize_dispersion(pts, seed=2)
         assert rep.aspect_ratio < 0.25
-        assert rep.cep_method == "order-statistic"
-        med = np.median(np.linalg.norm(pts - pts.mean(axis=0), axis=1))
-        assert rep.cep == pytest.approx(med, rel=1e-12)
-        # linear approximation would be off; the fallback must not equal it
-        assert rep.cep != pytest.approx(0.5887 * (rep.sigma[0] + rep.sigma[1]), rel=0.02)
+        assert rep.cep_method == "exact-elliptical (outside Eq. 6.4 band)"
+        exact = float(containment_radius(0.5, float(rep.sigma[0]), float(rep.sigma[1])))
+        assert rep.cep == pytest.approx(exact, rel=1e-12)
+        # The median fallback it replaced is a different number, and noisier.
+        median_radius = np.median(np.linalg.norm(pts - pts.mean(axis=0), axis=1))
+        assert rep.cep != pytest.approx(median_radius, rel=1e-6)
+
+    def test_bootstrap_interpolation_tracks_the_exact_integral(self):
+        """The bootstrap cannot afford a root-find per resample, so it
+        interpolates a precomputed CEP-over-sigma curve. That shortcut must
+        not introduce error the confidence interval would inherit."""
+        from passes.batch.dispersion import _CEP_ASPECT_GRID, _CEP_OVER_SIGMA_MAJOR
+
+        for aspect in (0.02, 0.17, 0.33, 0.5, 0.78, 0.99):
+            interpolated = float(
+                np.interp(aspect, _CEP_ASPECT_GRID, _CEP_OVER_SIGMA_MAJOR)
+            )
+            exact = float(containment_radius(0.5, 1.0, aspect))
+            assert abs(interpolated - exact) / exact < 1e-6
 
     def test_bootstrap_ci_brackets_estimate_and_scales(self):
         rng = np.random.default_rng(17)

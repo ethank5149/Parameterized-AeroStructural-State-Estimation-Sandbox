@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from passes.batch import EntryDispersionModel, summarize_dispersion
+from passes.systems.dispersion import containment_radius
 from passes.verification.common import VerificationReport, write_csv
 
 __all__ = ["run_v7"]
@@ -68,8 +69,10 @@ def run_v7(output_dir: Path) -> VerificationReport:
     containment_ok = abs(containment - 0.95) < 0.01
     report.add_section(
         "Reading",
-        f"The footprint is downrange-elongated (aspect {rep.aspect_ratio:.3f}) but "
-        "inside the CEP validity band, so the linear approximation applies. The "
+        f"The footprint is downrange-elongated (aspect {rep.aspect_ratio:.3f}), "
+        "inside the band Eq. (6.3)'s linear approximation was stated for — though "
+        "the CEP reported here is the exact elliptical integral regardless, so the "
+        "band now only labels comparability with the classical route. The "
         f"R95 ellipse empirically contains {containment:.1%} of impacts "
         f"({'consistent with' if containment_ok else 'off'} the 95% design). The "
         f"Henze–Zirkler p-value of {rep.hz_p_value:.3g} "
@@ -131,19 +134,32 @@ def run_v7(output_dir: Path) -> VerificationReport:
         rows_csv,
     )
 
-    # --- CEP validity fallback demonstration ------------------------------
+    # --- elongated footprint: exact, where the classical route could not be
     elongated = EntryDispersionModel(azimuth_sigma_deg=0.01, wind_sigma=0.5)
     pts_e = elongated.fly(4000, seed=_SEED + 1)
     rep_e = summarize_dispersion(pts_e, bootstrap_samples=500, seed=2)
-    fallback_ok = rep_e.aspect_ratio < 0.25 and rep_e.cep_method == "order-statistic"
+    exact_e = float(containment_radius(0.5, float(rep_e.sigma[0]), float(rep_e.sigma[1])))
+    linear_e = 0.5887 * (rep_e.sigma[0] + rep_e.sigma[1])
+    fallback_ok = (
+        rep_e.aspect_ratio < 0.25
+        and rep_e.cep_method.startswith("exact-elliptical")
+        and "outside Eq. 6.4 band" in rep_e.cep_method
+        and abs(rep_e.cep - exact_e) < 1e-9 * exact_e
+    )
     report.add_section(
-        "Elongated-footprint fallback (Remark 10)",
+        "Elongated footprint — exact rather than approximated (supersedes Remark 10)",
         f"Suppressing crossrange dispersions produces aspect ratio "
-        f"{rep_e.aspect_ratio:.3f} < 0.25, and the summary switches to the direct "
-        f"order statistic (CEP = {rep_e.cep:.1f} m, method '{rep_e.cep_method}') "
-        f"instead of reporting a linear approximation outside its validity band → "
-        f"{'**PASS**' if fallback_ok else '**FAIL**'}. The linear formula would "
-        f"have claimed {0.5887 * (rep_e.sigma[0] + rep_e.sigma[1]):.1f} m.",
+        f"{rep_e.aspect_ratio:.3f}, outside the validity band of Eq. (6.4). "
+        f"Paper I specified a median-radius fallback here; the summary now uses "
+        f"the exact elliptical containment integral instead, which needs no "
+        f"fallback at all (CEP = {rep_e.cep:.1f} m, method "
+        f"'{rep_e.cep_method}'), and matches "
+        f"`containment_radius` to {abs(rep_e.cep - exact_e):.2e} m → "
+        f"{'**PASS**' if fallback_ok else '**FAIL**'}. The linear formula of "
+        f"Eq. (6.3) would have claimed {linear_e:.1f} m, "
+        f"{100 * (linear_e - exact_e) / exact_e:+.1f}% out. That integral is itself "
+        f"verified against 126 published values in Siouris Table 5.2, to within "
+        f"one unit in the last printed place.",
     )
 
     report.passed = bool(slope_ok and ratio_ok and containment_ok and fallback_ok)

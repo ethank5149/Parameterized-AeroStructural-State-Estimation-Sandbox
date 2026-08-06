@@ -377,15 +377,47 @@ separate open items above are chapters in it.
       survey error displaces the whole trajectory rather than one point on
       it, so nothing converges it.
 
-- [ ] **The remaining in-plane coefficients (§6.4.3.1).** Downrange
-      sensitivities to burnout speed, flight-path angle and altitude —
-      Siouris derives them in polar coordinates with time entering
-      explicitly, unlike the out-of-plane ones. The downrange entry of
-      `DISPERSION_SOURCES[BOOST]` still carries a velocity term through our
-      own transfer sensitivity and nothing for δγ or δh. Fig. 6.16 gives the
-      form `δDR = δV·t_ff (cos φ + sin φ cot γ)`, but the archived scan does
-      not define φ unambiguously, so this needs the derivation read properly
-      rather than the figure transcribed.
+- [x] ~~**The remaining in-plane coefficients (§6.4.3.1).**~~ **Done, from
+      Regan §5.5 rather than Siouris — and checking them against an
+      independent conic solution found errors in two of the three printed
+      equations.** A MinerU transcription of Regan rendered the equations as
+      LaTeX, which the raw scan could not. `ballistic_errors.py` now carries
+      the full in-plane set:
+
+      * **Eq. (5.36), `∂R/∂V` — exact.** Verified against finite differences
+        of a Keplerian conic solution sharing no algebra with it, to five
+        figures. It also reproduces Regan's own worked example end to end:
+        at θ = 90° the optimum γ* = 22.5° needs **7195 m/s** and gives
+        **6.05 km of range error per m/s**, against his stated 7195 and
+        "approximately 6". A **1 m/s error in 7195 is a 6 km miss** — which
+        is why boost cutoff dominates a ballistic error budget.
+      * **γ\* = π/4 − θ/4, and `∂R/∂γ` is exactly zero there, for every
+        range angle.** The minimum-energy trajectory is also the one
+        indifferent to boost pitch error — two design pressures pointing the
+        same way, which is rare enough to be worth stating.
+      * **Eq. (5.39), `∂R/∂γ` — magnitude exact, sign inverted.** Regan
+        prints it, and describes it in prose, as negative below γ*. That
+        cannot hold at a range *maximum*: below the optimum, lofting further
+        must lengthen the range, and finite differences agree. Flipped here
+        and flagged rather than silently adopted, since it may be a
+        convention (error measured as "short") rather than a mistake.
+      * **Eq. (5.41), `∂R/∂h` — a dropped bracket.** Printed as
+        `2cot γ − cos(γ+θ)/cos γ`, which matches the numerics *only* where
+        `cos(γ+θ) = 0`. The form `cot γ [2 − cos(γ+θ)/cos γ]` matches to
+        five decimals at every angle pair tried — exactly what losing an
+        outer bracket would do. Not academic: at Regan's own worked point
+        the printed form gives **5.24 against a true 5.83**, an 11 %
+        understatement, widening to 12.3 against 16.8 at θ = 150°, γ = 10°.
+
+      **One discrepancy left unresolved and recorded as a test.** Regan's
+      worked Eq. (5.40) states −5.28 km/mrad at θ = 75°, γ = 15°, while his
+      own Eq. (5.39) at those angles gives **11.89** — a factor of 2.25. The
+      numerics support the latter. Nothing in the text settles where the
+      2.25 comes from.
+
+      A caveat on all of this: these were read from a machine transcription,
+      so a dropped bracket is at least as likely to be MinerU's as Regan's.
+      The numerics are what the implementation follows either way.
 - [x] ~~**REP, DEP and their relationship to CEP (§5.7.3).**~~ **Done — and
       it turned out to supply a 126-point verification, not just a ratio.**
       Siouris §5.7.3 gives the classical relations, but the section also
@@ -568,6 +600,39 @@ Optimization* — a benchmark we can run as published
       and its exact elliptical integral gets it right. Add a test that pins
       the 98.9 % figure against an authority rather than against our own
       integral.
+
+- [x] ~~**Two modules computing CEP by different methods.**~~ **Done — found
+      while wiring the Siouris verification, and it was a real
+      inconsistency.** [`systems/dispersion.py`](src/passes/systems/dispersion.py)
+      had the exact elliptical integral;
+      [`batch/dispersion.py`](src/passes/batch/dispersion.py) — the module
+      that actually summarises Monte Carlo footprints — was still using
+      Paper I's classical route: the linear approximation
+      `0.5887(σ₁+σ₂)` inside a stated validity band, with a **sample-median
+      fallback** outside it. So the repository computed its headline
+      statistic two different ways depending on which entry point was used.
+
+      The batch path is now exact at every aspect ratio, with no branch and
+      no fallback. Measured cost of the old route: the linear form errs by
+      up to **2 % inside its own validity band** (peaking near aspect 0.3),
+      and the median fallback carries sampling noise the integral does not
+      have. On the elongated footprint V7 exercises, the linear formula
+      would have claimed a CEP **9.7 % low**.
+
+      The bootstrap could not afford a root-find per resample, so it
+      interpolates a precomputed CEP-over-σ₁ curve — valid because the
+      containment radius is homogeneous of degree one in the sigmas, so the
+      entire dependence is one univariate function of aspect ratio.
+      Interpolation error is under 10⁻⁶ relative, three orders of magnitude
+      inside any realistic bootstrap's own sampling error, and that bound is
+      itself a test.
+
+      `cep_method` is retained as a *label* rather than a branch: it still
+      reports whether the footprint sits inside the band Eq. (6.4) was
+      stated for, because that is what makes a result comparable with
+      literature computed the classical way. **This supersedes Paper I
+      §6 Eq. (6.3), Eq. (6.4) and Remark 10**, which are updated to say so
+      rather than quietly left describing code that no longer exists.
 - [ ] **Aerodynamic database dispersion (Pinier).** We carry no aerodynamic
       uncertainty at all. Pinier's point is that the traditional approach —
       biasing a whole nominal curve up or down inside its uncertainty band —

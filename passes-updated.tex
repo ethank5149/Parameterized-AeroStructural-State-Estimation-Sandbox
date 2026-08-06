@@ -643,7 +643,7 @@ CEP is the radius of the circle containing $50\%$ of impacts. For the isotropic 
 \label{eq:cep_iso}
 \text{CEP} = \sigma\sqrt{2\ln 2} \approx 1.1774\,\sigma .
 \end{equation}
-For the anisotropic case no closed form exists, and PASSES uses the standard linear approximation
+For the anisotropic case no \emph{elementary} closed form exists, and the standard treatment is the linear approximation
 \begin{equation}
 \label{eq:cep_aniso}
 \text{CEP} \approx 0.5887\,(\sigma_1 + \sigma_2),
@@ -654,9 +654,13 @@ which agrees with the exact value to better than $1\%$ provided
 0.25 \;\le\; \sigma_2/\sigma_1 \;\le\; 1 .
 \end{equation}
 
-\begin{remark}[Validity]
+\begin{remark}[Superseded: the exact integral, and why the approximation is no longer used]
 \label{rem:cepvalid}
-\Cref{eq:cep_valid} is a real restriction and is routinely violated by lifting reentry footprints, which are strongly elongated downrange. PASSES evaluates the ratio $\sigma_2/\sigma_1$ for every batch and, when \cref{eq:cep_valid} fails, falls back to the direct order statistic --- the median of $\|\mathbf{p}_i - \hat{\bm{\mu}}\|$ over the sample --- rather than reporting a CEP the approximation does not support. Reporting \cref{eq:cep_aniso} outside its validity range is a common and quiet source of error in dispersion analyses.
+\Cref{eq:cep_valid} is a real restriction and is routinely violated by lifting reentry footprints, which are strongly elongated downrange. Earlier versions of this framework evaluated $\sigma_2/\sigma_1$ for every batch and fell back to the direct order statistic --- the median of $\|\mathbf{p}_i - \hat{\bm{\mu}}\|$ over the sample --- when \cref{eq:cep_valid} failed, rather than reporting a CEP the approximation does not support.
+
+Both are now superseded. The containment probability has no elementary closed form but does reduce to a one-dimensional quadrature: in polar coordinates the radial integral is analytic, leaving an angular integral that is exact and cheap, and a root-find in $r$ then gives any containment radius at any aspect ratio. PASSES uses that throughout, so no branch and no fallback is required. The change is not cosmetic: \cref{eq:cep_aniso} errs by up to $2\%$ \emph{inside} its own stated band, peaking near $\sigma_2/\sigma_1 \approx 0.3$, and the median fallback carries sampling noise the integral does not have --- on the elongated footprint of \cref{sec:vandv} the linear formula understates the CEP by $9.7\%$.
+
+The integral is verified against a published table rather than only against its own circular limit: Siouris \cite[Table 5.2]{siouris2004} tabulates the containment factor across $21$ aspect ratios from degenerate to circular and six probability levels, and our quadrature reproduces all $126$ entries to within a unit in the last printed place. The validity band of \cref{eq:cep_valid} is retained as a reported \emph{label} rather than as a branch, since whether a footprint falls inside it remains the right question when comparing against literature computed the classical way. Reporting \cref{eq:cep_aniso} outside its validity range is a common and quiet source of error in dispersion analyses; the response here is to stop using it rather than to guard it.
 \end{remark}
 
 \subsection{Sampling error}

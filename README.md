@@ -300,7 +300,7 @@ The verification runners are the authoritative record: each writes a markdown re
 
 Ordered by dependency, not ambition. What is *not yet* built but is supportable
 from the sources already in [`reference/`](reference/) is tracked separately in
-[`TODO.md`](TODO.md) — 47 open items and 7 closed, each naming what is currently
+[`TODO.md`](TODO.md) — 46 open items and 10 closed, each naming what is currently
 assumed, which source closes it, and what measurably changes. Its §9 is a full
 survey of every reference not yet drawn on, including the ones judged not worth
 mining and why.
