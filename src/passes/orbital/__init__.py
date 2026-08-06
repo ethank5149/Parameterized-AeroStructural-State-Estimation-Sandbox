@@ -16,10 +16,12 @@ from passes.orbital.fobs import (
     EARTH_ROTATION_RATE,
     DeorbitBurn,
     FobsProfile,
+    FractionalInsertion,
     approach_azimuth,
     azimuth_envelope,
     deorbit_burn,
     fobs_profile,
+    fractional_insertion,
     ground_track,
     ground_track_shift,
 )
@@ -38,13 +40,21 @@ from passes.orbital.lambert import (
     lambert,
     minimum_energy_transfer,
 )
+from passes.orbital.warning import (
+    DetectionWindow,
+    detection_window,
+    horizon_central_angle,
+    visibility_radius,
+)
 
 __all__ = [
     "EARTH",
     "EARTH_ROTATION_RATE",
     "CoastResult",
     "DeorbitBurn",
+    "DetectionWindow",
     "FobsProfile",
+    "FractionalInsertion",
     "GravityModel",
     "LambertSolution",
     "RegimeTransition",
@@ -53,11 +63,14 @@ __all__ = [
     "azimuth_envelope",
     "compare_coast_strategies",
     "deorbit_burn",
+    "detection_window",
     "fobs_profile",
+    "fractional_insertion",
     "gravitational_acceleration",
     "gravitational_potential",
     "ground_track",
     "ground_track_shift",
+    "horizon_central_angle",
     "j2_acceleration",
     "lambert",
     "minimum_energy_transfer",
@@ -68,4 +81,5 @@ __all__ = [
     "specific_angular_momentum_z",
     "specific_energy",
     "two_body_acceleration",
+    "visibility_radius",
 ]

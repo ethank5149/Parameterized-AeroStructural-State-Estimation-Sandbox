@@ -28,6 +28,12 @@ from passes.orbital import (
     specific_energy,
     two_body_acceleration,
 )
+from passes.orbital.fobs import fractional_insertion
+from passes.orbital.warning import (
+    detection_window,
+    horizon_central_angle,
+    visibility_radius,
+)
 
 
 def circular_state(altitude=400e3, inclination_deg=51.6):
@@ -696,3 +702,146 @@ class TestAgainstRealOrbitCatalogue:
             reachable = latitude <= np.minimum(inclination, np.pi - inclination) + 1e-12
             assert not np.any(np.isnan(envelope) == reachable)
             assert np.all(np.isfinite(envelope[reachable]))
+
+
+class TestFractionalInsertion:
+    """The property that actually defines a fractional orbital profile."""
+
+    _RE = 6371008.8
+    _ENTRY = 6371008.8 + 100.0e3
+
+    def _at_deficit(self, deficit: float, altitude: float = 180.0e3):
+        radius = self._RE + altitude
+        circular = np.sqrt(3.986004418e14 / radius)
+        return fractional_insertion(radius, circular * (1.0 - deficit), self._ENTRY)
+
+    def test_a_circular_insertion_is_not_fractional(self):
+        """Perigee equals the insertion radius, so the vehicle comes round
+        again. Calling that fractional would be a claim about intent, not
+        about the trajectory."""
+        result = self._at_deficit(0.0)
+        assert not result.is_fractional
+        assert result.perigee_radius == pytest.approx(self._RE + 180.0e3, rel=1e-9)
+        assert np.isnan(result.arc_to_entry)
+        assert result.speed_deficit == pytest.approx(0.0, abs=1e-12)
+
+    def test_a_small_deficit_already_puts_perigee_in_the_atmosphere(self):
+        """Half a percent below circular is enough: perigee falls to about
+        50 km, inside the atmosphere, and the vehicle cannot complete a
+        revolution. Fractional insertion is a small perturbation on an
+        orbital one, which is the whole reason the distinction is a matter
+        of intent as much as of energy."""
+        result = self._at_deficit(0.005)
+        assert result.is_fractional
+        assert (result.perigee_radius - self._RE) / 1e3 == pytest.approx(50.6, abs=2.0)
+
+    def test_the_coast_to_entry_shortens_as_the_deficit_grows(self):
+        """A deeper perigee is a steeper conic, so the entry interface
+        arrives sooner. Monotone, and all well under one revolution."""
+        arcs = [self._at_deficit(d).arc_to_entry for d in (0.005, 0.02, 0.05, 0.1, 0.2)]
+        assert arcs == sorted(arcs, reverse=True)
+        assert all(0.0 < a < 2.0 * np.pi for a in arcs)
+        assert self._at_deficit(0.02).revolutions_to_entry == pytest.approx(0.127, abs=0.01)
+
+    def test_every_fractional_insertion_reenters_inside_one_revolution(self):
+        """The name is a claim about this number, so it is worth asserting
+        rather than assuming."""
+        for deficit in (0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.3):
+            result = self._at_deficit(deficit)
+            assert result.is_fractional
+            assert 0.0 < result.revolutions_to_entry < 1.0
+
+    def test_the_descending_branch_is_taken(self):
+        """The principal arccos gives the ascending branch; the interface is
+        crossed on the way down. Taking the wrong one sends the coast the
+        long way round and reads as a plausible 0.87 revolutions rather
+        than 0.13 -- plausible enough that only a monotonicity check
+        exposes it."""
+        result = self._at_deficit(0.02)
+        assert result.revolutions_to_entry < 0.5
+        # The long-way-round answer would be 1 minus this, near 0.87.
+        assert not 0.8 < result.revolutions_to_entry < 0.95
+
+    def test_validation(self):
+        with pytest.raises(ValueError, match="entry_radius"):
+            fractional_insertion(self._RE + 100e3, 7000.0, self._RE + 200e3)
+        with pytest.raises(ValueError, match="insertion_speed"):
+            fractional_insertion(self._RE + 180e3, 0.0, self._ENTRY)
+
+
+class TestRadarHorizon:
+    """Warning-time geometry — the reason to fly a fractional profile."""
+
+    _RE = 6371008.8
+
+    def test_zero_mask_reduces_to_the_classical_horizon(self):
+        for altitude in (100e3, 500e3, 1300e3):
+            expected = np.arccos(self._RE / (self._RE + altitude))
+            assert float(
+                horizon_central_angle(altitude, 0.0, self._RE)
+            ) == pytest.approx(expected, rel=1e-12)
+
+    def test_matches_an_independent_elevation_calculation(self):
+        """Check the closed form against solving the elevation relation
+        numerically: at the returned central angle the target must sit
+        exactly on the mask."""
+        for altitude in (150e3, 400e3, 1300e3):
+            for mask_deg in (0.0, 3.0, 10.0):
+                mask = np.deg2rad(mask_deg)
+                lam = float(horizon_central_angle(altitude, mask, self._RE))
+                radius = self._RE + altitude
+                elevation = np.arctan2(
+                    np.cos(lam) - self._RE / radius, np.sin(lam)
+                )
+                assert elevation == pytest.approx(mask, abs=1e-12)
+
+    def test_a_lofted_arc_is_seen_from_nearly_three_times_further(self):
+        """The quantitative core of the argument. A minimum-energy ICBM
+        apogee near 1300 km is visible out to about 3760 km; a 150 km
+        fractional parking altitude only to about 1370 km."""
+        fobs = float(visibility_radius(150e3, 0.0, self._RE))
+        icbm = float(visibility_radius(1300e3, 0.0, self._RE))
+        assert fobs / 1e3 == pytest.approx(1369.0, abs=10.0)
+        assert icbm / 1e3 == pytest.approx(3764.0, abs=10.0)
+        assert icbm / fobs == pytest.approx(2.75, abs=0.05)
+
+    def test_a_realistic_mask_costs_the_defender_more_at_low_altitude(self):
+        """A 3 degree mask removes 21% of the FOBS visibility radius but
+        only 9% of the ICBM one, because the low target is already near the
+        horizon. The mask hurts exactly where the defence can least afford
+        it."""
+        for altitude, expected_loss in ((150e3, 0.215), (1300e3, 0.085)):
+            clear = float(visibility_radius(altitude, 0.0, self._RE))
+            masked = float(visibility_radius(altitude, np.deg2rad(3.0), self._RE))
+            assert (clear - masked) / clear == pytest.approx(expected_loss, abs=0.02)
+
+    def test_detection_window_finds_first_visibility_and_time_remaining(self):
+        times = np.linspace(0.0, 1000.0, 1001)
+        # A vehicle descending from 1000 km to impact, closing on the site.
+        # It starts at 45 degrees of central angle, which is outside the
+        # 30.2 degree horizon at that altitude, so detection happens en
+        # route rather than at t = 0.
+        altitudes = np.linspace(1000e3, 0.0, 1001)
+        central = np.deg2rad(np.linspace(45.0, 0.0, 1001))
+        window = detection_window(times, altitudes, central, 0.0, self._RE)
+        assert window.detected
+        assert 0.0 < window.first_detection_time < 1000.0
+        assert window.warning_time == pytest.approx(1000.0 - window.first_detection_time)
+        assert 0.0 < window.visible_fraction <= 1.0
+
+    def test_a_trajectory_that_never_clears_the_mask_is_not_detected(self):
+        times = np.linspace(0.0, 100.0, 101)
+        altitudes = np.full(101, 150e3)
+        central = np.full(101, np.deg2rad(60.0))  # far outside the horizon
+        window = detection_window(times, altitudes, central, 0.0, self._RE)
+        assert not window.detected
+        assert np.isnan(window.warning_time)
+        assert window.visible_fraction == 0.0
+
+    def test_validation(self):
+        with pytest.raises(ValueError, match="mask_elevation"):
+            horizon_central_angle(150e3, 2.0)
+        with pytest.raises(ValueError, match="altitude"):
+            horizon_central_angle(-1.0)
+        with pytest.raises(ValueError, match="strictly increasing"):
+            detection_window([1.0, 0.0], [1e5, 1e5], [0.0, 0.0])

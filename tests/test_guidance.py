@@ -67,6 +67,13 @@ from passes.guidance.entry import (
     range_to_go,
     simulate_glide,
 )
+from passes.guidance.lofting import (
+    burnout_speed_for_range,
+    conjugate_flight_path_angle,
+    lofting_trade,
+    minimum_burnout_speed,
+    optimum_burnout_angle,
+)
 from passes.orbital import EARTH, lambert, orbital_elements, propagate_coast
 
 
@@ -2009,3 +2016,124 @@ class TestInPlaneErrorCoefficients:
             downrange_per_velocity(1.0, 0.4, 0.0)
         with pytest.raises(ValueError, match="range_angle"):
             downrange_per_burnout_altitude(np.pi, 0.4)
+
+
+class TestLoftingTrade:
+    """Depressed vs lofted ballistic trajectories — Regan §5.3-§5.5."""
+
+    def test_reproduces_regans_worked_comparison(self):
+        """Table 5.3: at a 75 degree range angle, burnout angles of 10 and
+        42.5 degrees share a burnout speed of 7238.03 m/s and give flight
+        times of 1271.18 s and 2577.69 s. Times are solved through Kepler's
+        equation here, independently of his closed form."""
+        theta = np.deg2rad(75.0)
+        trade = lofting_trade(theta, np.deg2rad(10.0))
+        assert np.rad2deg(trade.depressed_angle) == pytest.approx(10.0)
+        assert np.rad2deg(trade.lofted_angle) == pytest.approx(42.5, abs=1e-9)
+        assert np.rad2deg(trade.optimum_angle) == pytest.approx(26.25, abs=1e-9)
+        assert trade.burnout_speed == pytest.approx(7238.03, rel=1e-4)
+        assert trade.depressed_time == pytest.approx(1271.18, rel=1e-3)
+        assert trade.lofted_time == pytest.approx(2577.69, rel=1e-3)
+
+    def test_conjugates_are_exactly_symmetric_about_the_optimum(self):
+        """The whole gamma-dependence of Eq. (5.23a) sits inside
+        sin(2 gamma + theta/2), so the pairing is an exact reflection about
+        gamma* -- no root-finding, and applying it twice is the identity."""
+        for theta_deg in (30.0, 60.0, 75.0, 90.0, 120.0):
+            theta = np.deg2rad(theta_deg)
+            optimum = optimum_burnout_angle(theta)
+            for offset_deg in (2.0, 8.0, 15.0):
+                gamma = optimum - np.deg2rad(offset_deg)
+                if gamma < np.deg2rad(1.0):
+                    continue  # the conjugate would sit at or past the horizon
+                conjugate = conjugate_flight_path_angle(theta, gamma)
+                assert conjugate - optimum == pytest.approx(optimum - gamma, abs=1e-12)
+                assert conjugate_flight_path_angle(theta, conjugate) == pytest.approx(
+                    gamma, abs=1e-12
+                )
+
+    def test_conjugates_cost_exactly_the_same_speed(self):
+        """That equality is what makes this a trade rather than a ranking."""
+        for theta_deg in (45.0, 75.0, 100.0):
+            theta = np.deg2rad(theta_deg)
+            trade = lofting_trade(theta, optimum_burnout_angle(theta) - np.deg2rad(9.0))
+            assert burnout_speed_for_range(theta, trade.depressed_angle) == pytest.approx(
+                burnout_speed_for_range(theta, trade.lofted_angle), rel=1e-12
+            )
+
+    def test_the_optimum_is_its_own_conjugate_and_the_cheapest(self):
+        theta = np.deg2rad(75.0)
+        optimum = optimum_burnout_angle(theta)
+        assert conjugate_flight_path_angle(theta, optimum) == pytest.approx(optimum)
+        cheapest = minimum_burnout_speed(theta)
+        for gamma_deg in (10.0, 20.0, 26.25, 33.0, 42.5):
+            assert burnout_speed_for_range(theta, np.deg2rad(gamma_deg)) >= cheapest - 1e-6
+        assert burnout_speed_for_range(theta, optimum) == pytest.approx(cheapest)
+
+    def test_lofting_roughly_doubles_the_flight_time(self):
+        """The reason a depressed trajectory is flown: it compresses warning
+        time. Regan's case is almost exactly 2x, and the ratio grows as the
+        pair moves further from the optimum."""
+        theta = np.deg2rad(75.0)
+        assert lofting_trade(theta, np.deg2rad(10.0)).time_ratio == pytest.approx(2.03, abs=0.05)
+        near = lofting_trade(theta, optimum_burnout_angle(theta) - np.deg2rad(3.0))
+        far = lofting_trade(theta, np.deg2rad(10.0))
+        assert 1.0 < near.time_ratio < far.time_ratio
+
+    def test_only_the_lofted_conjugate_is_less_speed_sensitive(self):
+        """Regan concludes the over-lofted trajectory beats both the
+        minimum-energy and the under-lofted one for velocity-induced range
+        error. That ordering holds -- but *not* the symmetric reading that
+        both conjugates beat the optimum. The depressed solution is twice as
+        sensitive as the optimum, not less."""
+        theta = np.deg2rad(75.0)
+        trade = lofting_trade(theta, np.deg2rad(10.0))
+        depressed = downrange_per_velocity(theta, trade.depressed_angle, trade.burnout_speed)
+        optimum = downrange_per_velocity(theta, trade.optimum_angle, trade.minimum_speed)
+        lofted = downrange_per_velocity(theta, trade.lofted_angle, trade.burnout_speed)
+        assert lofted < optimum < depressed
+        assert depressed / optimum == pytest.approx(1.99, abs=0.02)
+        assert lofted / optimum == pytest.approx(0.68, abs=0.02)
+        assert trade.speed_penalty > 0.0
+
+    def test_the_speed_penalty_is_not_what_drives_the_ordering(self):
+        """Regan attributes the advantage to the speed: leaving the optimum
+        costs velocity, and dR/dV carries 1/V. That term is real but minor.
+        The burnout speed rises only 5.2% between the optimum and either
+        conjugate, while cot(gamma) -- the other factor -- falls by 5.2x
+        across the pair. The conclusion is his; the mechanism is almost
+        entirely the cotangent."""
+        theta = np.deg2rad(75.0)
+        trade = lofting_trade(theta, np.deg2rad(10.0))
+        assert trade.speed_penalty == pytest.approx(0.0525, abs=0.002)
+        cot_ratio = np.tan(trade.lofted_angle) / np.tan(trade.depressed_angle)
+        assert cot_ratio == pytest.approx(5.20, abs=0.05)
+        assert cot_ratio > 50.0 * trade.speed_penalty
+
+    def test_but_the_optimum_is_the_one_insensitive_to_pitch_error(self):
+        """The trade that points the other way, and the sharpest of the
+        three: dR/dgamma is exactly zero at gamma* and non-zero at both
+        conjugates. No trajectory wins on every count."""
+        theta = np.deg2rad(75.0)
+        trade = lofting_trade(theta, np.deg2rad(10.0))
+        assert downrange_per_flight_path_angle(theta, trade.optimum_angle) == pytest.approx(
+            0.0, abs=1e-6
+        )
+        for gamma in (trade.depressed_angle, trade.lofted_angle):
+            assert abs(downrange_per_flight_path_angle(theta, gamma)) > 1e6
+
+    def test_optimum_agrees_with_the_error_coefficient_module(self):
+        """Two modules define gamma*; they must not drift apart."""
+        for theta_deg in (30.0, 75.0, 120.0):
+            theta = np.deg2rad(theta_deg)
+            assert optimum_burnout_angle(theta) == pytest.approx(
+                optimum_flight_path_angle(theta), abs=1e-15
+            )
+
+    def test_validation(self):
+        with pytest.raises(ValueError, match="range_angle"):
+            burnout_speed_for_range(0.0, 0.4)
+        with pytest.raises(ValueError, match="flight_path_angle"):
+            burnout_speed_for_range(1.0, 0.0)
+        with pytest.raises(ValueError, match="not a flyable"):
+            conjugate_flight_path_angle(np.deg2rad(150.0), np.deg2rad(40.0))

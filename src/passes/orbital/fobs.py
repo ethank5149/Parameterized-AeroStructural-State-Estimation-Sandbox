@@ -58,10 +58,12 @@ __all__ = [
     "EARTH_ROTATION_RATE",
     "DeorbitBurn",
     "FobsProfile",
+    "FractionalInsertion",
     "approach_azimuth",
     "azimuth_envelope",
     "deorbit_burn",
     "fobs_profile",
+    "fractional_insertion",
     "ground_track",
     "ground_track_shift",
 ]
@@ -385,4 +387,128 @@ def fobs_profile(
         transfer_arc=burn.transfer_angle,
         glide_arc=glide,
         total_arc=total,
+    )
+
+
+@dataclass(frozen=True)
+class FractionalInsertion:
+    """Whether an insertion is genuinely *fractional*, and by how much.
+
+    A fractional orbital profile is defined by its insertion being unable
+    to complete a revolution: perigee is placed inside the atmosphere, so
+    the vehicle reenters on its own and the deorbit burn is a *targeting*
+    manoeuvre rather than the thing that brings it down. An insertion whose
+    perigee clears the atmosphere is an orbital one, and calling it
+    fractional is a statement about intent rather than about the
+    trajectory.
+
+    Attributes
+    ----------
+    perigee_radius:
+        Radius of closest approach (m) of the insertion conic. Compared
+        against the entry interface, not against the surface — a perigee at
+        60 km is inside the atmosphere and the vehicle does not survive to
+        come round again, even though the number is above the ground.
+    is_fractional:
+        ``True`` when the perigee is at or below the entry interface.
+    speed_deficit:
+        How far below circular the insertion speed is, as a fraction. Zero
+        means a circular orbit; positive means sub-orbital. This is the
+        quantity a launch actually controls.
+    arc_to_entry:
+        Central angle (rad) from insertion to the entry interface, coasting
+        with no burn. ``nan`` for a non-fractional insertion, which never
+        reaches the interface.
+    revolutions_to_entry:
+        ``arc_to_entry`` as a fraction of a revolution. The name of the
+        concept is a claim about this number being below one.
+    """
+
+    perigee_radius: float
+    is_fractional: bool
+    speed_deficit: float
+    arc_to_entry: float
+    revolutions_to_entry: float
+
+
+def fractional_insertion(
+    insertion_radius: float,
+    insertion_speed: float,
+    entry_radius: float,
+    flight_path_angle: float = 0.0,
+    model: GravityModel = EARTH,
+) -> FractionalInsertion:
+    """Classify an insertion as fractional-orbital or orbital.
+
+    Parameters
+    ----------
+    insertion_radius, insertion_speed:
+        State at the end of boost (m, m/s).
+    entry_radius:
+        Radius of the entry interface (m) — where the atmosphere is taken
+        to begin. The classification is against this, not the surface.
+    flight_path_angle:
+        Angle above local horizontal at insertion (rad). Zero, the default,
+        is insertion at apogee, which is the usual case and the one that
+        makes the speed deficit directly meaningful.
+    model:
+        Gravity model.
+
+    Returns
+    -------
+    FractionalInsertion
+
+    Notes
+    -----
+    Two-body, and deliberately so. Whether an insertion is fractional is a
+    conic question, and the perturbations that would matter over many
+    revolutions do not get a chance to act on a trajectory that reenters
+    inside one.
+    """
+    r0, v0 = float(insertion_radius), float(insertion_speed)
+    r_entry, gamma = float(entry_radius), float(flight_path_angle)
+    for name, value in (("insertion_radius", r0), ("insertion_speed", v0)):
+        if not (np.isfinite(value) and value > 0.0):
+            raise ValueError(f"{name} must be finite and > 0, got {value}")
+    if not (np.isfinite(r_entry) and 0.0 < r_entry <= r0):
+        raise ValueError(
+            f"entry_radius must be finite, positive and at or below the "
+            f"insertion radius, got {r_entry} against {r0}"
+        )
+    if not (np.isfinite(gamma) and abs(gamma) < 0.5 * np.pi):
+        raise ValueError(f"flight_path_angle must lie in (-pi/2, pi/2), got {gamma}")
+
+    mu = model.mu
+    angular_momentum = r0 * v0 * np.cos(gamma)
+    energy = 0.5 * v0 * v0 - mu / r0
+    parameter = angular_momentum**2 / mu
+    eccentricity = float(np.sqrt(max(1.0 + 2.0 * energy * parameter / mu, 0.0)))
+    perigee = parameter / (1.0 + eccentricity) if eccentricity < 1.0 else float("nan")
+    circular_speed = float(np.sqrt(mu / r0))
+
+    is_fractional = bool(np.isfinite(perigee) and perigee <= r_entry)
+    if not is_fractional:
+        arc = float("nan")
+    else:
+        # True anomaly measured from perigee. The principal arccos lands in
+        # [0, pi], which is the *ascending* branch; the vehicle crosses the
+        # entry interface on the way down, at 2*pi minus that. Getting this
+        # branch wrong sends the coast the long way round the conic --
+        # which reads as a plausible 0.87 revolutions instead of 0.13.
+        def ascending_anomaly(radius: float) -> float:
+            cosine = (parameter / radius - 1.0) / eccentricity
+            return float(np.arccos(np.clip(cosine, -1.0, 1.0)))
+
+        nu0 = ascending_anomaly(r0)
+        if gamma < 0.0:
+            nu0 = 2.0 * np.pi - nu0
+        nu_entry = 2.0 * np.pi - ascending_anomaly(r_entry)
+        arc = float((nu_entry - nu0) % (2.0 * np.pi))
+
+    return FractionalInsertion(
+        perigee_radius=float(perigee),
+        is_fractional=is_fractional,
+        speed_deficit=float(1.0 - v0 / circular_speed),
+        arc_to_entry=arc,
+        revolutions_to_entry=float(arc / (2.0 * np.pi)) if np.isfinite(arc) else float("nan"),
     )

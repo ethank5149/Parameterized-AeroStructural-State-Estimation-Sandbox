@@ -785,7 +785,98 @@ enough to say what they are worth and what the catch is.
       stated; a caller expecting a `[0, 360)` compass bearing would have
       read the sign as an error. Now documented.
 
-### 9.8 Boost, staging and propulsion dispersion
+#### 9.7b Strategic and tactical trajectory selection
+
+- [x] ~~**Depressed vs lofted trajectory choice.**~~ **Done.**
+      [`lofting.py`](src/passes/guidance/lofting.py) carries Regan §5.3–5.5.
+      Rearranging his Eq. (5.23a) puts the whole γ-dependence inside
+      `sin(2γ + θ/2)`, from which two exact results follow: the minimum-energy
+      angle is `γ* = π/4 − θ/4`, and **every** achievable speed above the
+      minimum is reached at *two* burnout angles placed symmetrically about
+      it, `γ_over = 2γ* − γ_under`. No root-finding, where the standard
+      treatment reads the pair off a plot.
+
+      Verified against Regan's Table 5.3 output: at a 75° range angle, 10°
+      and 42.5° share a burnout speed of 7238.03 m/s and give flight times
+      of 1271.18 s and 2577.69 s. Solving Kepler independently gives
+      **1270.35 s and 2576.85 s** (0.07 % and 0.03 %), and the conjugate
+      relation reproduces his pair exactly.
+
+      **The three considerations do not agree, and one of them inverts a
+      tempting reading of the source.** Lofting roughly *doubles* flight
+      time, so depression is what buys short warning. `∂R/∂γ` is exactly
+      zero at γ* and non-zero at both conjugates, so minimum energy is the
+      trajectory indifferent to boost pitch error. And `∂R/∂V` is **not
+      symmetric**: 3128 m per m/s lofted, 4579 at the optimum, **9110
+      depressed**. Regan's conclusion — over-lofted beats both — holds, but
+      the depressed solution is *twice as sensitive as the optimum*, not
+      less, which matters because depression is exactly what a
+      short-warning launch wants.
+
+      His stated mechanism is also the minor term. He attributes the
+      advantage to the higher burnout speed, since `∂R/∂V` carries `1/V`;
+      that penalty is **5.2 %** across the pair, while `cot γ` falls by
+      **5.2×**. The ordering is essentially all cotangent.
+
+### 9.7c FOBS, rigorously
+
+- [x] ~~**The fractional-orbit condition itself.**~~ **Done.**
+      `fractional_insertion` in [`fobs.py`](src/passes/orbital/fobs.py)
+      classifies an insertion by whether its conic perigee falls at or below
+      the entry interface — the property that makes a profile fractional
+      rather than orbital, and makes the deorbit burn a *targeting*
+      manoeuvre instead of the thing that brings the vehicle down.
+
+      The result worth having: **half a percent below circular is already
+      enough.** At a 180 km insertion, a 0.5 % speed deficit puts perigee at
+      about 50 km, inside the atmosphere, and the vehicle cannot complete a
+      revolution. Fractional insertion is a small perturbation on an orbital
+      one, which is why the distinction is as much about intent as about
+      energy. The coast to entry shortens monotonically with deficit —
+      0.29 revolutions at 0.5 %, 0.13 at 2 %, 0.03 at 20 % — and every case
+      reenters inside one revolution, which is the claim the name makes.
+
+      *A bug the smoke test caught:* the entry crossing is on the
+      **descending** branch, at `2π − arccos(...)`, not the principal
+      arccos. Taking the ascending branch sends the coast the long way round
+      and reports 0.87 revolutions where the answer is 0.13 — plausible
+      enough that only the monotonicity check exposed it.
+
+- [x] ~~**Warning time: why anyone flies a fractional profile.**~~ **Done.**
+      [`warning.py`](src/passes/orbital/warning.py) carries the exact
+      horizon geometry, `λ_max = arccos[(R_E/r)cos ε] − ε`, derived in one
+      rearrangement and checked against numerically solving the elevation
+      relation (agreement to 10⁻¹² rad at three altitudes and three masks).
+
+      The quantitative core of the FOBS argument: a minimum-energy ICBM
+      apogee near 1300 km is visible to a zero-mask site out to **3764 km**;
+      a 150 km fractional parking altitude only to **1369 km** — a factor of
+      **2.75**. The low profile is not stealthy in any electromagnetic
+      sense, it is simply below the horizon for most of its flight. And a
+      realistic 3° mask costs the defender **21 % of the FOBS visibility
+      radius against 9 % of the ICBM one**: the mask hurts most exactly
+      where the defence can least afford it.
+
+      `detection_window` reduces a sampled trajectory to first-detection
+      time, warning time and visible fraction, and is labelled an **upper
+      bound** — geometry only, with no power-aperture, cross-section or
+      track-quality requirement, so a real defence does worse.
+
+- [ ] **Warning time end to end, against a real trajectory pair.** The
+      geometry exists but nothing yet drives it with an actual FOBS profile
+      and an actual minimum-energy ballistic arc to the same target, through
+      a named radar site. That comparison — the one number the whole concept
+      turns on — is now a matter of composing `fobs_profile`,
+      `lofting_trade` and `detection_window`, and is the natural next step.
+
+- [ ] **Azimuth denial as distinct from warning time.** `approach_azimuth`
+      gives the free-approach property and `warning.py` gives the horizon,
+      but nothing combines them: the operational claim is that a fractional
+      profile arrives with short warning *and* from a bearing the defence is
+      not covering. Coverage is a function of where the radars are, which
+      this framework has no representation of.
+
+## 9.8 Boost, staging and propulsion dispersion
 
 - [ ] **Stage separation as a dispersion source.** Pamadi et al. and Couchman
       (perturbation techniques). Boost is one leg with a stated ΔV; staging
