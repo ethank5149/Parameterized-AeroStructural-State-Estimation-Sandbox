@@ -261,6 +261,20 @@ def approach_azimuth(latitude: float, inclination: float, ascending: bool = True
     orbit plane chooses the arrival heading, and the descending pass gives
     the supplementary azimuth to the ascending one.
 
+    Returns
+    -------
+    float
+        A **signed** heading, not a compass bearing in :math:`[0, 2\\pi)`.
+        The ascending branch is an :func:`~numpy.arcsin` and therefore lies
+        in :math:`[-\\pi/2, \\pi/2]`; the descending branch is
+        :math:`\\pi - A` and lies in :math:`[\\pi/2, 3\\pi/2]`. A negative
+        value means west of north, which is what a retrograde orbit
+        genuinely does — a sun-synchronous orbit at :math:`i = 98°` crosses
+        the equator ascending at about :math:`-8°`, i.e. very slightly west
+        of due north. Add :math:`2\\pi` if a bearing is wanted; this is
+        stated because a caller expecting :math:`[0, 360)` would otherwise
+        read the sign as an error rather than as information.
+
     Raises
     ------
     ValueError

@@ -296,8 +296,10 @@ The verification runners are the authoritative record: each writes a markdown re
 
 Ordered by dependency, not ambition. What is *not yet* built but is supportable
 from the sources already in [`reference/`](reference/) is tracked separately in
-[`TODO.md`](TODO.md) — 25 items, each naming what is currently assumed, which
-source closes it, and what measurably changes.
+[`TODO.md`](TODO.md) — 48 open items and 5 closed, each naming what is currently
+assumed, which source closes it, and what measurably changes. Its §9 is a full
+survey of every reference not yet drawn on, including the ones judged not worth
+mining and why.
 
 1. ~~**Structural kernel** — Chebyshev operators, null-space projection, free-free eigenvalue solve.~~ **Done.** V1 (conditioning vs. $N$, frequencies vs. analytic) and V3 (integrator strategy comparison) executed and passing.
 2. ~~**Guidance numerics** — self-contained and quick.~~ **Done.** V6 (the $t_{go}$ precision comparison in single and double precision) executed and passing; the conjugate form holds the precision floor across the full $\hat A_c$ sweep while the textbook form degrades to under one significant digit.

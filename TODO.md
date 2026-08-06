@@ -308,46 +308,300 @@ papers in `reference/` are uncited and would replace that with flight data.
 
 ---
 
-## 9. Newly available sources, not yet mined
+## 9. Systems, guidance and dispersion — from the newer sources
 
-A large reference drop landed after this list was written. These are the
-items it makes reachable that are *not* already covered above, ordered by
-what they would change.
+A large reference drop landed after §1–§8 were written. This section is what
+a full survey of it found. Items are placed here rather than folded into the
+sections above when they open something the earlier sections had no way to
+ask for.
 
-- [ ] **Arcjet facility calibration from the primary guide.** Terrazas-Salinas
-      et al., *Test Planning Guide for NASA Ames Research Center Arc Jet
-      Complex and Range Complex*. This is the facility document the
-      Balter-Peterson item above wanted: it should carry the calibration
-      chain that would let the Zoby-derived **9.0 cm effective radius** be
-      confirmed against the 10.15 cm physical radius rather than left as a
-      consistent-but-uncorroborated inference. Supersedes the second half of
-      §3's Balter-Peterson item.
-- [ ] **Launch-vehicle dispersion as a Monte Carlo, not a tolerance.**
-      Hanson & Beard, *Applying Monte Carlo Simulation to Launch Vehicle
-      Design and Requirements Analysis*, and Pinier, *A New Aerodynamic Data
-      Dispersion Method for Launch Vehicle Design*. The budget's boost
-      dispersion is derived from IMU grade alone; these give the *method* for
-      a full ascent dispersion, and Pinier specifically addresses aerodynamic
-      database uncertainty, which we carry as nothing at all. Also the
-      honest answer to why our Falcon 9 cross-check is order-of-magnitude
-      only: user guides publish worst-case tolerances, not 1σ budgets.
-- [ ] **Waypoint and no-fly-zone constrained glide.** Jorris, *Common Aero
-      Vehicle Autonomous Reentry Trajectory Optimization Satisfying Waypoint
-      and No-Fly Zone Constraints*. Our glide guidance flies to a target with
-      a crossrange deadband; it cannot express an intermediate waypoint or a
-      keep-out region, both of which are first-order constraints on a real
-      HGV trajectory and would interact directly with the bank-reversal
-      schedule the accuracy work is built on.
-- [ ] **Boost-phase guidance error analysis.** Siouris, *Missile Guidance
-      and Control Systems*, complementing the Zarchan Ch. 12 item in §7.
-- [ ] **Stage separation.** Pamadi et al. and Couchman. Boost is currently
-      one leg with a stated ΔV; staging events are where a real dispersion
-      budget picks up contributions we model as zero.
-- [ ] **The reentry-dynamics texts as cross-checks rather than sources.**
-      Regan, Gallais, Mooij, Loh, Hankey, Tewari, Teofilatto. Gallais is
-      already cited for Allen-Eggers. These overlap heavily with each other
-      and with what is implemented; the value is in finding where they
-      *disagree* with our closed forms, not in adding citations.
+Three of the drop's sources have already been used and are recorded in place:
+Marschall & Milos closed the permeability question in §2, Anderson opened the
+catalycity item in §4, and Gallais supplied Allen–Eggers for §7.
+
+### 9.1 Siouris, *Missile Guidance and Control Systems*
+
+The single highest-yield unread source in the directory, because four
+separate open items above are chapters in it.
+
+- [ ] **Ballistic error coefficients (§6.4.3, 22 pp.), and the hit equation
+      they attach to (§6.4.2).** `DISPERSION_SOURCES` in
+      [`budget.py`](src/passes/systems/budget.py) still says of itself that
+      its entries "are parametric inputs, not derived results". Ballistic
+      error coefficients are precisely the derivation that removes that
+      caveat: the partial derivatives of impact point with respect to burnout
+      position, velocity and time. We currently carry *one* such sensitivity,
+      the 850–3484 s velocity-to-impact amplification measured through our
+      own propagator, and nothing for the other five components. This is the
+      item that would let the accuracy chain be sourced end to end rather
+      than sourced at the ends.
+- [ ] **REP, DEP and their relationship to CEP (§5.7.3).**
+      [`dispersion.py`](src/passes/systems/dispersion.py) computes CEP and R95
+      from downrange/crossrange sigmas via an exact elliptical containment
+      integral, which is a *better* method than the classical ratios — but
+      nothing checks it against the classical ratios in the regime where they
+      are valid. Siouris states them; that is a free verification of an
+      integral we currently only self-check.
+- [ ] **Correlated velocity and velocity-to-be-gained (§6.5), i.e.
+      Q-guidance.** The classical ballistic-missile guidance law, and the
+      thing that actually decides when boost cutoff occurs. Our boost leg has
+      no guidance law at all — it is charged a stated ΔV. §6.5.4 also covers
+      control during the atmospheric phase.
+- [ ] **TERCOM and cruise navigation error analysis (§7.3, §7.4).**
+      [`cruise.py`](src/passes/guidance/cruise.py) computes Bréguet range and
+      nothing else; a cruise vehicle in the budget therefore has range but no
+      accuracy, and the dispersion column carries it as unmodelled. TERCOM is
+      how a real cruise missile bounds inertial drift over a long flight, and
+      §7.4.5 (terrain roughness characteristics) is what decides whether it
+      works over a given route. Without it the cruise architectures cannot be
+      given a CEP on the same footing as the ballistic ones.
+- [ ] **Effect of Earth rotation on ballistic flight (§6.4.4).** Complements
+      the glide-plant rotation item in §7 with the ballistic-leg equivalent.
+
+### 9.2 Regan, *Re-Entry Vehicle Dynamics*
+
+An AIAA Education Series text whose chapter list maps almost one-to-one onto
+this backlog's gaps.
+
+- [ ] **Impact equation, time of flight, and error analysis (Ch. V,
+      §§5.3–5.5).** The ballistic leg's `duration` is `nan` in every budget
+      row. §5.4 is the closed form that fills it, and §5.5 is a second,
+      independent treatment of the error analysis Siouris gives in §6.4.3 —
+      worth having both, since agreement between two texts is worth more here
+      than either alone.
+- [ ] **Angular motion during re-entry (Ch. XIII), and configuration
+      asymmetries (Ch. X §10.1).** These are the classical RV dispersion
+      mechanisms — roll resonance, roll-through-zero, asymmetry-induced trim
+      — and we model **none** of them. Our RV is a point mass with a
+      ballistic coefficient. For a real reentry vehicle these terms are not a
+      refinement of the dispersion budget, they are frequently the dominant
+      entry in it, which means the ballistic CEP we report is optimistic by
+      an amount we currently cannot even bound. §13.2 gives the rolling
+      moment equation.
+- [ ] **Deviation of the vertical (Ch. III §3.3).** Directly closes the
+      gravity-anomaly item in §1, which was listed there as having *no*
+      source in the repository.
+- [ ] **Boost trajectories (Ch. XI).** A third route to the §7 boost item,
+      alongside Zarchan Ch. 12 and Siouris; §11.2 does the non-rotating-Earth
+      case, which is the right first step given our glide plant already makes
+      that simplification deliberately.
+- [ ] **Ring laser gyros and pendulous accelerometers (App. B).** I listed
+      "instrument datasheets" as a source this repository lacked, in order to
+      check Groves' grade bands against real hardware. Regan gives the
+      instrument physics instead, which is better for our purpose: it says
+      *why* the bands sit where they do rather than asserting one vendor's
+      numbers.
+
+### 9.3 Jorris, *Common Aero Vehicle Autonomous Reentry Trajectory
+Optimization* — a benchmark we can run as published
+
+- [ ] **Waypoint and no-fly-zone constrained glide.** Our glide guidance flies
+      to a target with a range-scheduled crossrange deadband. It cannot
+      express an intermediate waypoint or a keep-out region, and both are
+      first-order constraints on a real HGV trajectory — they interact
+      directly with the bank-reversal schedule that the whole accuracy result
+      rests on. Jorris formulates both as interior-point and path-inequality
+      constraints and solves the 3-D CAV problem by **pseudospectral
+      collocation with NLP**, which is infrastructure this repository already
+      has (`passes.spectral`, `passes.ultraspherical`, and the Elnagar and
+      Huntington citations already in the bibliography).
+- [ ] **His Table 2 is a fully specified, reproducible test case**, and it is
+      stated in exactly the universal geodetic format
+      [`geodesy.py`](src/passes/geodesy.py) already accepts:
+
+      ```text
+      Initial       N 28°35.286′  W 80°40.194′
+      Waypoint 1    N 34° 2.810′  W 27°18.430′
+      No-Fly Zone 1 N 20°15.513′  W  3°27.588′   960 nmi
+      Waypoint 2    N 33°13.298′  E 41°41.266′
+      No-Fly Zone 2 N 55°43.849′  E 58°33.688′  1500 nmi
+      Target        N 31°36.653′  E 65°42.016′
+      h0 = 122 km,  V0 = 7.3152 km/s,  gamma0 = -1.5 deg
+      ```
+
+      This is the first published end-to-end HGV trajectory problem we could
+      run against a stated answer, and it exercises the arbitrary-launch /
+      arbitrary-target parametrisation that was built and then only ever
+      tested on cases we invented. Worth doing even before the constraints
+      are implemented, as an unconstrained baseline.
+- [ ] **The heating path constraint as an *active* constraint.** Jorris sets
+      his heating limit deliberately below the unconstrained optimum so the
+      solution must ride the boundary. Our glide never has heating as an
+      active constraint — `passes.aerothermal` prices the trajectory after
+      the fact rather than shaping it. This is also the missing half of the
+      §4 "thermal cost of bank reversals" item.
+
+### 9.4 Dispersion methodology — Hanson & Beard, Pinier
+
+- [ ] **How many Monte Carlo samples the accuracy results actually need.**
+      The glide dispersion progression that drives every accuracy conclusion
+      in this project — 34.0 km down to 0.43 km — was measured on a **40-case**
+      Monte Carlo. Hanson & Beard (NASA/TP-2010-216447) §4.1 gives the
+      standard treatment: the standard error scales as 1/√N, so 40 samples
+      put roughly **11 % uncertainty on σ itself**, and therefore on every CEP
+      and R95 derived from it. That is not obviously fatal — we take the
+      *parametric* route (fit σ, then scale by the containment ratio) rather
+      than reading an empirical tail, and §1.4 of the same document is
+      explicitly about that choice — but the sampling uncertainty is
+      currently unstated, and a 0.43 km result quoted to two significant
+      figures implies a precision 40 samples do not support. **Quantify it or
+      raise N.**
+- [ ] **Epistemic versus aleatory uncertainty (§2.1).** `DISPERSION_SOURCES`
+      mixes both without distinguishing them: IMU grade is an epistemic
+      choice (which unit was procured), while flight-day execution error is
+      aleatory. Hanson & Beard treat these differently on purpose, and §2.4.1
+      shows the consequence — some contributors are modelled as uniform
+      precisely *because* it is unknown where in the range they sit.
+- [ ] **A confirmation worth recording, not a gap.** §4.1 notes that the
+      two-dimensional 3σ containment for a Gaussian is **98.9 %**, not the
+      one-dimensional 99.73 %, and warns against reading sigma levels as
+      percentages in more than one dimension. That is exactly the error
+      [`dispersion.py`](src/passes/systems/dispersion.py) was built to avoid,
+      and its exact elliptical integral gets it right. Add a test that pins
+      the 98.9 % figure against an authority rather than against our own
+      integral.
+- [ ] **Aerodynamic database dispersion (Pinier).** We carry no aerodynamic
+      uncertainty at all. Pinier's point is that the traditional approach —
+      biasing a whole nominal curve up or down inside its uncertainty band —
+      is unphysically benign, and that dispersing the coefficient *and its
+      derivatives* under non-arbitrary constraints stresses the control model
+      far harder. On the Ares I project this changed predicted roll control
+      authority materially. Directly relevant to the constant-L/D item in §7:
+      the moment a real aerodynamic database enters, its uncertainty has to
+      enter with it.
+
+### 9.5 Arcjet facility — Terrazas-Salinas
+
+- [ ] **Confirm, or retire, the recovered effective radius.** The Ames Test
+      Planning Guide documents the standard calorimeter and model geometries,
+      and they are not all hemispheres: the catalogue includes flat-faced
+      cylinders with a 0.953 cm corner radius, and **iso-q probes whose nose
+      radius equals their base diameter**. Our Zoby inversion recovers
+      **R_eff = 9.0 cm** consistently across 15 of 19 conditions, and we
+      compare it to a "10.15 cm physical radius" — but if the models were
+      flat-faced or iso-q rather than hemispherical, then that 10.15 cm is a
+      geometric half-width and the recovered value is an aerodynamic
+      effective radius, and **the two are not the same quantity**. In that
+      case the near-agreement we stopped short of claiming was never
+      meaningful either way. Establish which shape the Milos & Chen models
+      were before doing anything else with this number.
+- [ ] **The CFD companion papers, named precisely.** The guide's bibliography
+      identifies the work that would settle it: Gökçen, Chen, Skokova &
+      Milos, *Computational Analysis of Arc-Jet Stagnation Tests Including
+      Ablation and Shape Change*, JTHT **24**(4), 2010, and Stewart, Gökçen &
+      Chen, *Characterization of Hypersonic Flows in the AHF and IHF NASA
+      Ames Arc-Jet Facilities*, AIAA 2009-4237. The first is a CFD treatment
+      of the very cases we reconstruct. Neither is held here; both are
+      ordinary open-literature AIAA papers.
+- [ ] **Why the scatter is what it is.** The guide attributes run-to-run
+      calibration scatter at fixed facility conditions to unavoidable model
+      misalignment moving the stagnation point off centre — which is a
+      physical account of the 27 % experimental spread that I-V4 currently
+      reports against as a bare number.
+
+### 9.6 Ablation validation data, now surveyed
+
+Three of the datasets listed as "unmined" in §3 have now been read far
+enough to say what they are worth and what the catch is.
+
+- [ ] **Covington et al. is PICA, and it is Stardust.** Additional arcjet
+      recession and in-depth temperature data at nominal peak Stardust
+      heating and at 37 % above it. **The catch, and it is a real one:** the
+      authors *tuned* thermophysical properties iteratively to match their
+      own in-depth temperatures. Adopting their properties and then declaring
+      agreement would be circular. Their *measurements* against our
+      independent property set is a legitimate comparison; their derived
+      properties are not an independent check on ours. Also worth chasing:
+      they report "consistent temperature rise deviations that are not
+      accurately modelled by the computer code" — a stated model-form failure
+      in a code of the same family as ours, which our solver should either
+      reproduce or explain.
+- [ ] **McDougall et al. targets exactly our weakest regime.** They model the
+      first seconds before significant pyrolysis and find conduction and
+      radiation dominant there, with good agreement pre-pyrolysis. Our
+      quasi-steady surface energy balance is least defensible in precisely
+      that window and nothing currently tests it. Their framing is Bayesian
+      inference of properties from multiple thermocouples, which is a second
+      use: it is the same inverse problem `passes.estimation` solves for
+      trajectories.
+- [ ] **Omidy et al. — moisture** remains as stated in §2, now confirmed to
+      be the Lachaud/Martin/Mansour line of work and therefore consistent in
+      formulation with the PATO reference already cited there.
+
+### 9.7 A large-N robustness set: the JCAT catalogues
+
+- [x] ~~**70,000 real orbits, sitting unused in
+      [`reference/cats/`](reference/cats/).**~~ **Done — swept, and the
+      kernel is exact on all of them.** McDowell's General Catalog of
+      Artificial Space Objects gives perigee, apogee and inclination for
+      every catalogued object back to Sputnik (S00001: 214 × 938 km,
+      65.10°). **69,099** of 69,452 rows are physically usable; the rest are
+      suborbital, hyperbolic or garbled and are dropped rather than guessed
+      at. Results, now pinned as tests in
+      [`test_orbital.py`](tests/test_orbital.py) (skipped when the catalogue
+      is absent):
+
+      * **483,693 (orbit, latitude) pairs**: `approach_azimuth` accepts
+        exactly the reachable set and refuses exactly the rest — zero
+        accepted-but-unreachable, zero refused-but-reachable, against the
+        exact bound `|φ| ≤ min(i, π−i)`.
+      * `cos i = sin A cos φ` holds to **1.1×10⁻¹⁶** over the catalogue.
+      * `azimuth_envelope`'s nan pattern coincides with the unreachable set
+        exactly, at four latitudes across all 69,099 orbits.
+      * The inclination histogram peaks where physics requires: **51.5°**
+        (Baikonur/ISS), **62.5–65.5°** and **82.5°** (Plesetsk),
+        **97.5–98.5°** (sun-synchronous), 43.5°/53.5° (Starlink shells).
+        This checks `cos i = sin A cos φ` at A = 90° against what was
+        actually flown, not against its own algebra.
+
+      **One real finding, and it was a documentation gap rather than a bug.**
+      The sweep initially flagged thousands of "out of range" azimuths for
+      retrograde orbits. `approach_azimuth` returns a *signed* heading — the
+      ascending branch is an `arcsin`, so a sun-synchronous orbit at
+      i = 98° crosses the equator at about −8°, genuinely west of north —
+      and the existing tests already pin `retro == -direct` deliberately.
+      The convention was right and the returned range was simply never
+      stated; a caller expecting a `[0, 360)` compass bearing would have
+      read the sign as an error. Now documented.
+
+### 9.8 Boost, staging and propulsion dispersion
+
+- [ ] **Stage separation as a dispersion source.** Pamadi et al. and Couchman
+      (perturbation techniques). Boost is one leg with a stated ΔV; staging
+      events contribute tip-off rates and separation impulses that we model
+      as exactly zero.
+- [ ] **Propellant bias and Isp uncertainty.** The 1960 *Ballistic Missile and
+      Space Technology* symposium volume is mostly out of scope for this
+      project — nuclear-electric power, ion and plasma thrusters, radiographic
+      QA of solid motors — but two papers bear on boost dispersion inputs:
+      MacPherson on propellant bias for stages lacking propellant-utilisation
+      systems, and the vacuum-Isp precision-determination paper. Residual
+      propellant and Isp uncertainty are two of the standard contributors to
+      injection ΔV dispersion, and we carry neither.
+
+### 9.9 Surveyed and deliberately parked
+
+Recorded so the survey does not have to be repeated.
+
+- **ERIS (SDIO, 1987)** is an *environmental assessment*, not a technical
+  description of the interceptor. Like the NASA Routine Payloads assessment
+  already in `reference/`, its technical content is launch azimuths, impact
+  and debris footprints, and propellant inventories. That is real data for
+  range-safety and launch-corridor constraints, which this framework does
+  not model and has not claimed to. Low priority, non-zero value.
+- **The reentry-dynamics texts beyond Regan** — Mooij, Loh, Hankey,
+  LeGalley, Marrow, Tewari, Teofilatto. These overlap heavily with each
+  other, with Regan and Gallais, and with what is already implemented. The
+  value in them is finding where they *disagree* with our closed forms, not
+  in adding citations to agreement. Not worth mining serially; worth
+  consulting when a specific closed form is in dispute.
+- **Antares and the FAA reliability guide** are procurement and regulatory
+  documents. The Antares guide would extend the published-vehicle
+  cross-validation set by one more launcher, which is marginal given
+  Minotaur and Falcon are already in it.
+- **The slug-calorimeter ASTM standard** documents the measurement behind
+  the arcjet heat-flux column. Worth reading only if the calibration chain
+  in §9.5 turns out to be the thing blocking the effective-radius question.
 
 ---
 

@@ -1,5 +1,7 @@
 """Orbital mechanics and the coast phase (Paper II, §7)."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -568,3 +570,129 @@ class TestFobs:
             )
             gamma = float(np.arcsin(np.dot(r, v) / (radius * np.linalg.norm(v))))
             assert gamma == pytest.approx(burn.entry_flight_path_angle, abs=1e-12)
+
+
+# --- real-catalogue sweep -----------------------------------------------
+
+_JCAT = Path("reference/cats/satcat")
+
+
+def _load_jcat() -> np.ndarray:
+    """Perigee (km), apogee (km), inclination (deg) from McDowell's JCAT.
+
+    Fixed-column format; the three orbital fields sit at byte offsets 425,
+    435 and 445 of each data line. Rows missing any of the three, or
+    carrying a non-numeric placeholder, are dropped rather than guessed at.
+    """
+    rows = []
+    for line in _JCAT.read_text(errors="replace").splitlines():
+        if not line or line[0] in "<#" or line.startswith("JCAT"):
+            continue
+        perigee, apogee, inclination = line[425:435], line[435:445], line[445:453]
+        try:
+            rows.append(
+                (float(perigee.strip()), float(apogee.strip()), float(inclination.strip()))
+            )
+        except ValueError:
+            continue
+    return np.array(rows)
+
+
+@pytest.mark.skipif(not _JCAT.exists(), reason="JCAT catalogue not present")
+class TestAgainstRealOrbitCatalogue:
+    """The orbital kernel exercised on every catalogued object rather than
+    on cases we invented.
+
+    Roughly 69,000 real orbits back to Sputnik. The value is not that the
+    numbers are real — the geometry does not care — but that the *range* is:
+    inclinations from 0 to 151 degrees, including the retrograde and
+    near-polar regions where a hand-built test set tends to be thin.
+    """
+
+    @staticmethod
+    def _inclinations() -> np.ndarray:
+        data = _load_jcat()
+        perigee, apogee, inclination = data[:, 0], data[:, 1], data[:, 2]
+        usable = (
+            np.isfinite(perigee)
+            & np.isfinite(apogee)
+            & (perigee > -6378.0)
+            & (apogee > perigee)
+        )
+        return np.deg2rad(inclination[usable])
+
+    def test_catalogue_parses_to_a_plausible_population(self):
+        """Guards the fixed-column parse. A silent offset shift would still
+        produce floats, so the check is on the population, not the syntax."""
+        inclination = self._inclinations()
+        assert len(inclination) > 60_000
+        assert 0.0 <= np.rad2deg(inclination).min() < 1.0
+        assert 145.0 < np.rad2deg(inclination).max() < 180.0
+
+    def test_inclination_population_peaks_at_launch_site_latitudes(self):
+        """A due-east launch gives i = phi, so the catalogue's inclination
+        histogram should pile up at the latitudes of the major launch sites
+        and at sun-synchronous. This tests the physics behind
+        `approach_azimuth` against what was actually flown, rather than
+        against its own algebra."""
+        degrees = np.rad2deg(self._inclinations())
+        counts, edges = np.histogram(degrees, bins=np.arange(0.0, 181.0, 1.0))
+        centres = 0.5 * (edges[:-1] + edges[1:])
+        peaks = centres[np.argsort(counts)[::-1][:12]]
+
+        def near(target, tolerance=1.5):
+            return bool(np.any(np.abs(peaks - target) < tolerance))
+
+        assert near(51.6), "Baikonur / ISS inclination missing from the peaks"
+        assert near(97.8, 2.0), "sun-synchronous band missing from the peaks"
+        assert near(82.5), "Plesetsk high-inclination band missing"
+
+    def test_reachability_matches_the_exact_geometric_bound_on_every_orbit(self):
+        """An orbit reaches latitudes up to min(i, pi - i) and no further.
+        `approach_azimuth` must accept exactly the reachable pairs and
+        refuse exactly the rest — not merely mostly."""
+        latitudes = np.deg2rad([0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 89.0])
+        accepted_unreachable = 0
+        refused_reachable = 0
+        for inclination in self._inclinations()[::7]:
+            limit = min(inclination, np.pi - inclination)
+            for latitude in latitudes:
+                reachable = latitude <= limit + 1e-12
+                try:
+                    azimuth = approach_azimuth(float(latitude), float(inclination))
+                except ValueError:
+                    if reachable:
+                        refused_reachable += 1
+                    continue
+                if not reachable:
+                    accepted_unreachable += 1
+                # Signed convention: the ascending branch is an arcsin.
+                assert -0.5 * np.pi - 1e-12 <= azimuth <= 0.5 * np.pi + 1e-12
+        assert accepted_unreachable == 0
+        assert refused_reachable == 0
+
+    def test_spherical_relation_holds_to_machine_precision_on_real_orbits(self):
+        """cos(i) = sin(A) cos(phi), over the whole catalogue rather than a
+        handful of angles."""
+        latitudes = np.deg2rad([0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 89.0])
+        worst = 0.0
+        for inclination in self._inclinations()[::37]:
+            limit = min(inclination, np.pi - inclination)
+            for latitude in latitudes[latitudes <= limit]:
+                azimuth = approach_azimuth(float(latitude), float(inclination))
+                residual = abs(np.cos(inclination) - np.sin(azimuth) * np.cos(latitude))
+                worst = max(worst, residual)
+        assert worst < 1e-15
+
+    def test_envelope_nan_pattern_is_exactly_the_unreachable_set(self):
+        """`azimuth_envelope` marks unreachable inclinations with nan rather
+        than dropping them. Over 69,000 real inclinations the nan pattern
+        must coincide with the geometric bound exactly — an off-by-one in
+        the tolerance would show up here and nowhere in a small test."""
+        inclination = self._inclinations()
+        for latitude_deg in (0.0, 30.0, 60.0, 80.0):
+            latitude = np.deg2rad(latitude_deg)
+            envelope = azimuth_envelope(latitude, inclination)
+            reachable = latitude <= np.minimum(inclination, np.pi - inclination) + 1e-12
+            assert not np.any(np.isnan(envelope) == reachable)
+            assert np.all(np.isfinite(envelope[reachable]))
