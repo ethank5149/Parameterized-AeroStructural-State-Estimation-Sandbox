@@ -33,8 +33,7 @@ from passes.orbital.fobs import fractional_insertion
 from passes.orbital.radar import (
     EARLY_WARNING_SITES,
     SATELLITE_SENSORS,
-    SensorCapability,
-    SatelliteSensor,
+    boost_phase_sensing,
     coverage,
 )
 from passes.orbital.radar import site as radar_site
@@ -906,7 +905,10 @@ class TestRadarCoverage:
         of warning reduction has decreased, but the FOBS profile still
         trades warning time for reduced speed."""
         comparison = warning_comparison(self._LAUNCH, self._TARGET)
-        assert comparison.fobs_coverage.first_detection_time > comparison.ballistic_coverage.first_detection_time
+        assert (
+            comparison.fobs_coverage.first_detection_time
+            > comparison.ballistic_coverage.first_detection_time
+        )
         assert len(comparison.fobs_coverage.detecting_sites) < len(
             comparison.ballistic_coverage.detecting_sites
         )
@@ -988,10 +990,40 @@ class TestRadarCoverage:
         assert len(sites_with_capability) >= 10
         for s in sites_with_capability:
             cap = s.capability
+            assert cap is not None
             assert cap.wavelength_band
             assert cap.peak_power_kw >= 0
             assert cap.aperture_m >= 0
             assert cap.max_unambiguous_range_km >= 0
+
+    def test_boost_phase_detection_finds_ir_signature(self):
+        """A realistic plume temperature (2800 K) should be detected by IR sensors."""
+        times = np.array([0.0, 50.0, 100.0, 150.0, 200.0])
+        altitudes = np.array([0.0, 20e3, 60e3, 100e3, 120e3])
+        result = boost_phase_sensing(times, altitudes, plume_temperature_k=2800.0)
+        assert result.detected
+        assert len(result.detecting_sensors) >= 1
+        assert result.first_detection_time > 0.0
+        assert np.isfinite(result.detection_altitudes[result.detecting_sensors[0]])
+
+    def test_boost_phase_detection_rejects_low_temperature_plume(self):
+        """A plume below the detection threshold should not trigger."""
+        times = np.array([0.0, 50.0, 100.0])
+        altitudes = np.array([0.0, 20e3, 60e3])
+        result = boost_phase_sensing(times, altitudes, plume_temperature_k=400.0)
+        assert not result.detected
+        assert np.isnan(result.first_detection_time)
+
+    def test_boost_phase_detection_requires_vehicles_above_limb(self):
+        """Detection only occurs when the vehicle is above 50 km altitude."""
+        times = np.array([0.0, 10.0, 20.0, 30.0])
+        altitudes = np.array([0.0, 10e3, 30e3, 40e3])  # all below 50 km
+        result = boost_phase_sensing(times, altitudes, plume_temperature_k=2800.0)
+        assert not result.detected
+
+    def test_boost_phase_detection_validation(self):
+        with pytest.raises(ValueError, match="equal length"):
+            boost_phase_sensing([1.0, 2.0], [100e3, 200e3, 300e3])
 
 
 class TestEarthRotationAndLeadTargeting:

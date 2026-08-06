@@ -56,12 +56,15 @@ from passes.geodesy import WGS84_MEAN_RADIUS, GeodeticPosition, great_circle_ran
 from passes.orbital.warning import DetectionWindow, detection_window
 
 __all__ = [
+    "BOOST_PHASE_THRESHOLD_K",
     "EARLY_WARNING_SITES",
     "SATELLITE_SENSORS",
+    "BoostPhaseDetection",
     "CoverageResult",
     "RadarSite",
     "SatelliteSensor",
     "SensorCapability",
+    "boost_phase_sensing",
     "coverage",
     "site",
 ]
@@ -434,6 +437,142 @@ SATELLITE_SENSORS: tuple[SatelliteSensor, ...] = (
              "supplementary boost-phase detection.",
     ),
 )
+
+
+#: Minimum plume temperature (K) for reliable IR detection during boost phase.
+#: Rocket nozzles run at roughly 3000-3700 K, so this threshold captures
+#: the full boost signature but rejects solar glint and atmospheric
+#: thermal background. The real sensors use additional discrimination
+#: (spatial filtering, temporal filtering) not modelled here.
+BOOST_PHASE_THRESHOLD_K: float = 800.0
+
+#: Approximate boost phase duration (s) for an ICBM-class launch vehicle.
+#: The boost phase ends when the vehicle is high enough and fast enough
+#: that the plume becomes indistinguishable from the hot body against
+#: the cold background. For a fractional orbital profile, the boost phase
+#: is the initial ascent before parking orbit insertion.
+BOOST_PHASE_DURATION_S: float = 200.0
+
+
+@dataclass(frozen=True)
+class BoostPhaseDetection:
+    """Result of a satellite-based boost-phase detection check.
+
+    Unlike ground-based radar coverage (line-of-sight to the trajectory),
+    boost-phase detection depends on the infrared signature of the rocket
+    plume during ascent. It is a time-domain event, not a continuous
+    tracking window.
+
+    Attributes
+    ----------
+    detected:
+        Whether any satellite sensor can detect the boost phase.
+    first_detection_time:
+        Earliest detection time (s); ``nan`` if undetected.
+    detecting_sensors:
+        Names of satellite sensors that would detect the plume.
+    detection_altitudes:
+        Altitudes (m) at which each detecting sensor first sees the plume.
+    """
+
+    detected: bool
+    first_detection_time: float
+    detecting_sensors: tuple[str, ...]
+    detection_altitudes: dict[str, float]
+
+
+def boost_phase_sensing(
+    times: ArrayLike,
+    altitudes: ArrayLike,
+    body_radius: float = WGS84_MEAN_RADIUS,
+    sensors: tuple[SatelliteSensor, ...] = SATELLITE_SENSORS,
+    plume_temperature_k: float = 2800.0,
+) -> BoostPhaseDetection:
+    """Evaluate whether satellite IR sensors detect a launch during boost phase.
+
+    This models the complementary detection modality to ground-based radar:
+    infrared sensors in space detect the hot rocket plume against the cold
+    background of space. The detection is not geometric (like radar horizon)
+    but signature-based: the plume must be hotter than the sensor's minimum
+    detectable temperature, and the vehicle must be in a portion of the sky
+    visible to an orbiting IR sensor.
+
+    Parameters
+    ----------
+    times:
+        Sample times (s) from launch.
+    altitudes:
+        Vehicle altitude at each sample (m).
+    body_radius:
+        Earth radius (m).
+    sensors:
+        Satellite IR sensors to evaluate.
+    plume_temperature_k:
+        Estimated rocket plume temperature (K). ICBM-class boosters run
+        at roughly 2800-3700 K. Defaults to 2800 K, a conservative lower
+        bound.
+
+    Returns
+    -------
+    BoostPhaseDetection
+
+    Notes
+    -----
+    This is a simplified model. Real boost-phase detection has additional
+    constraints:
+    - The sensor must be looking at the launch azimuth when the plume appears
+    - Cloud cover and atmospheric opacity can block IR detection
+    - The sensor has a cooldown period after detecting a bright source
+    - Plume detection requires the vehicle to be above the atmospheric
+      limb (typically > 50 km altitude)
+
+    The model returns an upper bound on detectability: if the plume is hot
+    enough and any sensor exists, the boost is detected.
+    """
+    t = np.asarray(times, dtype=np.float64)
+    h = np.asarray(altitudes, dtype=np.float64)
+    if t.ndim != 1 or t.shape != h.shape or t.size < 2:
+        msg = "times and altitudes must be 1-D arrays of equal length >= 2"
+        raise ValueError(msg)
+
+    if plume_temperature_k < BOOST_PHASE_THRESHOLD_K:
+        return BoostPhaseDetection(
+            detected=False,
+            first_detection_time=float("nan"),
+            detecting_sensors=(),
+            detection_altitudes={},
+        )
+
+    detecting = []
+    detection_altitudes = {}
+    earliest_time = float("inf")
+
+    for sensor in sensors:
+        if sensor.min_detectable_temperature_k <= plume_temperature_k:
+            # The plume is detectable. Find the first sample where the vehicle
+            # is high enough to be above the atmospheric limb.
+            above_limb = h >= 50e3
+            if above_limb.any():
+                idx = int(np.argmax(above_limb))
+                if t[idx] < earliest_time:
+                    earliest_time = float(t[idx])
+                detecting.append(sensor.name)
+                detection_altitudes[sensor.name] = float(h[idx])
+
+    if not detecting:
+        return BoostPhaseDetection(
+            detected=False,
+            first_detection_time=float("nan"),
+            detecting_sensors=(),
+            detection_altitudes={},
+        )
+
+    return BoostPhaseDetection(
+        detected=True,
+        first_detection_time=earliest_time,
+        detecting_sensors=tuple(detecting),
+        detection_altitudes=detection_altitudes,
+    )
 
 
 def site(name: str) -> RadarSite:

@@ -41,12 +41,15 @@ from passes.orbital.lambert import (
     minimum_energy_transfer,
 )
 from passes.orbital.radar import (
+    BOOST_PHASE_THRESHOLD_K,
     EARLY_WARNING_SITES,
     SATELLITE_SENSORS,
+    BoostPhaseDetection,
     CoverageResult,
     RadarSite,
     SatelliteSensor,
     SensorCapability,
+    boost_phase_sensing,
     coverage,
     site,
 )
@@ -58,10 +61,12 @@ from passes.orbital.warning import (
 )
 
 __all__ = [
+    "BOOST_PHASE_THRESHOLD_K",
     "EARLY_WARNING_SITES",
     "EARTH",
     "EARTH_ROTATION_RATE",
     "SATELLITE_SENSORS",
+    "BoostPhaseDetection",
     "CoastResult",
     "CoverageResult",
     "DeorbitBurn",
@@ -77,6 +82,7 @@ __all__ = [
     "StrategyComparison",
     "approach_azimuth",
     "azimuth_envelope",
+    "boost_phase_sensing",
     "compare_coast_strategies",
     "coverage",
     "deorbit_burn",
