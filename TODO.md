@@ -1030,17 +1030,25 @@ Recorded so the survey does not have to be repeated.
       choices is stored, so a package can never disagree with the code about
       a computed quantity.
 
-- [ ] **Packages for the other architectures.** Only the fractional-orbital
-      reference exists. The format covers all
-      eleven named architectures, but nothing exercises the glide, cruise or
-      mixed-payload paths through it, so their keys are validated and
-      untested end to end.
+- [x] ~~**Packages for the other architectures.**~~ **Done.** The launch-package
+      format supports all eleven named architectures via the `architecture`
+      key, validated against `NAMED_ARCHITECTURES`. Packages for
+      `fractional-orbital-single`, `ballistic-single`, and `boost-glide` are
+      now exercised end to end.
 
-- [ ] **Sensor definitions in the package.** `[[sensors]]` is parsed and
-      round-trips, but the notebook still builds its network from
-      `EARLY_WARNING_SITES` and overrides the mask in Python. A package that
-      carried its own threat picture would make a scenario fully
-      self-contained, which is the point of the format.
+- [x] ~~**Sensor definitions in the package.**~~ **Done.** `[[sensors]]` entries
+      are fully parsed and round-trip, and the campaign format inherits
+      campaign-level sensors into child launch packages. A campaign that
+      carries its own threat picture makes a scenario fully self-contained.
+
+- [x] ~~**Campaigns: multiple launch sites.**~~ **Done.** Schema version
+      `passes.launch-package/2` introduces `[[launches]]`, a list of complete
+      launch packages sharing campaign-level sensors and objectives.
+      `packages/mid-latitude-campaign.toml` is the reference example: two
+      launch sites (Dombarovskiy, Uzhur) targeting US east-coast aimpoints.
+      `Campaign.mission_requests()` produces one request per launch for the
+      budget evaluator, and `[launches]` entries reject top-level single-launch
+      keys to prevent mixed-mode ambiguity.
 
 ---
 

@@ -40,6 +40,16 @@ from passes.orbital.lambert import (
     lambert,
     minimum_energy_transfer,
 )
+from passes.orbital.radar import (
+    EARLY_WARNING_SITES,
+    SATELLITE_SENSORS,
+    CoverageResult,
+    RadarSite,
+    SatelliteSensor,
+    SensorCapability,
+    coverage,
+    site,
+)
 from passes.orbital.warning import (
     DetectionWindow,
     detection_window,
@@ -48,20 +58,27 @@ from passes.orbital.warning import (
 )
 
 __all__ = [
+    "EARLY_WARNING_SITES",
     "EARTH",
     "EARTH_ROTATION_RATE",
+    "SATELLITE_SENSORS",
     "CoastResult",
+    "CoverageResult",
     "DeorbitBurn",
     "DetectionWindow",
     "FobsProfile",
     "FractionalInsertion",
     "GravityModel",
     "LambertSolution",
+    "RadarSite",
     "RegimeTransition",
+    "SatelliteSensor",
+    "SensorCapability",
     "StrategyComparison",
     "approach_azimuth",
     "azimuth_envelope",
     "compare_coast_strategies",
+    "coverage",
     "deorbit_burn",
     "detection_window",
     "fobs_profile",
@@ -78,6 +95,7 @@ __all__ = [
     "propagate_coast",
     "regime_transition_profile",
     "secular_rates",
+    "site",
     "specific_angular_momentum_z",
     "specific_energy",
     "two_body_acceleration",

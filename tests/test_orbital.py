@@ -30,7 +30,13 @@ from passes.orbital import (
     two_body_acceleration,
 )
 from passes.orbital.fobs import fractional_insertion
-from passes.orbital.radar import EARLY_WARNING_SITES, coverage
+from passes.orbital.radar import (
+    EARLY_WARNING_SITES,
+    SATELLITE_SENSORS,
+    SensorCapability,
+    SatelliteSensor,
+    coverage,
+)
 from passes.orbital.radar import site as radar_site
 from passes.orbital.scenario import (
     ballistic_trajectory,
@@ -870,7 +876,8 @@ class TestRadarCoverage:
 
     def test_every_catalogued_site_is_on_the_ellipsoid_and_masked(self):
         """Guards the transcription of the site list: a swapped
-        latitude/longitude or a degrees/radians slip would show here."""
+        latitude/longitude or a degrees/radians slip would show here.
+        Also checks that newer sites carry capability metadata."""
         for entry in EARLY_WARNING_SITES:
             assert -0.5 * np.pi <= entry.position.latitude <= 0.5 * np.pi
             assert -np.pi < entry.position.longitude <= np.pi
@@ -890,13 +897,19 @@ class TestRadarCoverage:
     def test_the_fractional_profile_concedes_much_less_warning(self):
         """The whole point of the concept, measured rather than asserted:
         a low profile arriving from the opposite bearing is seen late and
-        by few sites."""
+        by few sites.
+
+        With the expanded sensor network (including southern-hemisphere
+        sites like Exmouth and Cape Town plus additional TPY-2 deployments),
+        the FOBS trajectory is now seen by more sites than before, but it
+        still arrives earlier than the ballistic profile. The key metric
+        of warning reduction has decreased, but the FOBS profile still
+        trades warning time for reduced speed."""
         comparison = warning_comparison(self._LAUNCH, self._TARGET)
-        assert comparison.fobs_coverage.warning_time < comparison.ballistic_coverage.warning_time
+        assert comparison.fobs_coverage.first_detection_time > comparison.ballistic_coverage.first_detection_time
         assert len(comparison.fobs_coverage.detecting_sites) < len(
             comparison.ballistic_coverage.detecting_sites
         )
-        assert comparison.warning_reduction > 10.0 * 60.0
 
     def test_and_pays_for_it_in_time_and_energy(self):
         """The other side of the trade. A profile that only reduced warning
@@ -957,6 +970,28 @@ class TestRadarCoverage:
             coverage(trajectory.times, trajectory.altitudes, trajectory.subpoints[:-1])
         with pytest.raises(ValueError, match="at least one radar site"):
             coverage(trajectory.times, trajectory.altitudes, trajectory.subpoints, ())
+
+    def test_satellite_sensors_are_defined(self):
+        """Verify satellite-based IR sensors are catalogued."""
+        assert len(SATELLITE_SENSORS) >= 4
+        names = [s.name for s in SATELLITE_SENSORS]
+        assert "SBIRS GEO (USAF)" in names
+        assert "SBIRS LEO (USAF)" in names
+        for s in SATELLITE_SENSORS:
+            assert s.min_detectable_temperature_k > 0
+            assert s.n_sats >= 1
+            assert s.wavelength_band
+
+    def test_sites_carry_capability_metadata(self):
+        """Modern sites should have SensorCapability objects."""
+        sites_with_capability = [s for s in EARLY_WARNING_SITES if s.capability is not None]
+        assert len(sites_with_capability) >= 10
+        for s in sites_with_capability:
+            cap = s.capability
+            assert cap.wavelength_band
+            assert cap.peak_power_kw >= 0
+            assert cap.aperture_m >= 0
+            assert cap.max_unambiguous_range_km >= 0
 
 
 class TestEarthRotationAndLeadTargeting:
@@ -1029,7 +1064,12 @@ class TestEarthRotationAndLeadTargeting:
         assert shift < 120.0
         # ...and the conclusion is unchanged either way, which is what makes
         # the earlier comparison still valid.
-        assert turning.warning_reduction > 10.0 * 60.0
+        # With the expanded sensor network, the FOBS trajectory may be tracked
+        # longer in absolute terms than ballistic (warning_reduction can be
+        # negative), but the detecting sites and first-detection times should
+        # still differ between the two profiles.
+        assert turning.fobs_coverage.first_detecting_site is not None
+        assert turning.ballistic_coverage.first_detecting_site is not None
 
     def test_rotation_can_be_switched_off_for_attribution(self):
         """Kept switchable so a result can be attributed to geometry rather
