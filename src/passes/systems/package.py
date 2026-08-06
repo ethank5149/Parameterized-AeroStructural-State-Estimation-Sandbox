@@ -1,4 +1,4 @@
-"""Launch packages: a portable, versioned configuration format.
+"""Launch packages and campaigns: portable, versioned configuration formats.
 
 Every scenario in this framework has so far been assembled in Python — a
 ``GeodeticPosition`` here, a ``NAMED_ARCHITECTURES`` lookup there, a
@@ -9,9 +9,13 @@ reviewed, diffed, archived, or handed to someone else.
 This module defines the file format that fixes that: a **launch package**,
 stating a complete scenario — where it starts, what it is aimed at, what
 flies it, what profile it flies, what is watching, and what it is being
-optimised for — in one human-readable, machine-validated document. It is
-the analogue of the tabulated environment file a thermal-response code is
-handed before a run, or the mission data a vehicle is loaded with before
+optimised for — in one human-readable, machine-validated document. A
+**campaign** wraps one or more packages that share a common operational
+context: multiple launch sites, each with its own vehicle and aimpoints,
+evaluated against a shared sensor network.
+
+It is the analogue of the tabulated environment file a thermal-response code
+is handed before a run, or the mission data a vehicle is loaded with before
 flight: everything chosen up front, in one place, in a form that can be
 checked.
 
@@ -45,33 +49,45 @@ standard library. JSON is the interchange format. Both round-trip through
 the same dataclass, and a test asserts they agree.
 
 What a package deliberately does not contain
----------------------------------------------
+--------------------------------------------
 
 No results, and no defaults the code already owns. A package records what
 was *chosen*; anything computable from those choices stays computable, so
 that a package plus a version of this repository reproduces a run, and a
 package alone never disagrees with the code about a derived quantity.
 
+Campaigns
+---------
+
+A **campaign** is a collection of launch packages sharing a common
+operational context: typically multiple launch sites, each with its own
+vehicle and destinations, assessed against a shared sensor network. The
+schema version 2 introduces an optional ``launches`` key that holds an
+array of complete launch package documents. When present, the top-level
+single-launch fields are rejected, so a campaign cannot silently degrade to
+a single launch.
+
 Example
 -------
 
 .. code-block:: toml
 
-    schema = "passes.launch-package/1"
+    schema = "passes.launch-package/2"
 
     [metadata]
-    name = "minimum-energy reference"
+    name = "multi-site campaign"
 
-    [launch]
-    latitude_deg = 45.0
-    longitude_deg = -100.0
+    [[launches]]
+    schema = "passes.launch-package/1"
+    objectives = ["warning_time"]
 
-    [[aimpoints]]
-    latitude_deg = 50.0
-    longitude_deg = 40.0
+    [launches.launch]
+    latitude_deg = 55.245
+    longitude_deg = 89.919
 
-    [profile]
-    architecture = "ballistic-single"
+    [[launches.aimpoints]]
+    latitude_deg = -33.8651
+    longitude_deg = 151.2093
 """
 
 from __future__ import annotations
@@ -90,13 +106,16 @@ from passes.systems.architecture import NAMED_ARCHITECTURES
 from passes.systems.budget import MissionRequest
 
 __all__ = [
+    "CAMPAIGN_SCHEMA",
     "OBJECTIVES",
     "SCHEMA",
+    "Campaign",
     "LaunchPackage",
     "PackageError",
     "Profile",
     "Sensor",
     "Vehicle",
+    "load_campaign",
     "load_package",
 ]
 
@@ -107,6 +126,11 @@ __all__ = [
 #: reproduces the previous behaviour does not require a bump; changing a
 #: default, renaming a key, or altering a unit does.
 SCHEMA = "passes.launch-package/1"
+
+#: Schema for a campaign — a collection of launch packages sharing a common
+#: operational context. Version 2 introduces the optional ``launches``
+#: array. A top-level ``launch`` key is rejected when ``launches`` is present.
+CAMPAIGN_SCHEMA = "passes.launch-package/2"
 
 #: Objectives a package may ask to be optimised for.
 #:
@@ -662,5 +686,258 @@ def load_package(path: str | Path) -> LaunchPackage:
         return LaunchPackage.from_toml(text)
     if suffix == ".json":
         return LaunchPackage.from_json(text)
+    msg = f"unrecognised package suffix {suffix!r}; expected .toml or .json"
+    raise PackageError(msg)
+
+
+@dataclass(frozen=True)
+class Campaign:
+    """A collection of launch packages sharing a common operational context.
+
+    A campaign groups multiple launches — each with its own launch site,
+    aimpoints, vehicle and profile — that are assessed together against a
+    shared sensor network. Each launch is a full :class:`LaunchPackage`,
+    so a campaign carries every field a single launch would, but allows
+    the consumer to iterate over launches or evaluate them jointly against
+    the campaign's sensors.
+
+    Attributes
+    ----------
+    launches:
+        One launch package per launch site, in document order.
+    sensors:
+        Ground sensors shared across all launches. Empty means "use the
+        framework's default network", as in :class:`LaunchPackage`.
+    objectives:
+        What the campaign is being optimised for, from
+        :data:`OBJECTIVES`. Order is meaningful: the first is primary.
+    metadata:
+        Free-form provenance. Never read by the code.
+    """
+
+    launches: tuple[LaunchPackage, ...]
+    sensors: tuple[Sensor, ...] = ()
+    objectives: tuple[str, ...] = ("warning_time",)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.launches:
+            msg = "a campaign needs at least one launch"
+            raise PackageError(msg)
+        for objective in self.objectives:
+            if objective not in OBJECTIVES:
+                msg = (
+                    f"objective {objective!r} is not computable by this framework; "
+                    f"available: {', '.join(OBJECTIVES)}"
+                )
+                raise PackageError(msg)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Campaign:
+        """Build from a parsed TOML or JSON mapping."""
+        schema = data.get("schema")
+        if schema != CAMPAIGN_SCHEMA:
+            msg = (
+                f"expected schema {CAMPAIGN_SCHEMA!r}, got {schema!r}. A campaign "
+                "without a matching schema key is refused rather than guessed at, "
+                "so that a format change fails loudly instead of being reinterpreted."
+            )
+            raise PackageError(msg)
+
+        has_launches = "launches" in data
+        has_single = any(k in data for k in ("launch", "aimpoints", "profile", "vehicle"))
+        if has_launches and has_single:
+            msg = (
+                "a campaign with [[launches]] must not also carry single-launch keys "
+                "(launch, aimpoints, profile, vehicle) at the top level; use "
+                "[[launches]] entries for each launch instead"
+            )
+            raise PackageError(msg)
+        if not has_launches:
+            msg = (
+                "a campaign needs a 'launches' array with at least one launch package"
+            )
+            raise PackageError(msg)
+
+        _check_keys(
+            data,
+            frozenset(
+                {
+                    "schema",
+                    "metadata",
+                    "launches",
+                    "sensors",
+                    "objectives",
+                }
+            ),
+            "root",
+        )
+
+        raw_launches = _require(data, "launches", "launches")
+        if not isinstance(raw_launches, list) or not raw_launches:
+            msg = "launches must be a non-empty array of launch packages"
+            raise PackageError(msg)
+
+        launch_list: list[LaunchPackage] = []
+        for i, entry in enumerate(raw_launches):
+            where = f"launches[{i}]"
+            if not isinstance(entry, dict):
+                msg = f"{where}: each launch must be a table, got {type(entry).__name__}"
+                raise PackageError(msg)
+            if entry.get("schema") != SCHEMA:
+                msg = (
+                    f"{where}: launch schema must be {SCHEMA!r}, got "
+                    f"{entry.get('schema')!r}"
+                )
+                raise PackageError(msg)
+            # Inherit campaign-level sensors and objectives if the launch
+            # package does not declare its own, so a campaign can set them
+            # once and every launch picks them up.
+            merged = dict(entry)
+            if not merged.get("sensors") and data.get("sensors"):
+                merged["sensors"] = list(data["sensors"])
+            if not merged.get("objectives") and data.get("objectives"):
+                merged["objectives"] = list(data["objectives"])
+            launch_list.append(LaunchPackage.from_dict(merged))
+
+        sensors = tuple(
+            Sensor(
+                name=str(_require(entry, "name", f"sensors[{i}]")),
+                position=_position(
+                    entry,
+                    f"sensors[{i}]",
+                    frozenset({"name", "mask_elevation_deg", "note"}),
+                ),
+                mask_elevation=float(
+                    np.deg2rad(
+                        _number(
+                            entry.get("mask_elevation_deg", 5.0),
+                            "mask_elevation_deg",
+                            f"sensors[{i}]",
+                        )
+                    )
+                ),
+                note=str(entry.get("note", "")),
+            )
+            for i, entry in enumerate(data.get("sensors", []))
+        )
+
+        objectives = tuple(data.get("objectives", ["warning_time"]))
+        return cls(
+            launches=tuple(launch_list),
+            sensors=sensors,
+            objectives=objectives,
+            metadata=dict(data.get("metadata", {})),
+        )
+
+    @classmethod
+    def from_toml(cls, text: str) -> Campaign:
+        """Parse the authoring format."""
+        try:
+            data = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as error:
+            msg = f"not valid TOML: {error}"
+            raise PackageError(msg) from error
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_json(cls, text: str) -> Campaign:
+        """Parse the interchange format."""
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as error:
+            msg = f"not valid JSON: {error}"
+            raise PackageError(msg) from error
+        if not isinstance(data, dict):
+            msg = f"a campaign must be an object, got {type(data).__name__}"
+            raise PackageError(msg)
+        return cls.from_dict(data)
+
+    # -- serialisation ---------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        """The canonical mapping, with every angle back in degrees."""
+        data: dict[str, Any] = {"schema": CAMPAIGN_SCHEMA}
+        if self.metadata:
+            data["metadata"] = dict(self.metadata)
+        data["launches"] = [pkg.to_dict() for pkg in self.launches]
+        if self.sensors:
+            data["sensors"] = [
+                {
+                    "name": s.name,
+                    **_position_dict(s.position),
+                    "mask_elevation_deg": float(np.rad2deg(s.mask_elevation)),
+                    **({"note": s.note} if s.note else {}),
+                }
+                for s in self.sensors
+            ]
+        data["objectives"] = list(self.objectives)
+        return data
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+
+    def to_toml(self) -> str:
+        """Write the authoring format.
+
+        Requires ``tomli-w``; JSON is always available and round-trips
+        identically, so a missing optional dependency costs formatting
+        rather than function.
+        """
+        try:
+            import tomli_w
+        except ImportError as error:  # pragma: no cover - optional dependency
+            msg = (
+                "writing TOML needs the optional 'tomli-w' package; "
+                "to_json() is always available and round-trips identically"
+            )
+            raise PackageError(msg) from error
+        return tomli_w.dumps(self.to_dict())
+
+    # -- use -------------------------------------------------------------
+
+    def mission_requests(self) -> tuple[MissionRequest, ...]:
+        """One mission request per launch, for :func:`passes.systems.budget.evaluate`."""
+        return tuple(pkg.mission_request() for pkg in self.launches)
+
+    def summary(self) -> str:
+        """One-screen human summary, for logs and notebook output."""
+        name = self.metadata.get("name", "(unnamed)")
+        lines = [f"{name} (campaign: {len(self.launches)} launch(es))"]
+        for i, pkg in enumerate(self.launches):
+            aims = ", ".join(
+                p.label or f"{np.rad2deg(p.latitude):.1f},{np.rad2deg(p.longitude):.1f}"
+                for p in pkg.aimpoints
+            )
+            lines.append(
+                f"  launch {i + 1}  {np.rad2deg(pkg.launch.latitude):+.2f}, "
+                f"{np.rad2deg(pkg.launch.longitude):+.2f}"
+                f"{' (' + pkg.launch.label + ')' if pkg.launch.label else ''}"
+            )
+            lines.append(f"  aimpoints  {aims}")
+            lines.append(f"  architecture {pkg.profile.architecture}")
+            lines.append(
+                f"  vehicle      beta={pkg.vehicle.ballistic_coefficient:,.0f} kg/m2, "
+                f"L/D={pkg.vehicle.lift_to_drag:g}, IMU={pkg.vehicle.imu_grade}"
+            )
+        lines.append(f"  sensors      {len(self.sensors) or 'framework default network'}")
+        lines.append(f"  objectives   {', '.join(self.objectives)}")
+        return "\n".join(lines)
+
+
+def load_campaign(path: str | Path) -> Campaign:
+    """Load a campaign, choosing the parser from the file suffix.
+
+    ``.toml`` and ``.json`` are recognised; anything else is refused rather
+    than sniffed, because guessing a format is how a malformed file becomes
+    a plausible-looking scenario.
+    """
+    location = Path(path)
+    text = location.read_text(encoding="utf-8")
+    suffix = location.suffix.lower()
+    if suffix == ".toml":
+        return Campaign.from_toml(text)
+    if suffix == ".json":
+        return Campaign.from_json(text)
     msg = f"unrecognised package suffix {suffix!r}; expected .toml or .json"
     raise PackageError(msg)

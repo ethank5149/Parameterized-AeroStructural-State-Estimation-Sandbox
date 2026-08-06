@@ -34,7 +34,13 @@ from passes.systems import (
     probable_error,
     validate,
 )
-from passes.systems.package import LaunchPackage, PackageError, load_package
+from passes.systems.package import (
+    Campaign,
+    LaunchPackage,
+    PackageError,
+    load_campaign,
+    load_package,
+)
 
 
 class TestPhaseTaxonomy:
@@ -1049,3 +1055,122 @@ arrival_time_s = 4200.0
         path.write_text(self._MINIMAL, encoding="utf-8")
         with pytest.raises(PackageError, match="unrecognised package suffix"):
             load_package(path)
+
+
+class TestCampaign:
+    """The campaign format — multiple launch packages sharing sensors."""
+
+    _MINIMAL = """
+schema = "passes.launch-package/2"
+
+[[launches]]
+schema = "passes.launch-package/1"
+
+[launches.launch]
+latitude_deg = 45.0
+longitude_deg = -100.0
+
+[[launches.aimpoints]]
+latitude_deg = 50.0
+longitude_deg = 40.0
+
+[[launches]]
+schema = "passes.launch-package/1"
+
+[launches.launch]
+latitude_deg = 55.0
+longitude_deg = 90.0
+
+[[launches.aimpoints]]
+latitude_deg = 40.0
+longitude_deg = -77.0
+"""
+
+    def test_a_minimal_campaign_loads_with_documented_defaults(self):
+        campaign = Campaign.from_toml(self._MINIMAL)
+        assert len(campaign.launches) == 2
+        assert campaign.launches[0].profile.architecture == "ballistic-single"
+        assert campaign.launches[1].vehicle.imu_grade == "aviation"
+        assert campaign.objectives == ("warning_time",)
+
+    def test_round_trips_through_both_formats_identically(self):
+        campaign = Campaign.from_toml(self._MINIMAL)
+        assert Campaign.from_json(campaign.to_json()) == campaign
+        assert Campaign.from_toml(campaign.to_toml()) == campaign
+
+    def test_a_missing_or_wrong_schema_is_refused(self):
+        with pytest.raises(PackageError, match="schema"):
+            Campaign.from_toml(
+                self._MINIMAL.replace(
+                    '"passes.launch-package/2"', '"passes.launch-package/1"'
+                )
+            )
+        with pytest.raises(PackageError, match="schema"):
+            Campaign.from_toml(
+                self._MINIMAL.replace('schema = "passes.launch-package/2"', "")
+            )
+
+    def test_single_launch_keys_rejected_when_launches_present(self):
+        """A campaign that mixes [[launches]] with top-level launch keys
+        is rejected, because the intent is ambiguous."""
+        bad = self._MINIMAL + '[launch]\nlatitude_deg = 45.0\n'
+        with pytest.raises(PackageError, match="must not also carry"):
+            Campaign.from_toml(bad)
+
+    def test_campaign_without_launches_is_refused(self):
+        text = 'schema = "passes.launch-package/2"\n'
+        with pytest.raises(PackageError, match="launches"):
+            Campaign.from_toml(text)
+
+    def test_empty_launches_list_is_refused(self):
+        text = (
+            'schema = "passes.launch-package/2"\n'
+            'launches = []\n'
+        )
+        with pytest.raises(PackageError, match="non-empty"):
+            Campaign.from_toml(text)
+
+    def test_child_launch_schema_must_match_single_package(self):
+        bad = self._MINIMAL.replace(
+            '"passes.launch-package/1"', '"passes.launch-package/3"'
+        )
+        with pytest.raises(PackageError, match="launch schema"):
+            Campaign.from_toml(bad)
+
+    def test_campaign_inherits_sensors_from_top_level(self):
+        """When a launch does not declare its own sensors, it inherits the
+        campaign-level sensors."""
+        text = self._MINIMAL + """
+[[sensors]]
+name = "Pituffik"
+latitude_deg = 76.6
+longitude_deg = -68.3
+mask_elevation_deg = 5.0
+note = "BMEWS, Greenland"
+"""
+        campaign = Campaign.from_toml(text)
+        assert len(campaign.sensors) == 1
+        assert campaign.sensors[0].name == "Pituffik"
+
+    def test_campaign_produces_mission_requests_per_launch(self):
+        campaign = Campaign.from_toml(self._MINIMAL)
+        requests = campaign.mission_requests()
+        assert len(requests) == 2
+        assert requests[0].launch_site == campaign.launches[0].launch
+        assert requests[1].aimpoints == campaign.launches[1].aimpoints
+
+    def test_load_campaign_refuses_to_sniff_a_format(self, tmp_path):
+        path = tmp_path / "campaign.cfg"
+        path.write_text(self._MINIMAL, encoding="utf-8")
+        with pytest.raises(PackageError, match="unrecognised package suffix"):
+            load_campaign(path)
+
+    def test_the_shipped_reference_campaign_loads_and_round_trips(self):
+        path = Path("packages/mid-latitude-campaign.toml")
+        if not path.exists():
+            pytest.skip("reference campaign not present")
+        campaign = load_campaign(path)
+        assert len(campaign.launches) == 2
+        assert campaign.launches[0].launch.label == "Dombarovskiy (Silo 1A)"
+        assert campaign.launches[1].launch.label == "Uzhur (Silo 1A)"
+        assert Campaign.from_json(campaign.to_json()) == campaign

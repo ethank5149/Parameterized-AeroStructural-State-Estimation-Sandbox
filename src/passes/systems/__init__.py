@@ -35,17 +35,21 @@ from passes.systems.dispersion import (
     probable_error,
 )
 from passes.systems.package import (
+    CAMPAIGN_SCHEMA,
     OBJECTIVES,
     SCHEMA,
+    Campaign,
     LaunchPackage,
     PackageError,
     Profile,
     Sensor,
     Vehicle,
+    load_campaign,
     load_package,
 )
 
 __all__ = [
+    "CAMPAIGN_SCHEMA",
     "CEP_OVER_SIGMA",
     "DISPERSION_RESETS",
     "DISPERSION_SOURCES",
@@ -59,6 +63,7 @@ __all__ = [
     "SIOURIS_TABLE_5_2_RATIOS",
     "AccuracyStatistics",
     "Architecture",
+    "Campaign",
     "LaunchPackage",
     "LegBudget",
     "MissionBudget",
@@ -79,6 +84,7 @@ __all__ = [
     "describe",
     "enumerate_architectures",
     "evaluate",
+    "load_campaign",
     "load_package",
     "probable_error",
     "validate",

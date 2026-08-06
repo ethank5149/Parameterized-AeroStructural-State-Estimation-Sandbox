@@ -1,0 +1,98 @@
+# A multi-launch campaign reference scenario.
+#
+# This is a version-2 launch package carrying a campaign: two launch sites,
+# each with its own vehicle and aimpoints, assessed against a shared sensor
+# network. Everything below is a *choice*; nothing derivable from those
+# choices is recorded, so this file and a version of the repository reproduce
+# a run exactly.
+
+schema = "passes.launch-package/2"
+
+[metadata]
+name = "mid-latitude Eurasian campaign"
+description = """
+Two launch sites — Dombarovskiy and Uzhur — each flying a fractional-orbital
+profile against a US east-coast aimpoint. Used as the default multi-launch
+campaign in notebooks/fobs-warning-analysis.ipynb.
+"""
+author = "PASSES"
+created = "2026-08-06"
+
+# ## 13th Missile Division (Dombarovskiy)
+# Silo 1A, Group A (621st Regiment)
+# 50°58′21″N, 59°33′01″E, ~265 m
+# ## 62nd Missile Division (Uzhur)
+# Silo 1A (Control Site), Historic Group A
+# 55°20′00″N, 89°44′00″E, ~410 m
+#
+# | Location | Latitude / Longitude (Decimal) | Altitude (MSL) |
+# | --- | --- | --- |
+# | Camp David | 39.64833° N, -77.46500° W | 579 m |
+# | Pentagon | 38.87099° N, -77.05596° W | 12 m |
+# | CENTCOM | 27.84934° N, -82.52122° W | 4.3 m |
+
+[[launches]]
+schema = "passes.launch-package/1"
+
+[launches.metadata]
+name = "Dombarovskiy launch"
+
+[launches.launch]
+latitude_deg = 50.9725
+longitude_deg = 59.5503
+altitude_m = 265.0
+label = "Dombarovskiy (Silo 1A)"
+
+[[launches.aimpoints]]
+latitude_deg = 38.897639
+longitude_deg = -77.036552
+altitude_m = 24.0
+label = "Pentagon"
+
+[launches.profile]
+architecture = "fractional-orbital-single"
+parking_altitude_m = 150e3
+entry_interface_altitude_m = 100e3
+ballistic_entry_angle_deg = 21.8
+
+[launches.vehicle]
+ballistic_coefficient_kg_m2 = 20000.0
+lift_to_drag = 0.0
+imu_grade = "aviation"
+boost_burn_time_s = 300.0
+
+[[launches]]
+schema = "passes.launch-package/1"
+
+[launches.metadata]
+name = "Uzhur launch"
+
+[launches.launch]
+latitude_deg = 55.3333
+longitude_deg = 89.7333
+altitude_m = 410.0
+label = "Uzhur (Silo 1A)"
+
+[[launches.aimpoints]]
+latitude_deg = 39.64833
+longitude_deg = -77.46500
+altitude_m = 579.0
+label = "Camp David"
+
+[[launches.aimpoints]]
+latitude_deg = 27.84934
+longitude_deg = -82.52122
+altitude_m = 4.3
+label = "CENTCOM"
+
+[launches.profile]
+architecture = "fractional-orbital-single"
+parking_altitude_m = 150e3
+entry_interface_altitude_m = 100e3
+ballistic_entry_angle_deg = 21.8
+
+[launches.vehicle]
+ballistic_coefficient_kg_m2 = 20000.0
+lift_to_drag = 0.0
+imu_grade = "aviation"
+boost_burn_time_s = 300.0
