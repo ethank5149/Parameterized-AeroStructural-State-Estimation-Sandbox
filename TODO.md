@@ -1084,6 +1084,55 @@ Recorded so the survey does not have to be repeated.
       budget evaluator, and `[launches]` entries reject top-level single-launch
       keys to prevent mixed-mode ambiguity.
 
+### 9.11 Visualization as a first-class consumer
+
+The animation layer is a *presentation* layer and is held to a lower bar
+than the physics kernels — no manufactured solutions, no independent
+solvers, no published references. That is a reasonable prioritisation for a
+codebase whose claim is numerical, but the gap is real, and two defects
+found while building the animations were of a kind the physics tests could
+never have caught, because the notebook carried its **own** trajectory
+model reconstructed from sub-points and altitudes.
+
+- [x] ~~**A canonical time history, so a picture cannot disagree with the
+      physics.**~~ **Done** — [`history.py`](src/passes/viz/history.py).
+      `SimulationHistory` is the single authoritative run record;
+      `from_flight_result` carries the full coupled state (position,
+      velocity, attitude quaternion, heat flux, recession, dynamic
+      pressure) and `from_trajectory` the lighter orbital scenarios.
+      Sampling interpolates linearly in position and by **slerp** in
+      attitude — componentwise quaternion interpolation leaves the unit
+      sphere and both shrinks and shears the rotation — and holds the
+      endpoints rather than extrapolating past the end of the physics.
+
+      The design rule worth keeping: a scenario trajectory is a point mass
+      and has **no attitude**, so `has_attitude` reports `False` rather
+      than substituting an identity quaternion. Drawing an oriented vehicle
+      from a rotation that was never computed is exactly the failure the
+      object exists to prevent.
+
+- [ ] **Move the notebook helpers into `passes.viz.scene`.** `ecef`,
+      `track_points`, `draw_track`, `draw_marker` and the chase rig still
+      live in notebook cells, so any other analysis has to copy them. They
+      should be pure functions over a `SimulationHistory`.
+- [ ] **`TrajectoryAnimator` façade** — `frame_at(t)` and
+      `render_sequence(...)`, so a `FlightResult` becomes an animation in
+      two lines and the notebook body collapses to configuration.
+- [ ] **An oriented vehicle glyph.** The single largest fidelity gain
+      available: the history now carries a verified DCM and nothing draws
+      with it. Even a few dozen triangles would show attitude, angle of
+      attack and bank, none of which a point marker can.
+- [ ] **Sensor overlays driven by the coverage result** — radar horizons
+      and detection events rendered in 3D, lighting up the sites that
+      actually see the vehicle at each instant. This is what ties the
+      warning analysis to the picture.
+- [ ] **Thermal and ablation colouring** from `stagnation_heat_flux` and
+      `recession`, both already carried through the history and unused.
+- [ ] **Performance and output.** Pure vectorised NumPy at ~0.2 s per
+      1600x900 frame — fine offline, nowhere near interactive. No GPU path,
+      no static-geometry caching, and GIF-only export through
+      Matplotlib + Pillow rather than H.264.
+
 ---
 
 ## Deliberately not on this list

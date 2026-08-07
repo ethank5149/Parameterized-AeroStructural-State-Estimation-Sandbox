@@ -16,10 +16,12 @@ from passes.viz.globe import (
     render,
     sun_direction,
 )
+from passes.viz.history import SimulationHistory
 
 __all__ = [
     "DEFAULT_TEXTURE",
     "Camera",
+    "SimulationHistory",
     "load_texture",
     "look_at",
     "project",

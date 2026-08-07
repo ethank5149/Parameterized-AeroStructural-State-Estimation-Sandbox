@@ -9,6 +9,7 @@ from passes.geodesy import WGS84_MEAN_RADIUS
 from passes.viz import (
     DEFAULT_TEXTURE,
     Camera,
+    SimulationHistory,
     load_texture,
     look_at,
     project,
@@ -238,3 +239,147 @@ class TestTexture:
             pytest.skip("texture not present")
         monkeypatch.chdir(tmp_path)
         assert load_texture().shape[2] == 3
+
+
+class TestSimulationHistory:
+    """The canonical run record the renderer samples instead of rebuilding.
+
+    The point of this class is that a picture cannot disagree with the
+    physics, so the tests are about *agreement with the producer* rather
+    than about appearance.
+    """
+
+    @staticmethod
+    def _trajectory():
+        from passes.geodesy import GeodeticPosition
+        from passes.orbital.scenario import fobs_trajectory
+
+        return fobs_trajectory(
+            GeodeticPosition.from_degrees(51.0, 59.0, 120.0, "launch"),
+            GeodeticPosition.from_degrees(38.87, -77.06, 24.0, "target"),
+            samples=300,
+            earth_rotation=True,
+        )
+
+    def test_positions_reproduce_the_trajectory_altitudes_exactly(self):
+        """The conversion must be lossless in the quantity it carries. If
+        the radius comes back different from the altitude that produced it,
+        the history is a second model rather than a view of the first."""
+        from passes.geodesy import WGS84_MEAN_RADIUS
+
+        trajectory = self._trajectory()
+        history = SimulationHistory.from_trajectory(trajectory, WGS84_MEAN_RADIUS)
+        recovered = history.altitudes(WGS84_MEAN_RADIUS)
+        assert np.allclose(recovered, trajectory.altitudes, atol=1e-6)
+        assert np.array_equal(history.times, trajectory.times)
+
+    def test_a_scenario_trajectory_reports_that_it_has_no_attitude(self):
+        """A point mass on a great circle has no attitude. Reporting that
+        is the whole design: substituting an identity quaternion would draw
+        an oriented vehicle from something never computed."""
+        from passes.geodesy import WGS84_MEAN_RADIUS
+
+        history = SimulationHistory.from_trajectory(self._trajectory(), WGS84_MEAN_RADIUS)
+        assert not history.has_attitude
+        assert history.quaternions is None
+        assert "quaternion" not in history.sample(history.times[5])
+
+    def test_sampling_at_a_recorded_time_returns_that_sample(self):
+        from passes.geodesy import WGS84_MEAN_RADIUS
+
+        trajectory = self._trajectory()
+        history = SimulationHistory.from_trajectory(trajectory, WGS84_MEAN_RADIUS)
+        for index in (0, 37, len(trajectory.times) - 1):
+            state = history.sample(float(history.times[index]))
+            assert np.allclose(state["position"], history.positions[index], atol=1e-6)
+
+    def test_sampling_between_samples_lands_between_them(self):
+        from passes.geodesy import WGS84_MEAN_RADIUS
+
+        history = SimulationHistory.from_trajectory(self._trajectory(), WGS84_MEAN_RADIUS)
+        midpoint = 0.5 * (history.times[10] + history.times[11])
+        state = history.sample(midpoint)
+        expected = 0.5 * (history.positions[10] + history.positions[11])
+        assert np.allclose(state["position"], expected, rtol=1e-9)
+
+    def test_times_outside_the_run_are_held_not_extrapolated(self):
+        """A camera asking beyond the physics should see the last real
+        state, not a linear guess past the end of it."""
+        from passes.geodesy import WGS84_MEAN_RADIUS
+
+        history = SimulationHistory.from_trajectory(self._trajectory(), WGS84_MEAN_RADIUS)
+        before = history.sample(history.times[0] - 1000.0)
+        after = history.sample(history.times[-1] + 1000.0)
+        assert np.allclose(before["position"], history.positions[0])
+        assert np.allclose(after["position"], history.positions[-1])
+
+    def test_velocity_falls_back_to_finite_differences(self):
+        """A producer without velocity still drives a chase camera, because
+        the direction of travel is recoverable from the positions."""
+        from passes.geodesy import WGS84_MEAN_RADIUS
+
+        history = SimulationHistory.from_trajectory(self._trajectory(), WGS84_MEAN_RADIUS)
+        assert history.velocities is None
+        state = history.sample(float(history.times[40]))
+        step = history.positions[41] - history.positions[40]
+        assert float(np.dot(state["velocity"], step)) > 0.0
+
+    def test_quaternion_interpolation_stays_on_the_unit_sphere(self):
+        """Componentwise interpolation of a quaternion leaves the sphere,
+        which both shrinks and shears the rotation it represents. Slerp
+        does not."""
+        times = np.array([0.0, 1.0])
+        positions = np.array([[7e6, 0.0, 0.0], [7e6, 1e5, 0.0]])
+        start = np.array([1.0, 0.0, 0.0, 0.0])
+        end = np.array([np.cos(0.6), 0.0, 0.0, np.sin(0.6)])
+        history = SimulationHistory(
+            label="spin", times=times, positions=positions,
+            quaternions=np.stack([start, end]),
+        )
+        assert history.has_attitude
+        for blend in np.linspace(0.0, 1.0, 11):
+            quaternion = history.sample(float(blend))["quaternion"]
+            assert float(np.linalg.norm(quaternion)) == pytest.approx(1.0, abs=1e-12)
+
+    def test_attitude_sampling_yields_a_proper_rotation(self):
+        """The DCM handed to a renderer must be orthonormal with unit
+        determinant, or a vehicle drawn with it is sheared."""
+        times = np.array([0.0, 1.0])
+        positions = np.array([[7e6, 0.0, 0.0], [7e6, 1e5, 0.0]])
+        quaternions = np.stack(
+            [np.array([1.0, 0.0, 0.0, 0.0]), np.array([np.cos(0.4), np.sin(0.4), 0.0, 0.0])]
+        )
+        history = SimulationHistory(
+            label="spin", times=times, positions=positions, quaternions=quaternions
+        )
+        dcm = history.sample(0.5)["dcm"]
+        assert np.allclose(dcm @ dcm.T, np.eye(3), atol=1e-12)
+        assert float(np.linalg.det(dcm)) == pytest.approx(1.0, abs=1e-12)
+
+    def test_slerp_takes_the_short_way_round(self):
+        """q and -q are the same rotation. Without the sign fix the
+        interpolation sweeps the long way and the vehicle visibly spins
+        backwards through most of a revolution."""
+        times = np.array([0.0, 1.0])
+        positions = np.array([[7e6, 0.0, 0.0], [7e6, 1e5, 0.0]])
+        start = np.array([1.0, 0.0, 0.0, 0.0])
+        history = SimulationHistory(
+            label="short way", times=times, positions=positions,
+            quaternions=np.stack([start, -start]),
+        )
+        midpoint = history.sample(0.5)["quaternion"]
+        assert abs(float(np.dot(midpoint, start))) == pytest.approx(1.0, abs=1e-9)
+
+    def test_validation_rejects_mismatched_and_non_monotone_input(self):
+        times = np.array([0.0, 1.0, 2.0])
+        good = np.zeros((3, 3))
+        with pytest.raises(ValueError, match="strictly increasing"):
+            SimulationHistory(label="x", times=np.array([0.0, 0.0, 1.0]), positions=good)
+        with pytest.raises(ValueError, match="positions must have shape"):
+            SimulationHistory(label="x", times=times, positions=np.zeros((2, 3)))
+        with pytest.raises(ValueError, match="quaternions must have shape"):
+            SimulationHistory(
+                label="x", times=times, positions=good, quaternions=np.zeros((3, 3))
+            )
+        with pytest.raises(ValueError, match="at least two samples"):
+            SimulationHistory(label="x", times=np.array([0.0]), positions=np.zeros((1, 3)))

@@ -1043,13 +1043,20 @@ class TestEarthRotationAndLeadTargeting:
             assert miss < 5.0e3, f"{trajectory.label} misses by {miss/1e3:.0f} km"
 
     def test_the_lead_a_fractional_profile_needs_is_not_a_correction(self):
-        """Over a 69-minute flight the Earth turns 17 degrees — about
-        1500 km. Aiming at the target's launch-time position is not
-        slightly wrong; it is a different continent."""
+        """Over a 73-minute flight the Earth turns 18 degrees — about
+        2000 km. Aiming at the target's launch-time position is not
+        slightly wrong; it is a different continent.
+
+        The figure was 17.3 degrees when the profile began in the parking
+        orbit. Adding the powered ascent lengthened the flight by about
+        four minutes and the lead grew with it, which is the correct
+        coupling: the lead is the Earth's rotation over the *whole* flight,
+        so any phase added to the profile moves it.
+        """
         trajectory = fobs_trajectory(self._LAUNCH, self._TARGET, earth_rotation=True)
         lead = self._OMEGA * trajectory.flight_time
-        assert np.rad2deg(lead) == pytest.approx(17.3, abs=1.0)
-        assert lead * WGS84_MEAN_RADIUS / 1e3 > 1000.0
+        assert np.rad2deg(lead) == pytest.approx(18.4, abs=1.0)
+        assert lead * WGS84_MEAN_RADIUS / 1e3 > 1500.0
 
     def test_ignoring_rotation_misses_by_the_lead_angle(self):
         """Quantifies what the correction is worth: laying the inertial
