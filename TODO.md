@@ -820,27 +820,83 @@ enough to say what they are worth and what the catch is.
 
 ### 9.7c FOBS, rigorously
 
+- [!] **Every warning figure before this entry was computed against a
+      network containing *both sides'* sensors.** Recorded first because it
+      corrupts every number below it.
+
+      `coverage` reduces a network to its **earliest** detection. That is
+      the right composition for warning — one site is enough to raise an
+      alarm — but it means the list has to belong to one side.
+      `EARLY_WARNING_SITES` is a *catalogue*: it carries Okno and
+      Krasnoyarsk, two Russian early-warning radars, alongside nineteen
+      western ones and one non-aligned South African site. Their own notes
+      said as much ("Included for geographic completeness, not as a US/NATO
+      system"); nothing enforced it.
+
+      For a Eurasian launch the consequence is concrete: three of four
+      profiles from Dombarovskiy were first "detected" by **Okno, 900 km
+      from the pad, at T+0.8 min**. For the reference package's Siberian
+      launch site, a few hundred kilometres from Krasnoyarsk, the
+      distortion was total — every profile was picked up on the way up and
+      appeared to concede its entire flight time.
+
+      The correction changes *which sensor sets the answer*, not merely the
+      number: minimum-energy ballistic goes 29.0 min / Okno → **27.3 min /
+      Globus II/III**, and the direct fractional profile 19.5 / Okno →
+      **15.6 / Globus II/III**. `RadarSite.coalition` now records the side,
+      `radar.network(...)` selects one, and `warning_comparison` defaults
+      to the defender rather than the union.
+
+- [!] **The reversed bearing buys no measurable warning, and costs a great
+      deal.** `fobs_trajectory(..., direction="short")` is the control the
+      comparison had been missing: the same parking altitude and the same
+      orbital-insertion energy, flown down the *minor* arc on the direct
+      bearing. Whatever it concedes is what altitude alone buys.
+
+      Against the 20-sensor defender network, mid-latitude Eurasian launch
+      to a US east-coast aimpoint:
+
+      | profile | warning | detecting sites | V_bo | flight |
+      | --- | --- | --- | --- | --- |
+      | fractional, direct | **15.6 min** | 1 | 7,818 m/s | 23.7 min |
+      | ballistic, depressed | 20.8 min | 8 | 7,176 m/s | 24.0 min |
+      | ballistic, minimum energy | 27.3 min | 9 | 6,986 m/s | 29.8 min |
+      | fractional, long way | 47.6 min | 2 | 7,818 m/s | 73.4 min |
+
+      Two things fall out. **The small detecting set comes from altitude,
+      not from the bearing** — the direct profile is seen by *fewer* sites
+      than the long way. And **the long way costs 32 minutes of warning**,
+      because warning runs from first detection and it flies three times as
+      long.
+
+      That does not make the concept pointless; it locates its value
+      somewhere this framework cannot currently reach. Arriving from an
+      azimuth the defence's interceptors and battle management are not
+      oriented along is a real claim, and it is *not* the same as radar
+      horizon, which is all that is modelled. Pricing it needs an
+      engagement model, not a geometry one.
+
 - [!] **The warning-time advantage inverted when the sensor network grew,
-      and one station is responsible.** Recorded at the top of this section
-      because it supersedes a headline result reported earlier in this
-      backlog.
+      and one station is responsible.** Recorded here because it supersedes
+      a headline result reported earlier in this backlog. Figures below are
+      restated against the defender network.
 
       Against the original **13-site** network the fractional profile
       removed ~24 minutes of warning. That network had **no
-      southern-hemisphere coverage**. With the network now at **22 sites**
-      including Exmouth and Cape Town, the same scenario gives the
-      fractional profile **47.6 min of warning against the ballistic arc's
-      29.0** — an 18.6-minute *penalty*, not an advantage.
+      southern-hemisphere coverage**. With the defender network now at
+      **20 sensors** including Exmouth and Cape Town, the same scenario
+      gives the fractional profile **47.6 min of warning against the
+      ballistic arc's 27.3** — a 20.2-minute *penalty*, not an advantage.
 
-      Isolated by ablation: dropping **Exmouth alone** restores 4.6 min and
-      the full +24.4-minute advantage exactly. Dropping Cape Town changes
+      Isolated by ablation: dropping **Exmouth alone** restores 3.5 min and
+      the full +23.8-minute advantage exactly. Dropping Cape Town changes
       nothing. Nothing else in the model differs.
 
       The mechanism separates two properties this analysis had been
       conflating. Warning is measured from *first* detection to impact, and
-      the fractional profile flies 69 min against 30:
+      the fractional profile flies 73 min against 30:
 
-      * **Azimuth denial holds decisively** — 2 detecting sites against 10.
+      * **Azimuth denial holds decisively** — 2 detecting sites against 9.
       * **Warning advantage does not** — one early detection means being
         tracked through three quarters of a much longer flight.
 
@@ -1084,7 +1140,7 @@ Recorded so the survey does not have to be repeated.
       budget evaluator, and `[launches]` entries reject top-level single-launch
       keys to prevent mixed-mode ambiguity.
 
-### 9.11 Visualization as a first-class consumer
+### 9.12 Visualization as a first-class consumer
 
 The animation layer is a *presentation* layer and is held to a lower bar
 than the physics kernels — no manufactured solutions, no independent
@@ -1111,27 +1167,94 @@ model reconstructed from sub-points and altitudes.
       from a rotation that was never computed is exactly the failure the
       object exists to prevent.
 
-- [ ] **Move the notebook helpers into `passes.viz.scene`.** `ecef`,
-      `track_points`, `draw_track`, `draw_marker` and the chase rig still
-      live in notebook cells, so any other analysis has to copy them. They
-      should be pure functions over a `SimulationHistory`.
-- [ ] **`TrajectoryAnimator` façade** — `frame_at(t)` and
-      `render_sequence(...)`, so a `FlightResult` becomes an animation in
-      two lines and the notebook body collapses to configuration.
-- [ ] **An oriented vehicle glyph.** The single largest fidelity gain
-      available: the history now carries a verified DCM and nothing draws
-      with it. Even a few dozen triangles would show attitude, angle of
-      attack and bank, none of which a point marker can.
-- [ ] **Sensor overlays driven by the coverage result** — radar horizons
-      and detection events rendered in 3D, lighting up the sites that
-      actually see the vehicle at each instant. This is what ties the
-      warning analysis to the picture.
-- [ ] **Thermal and ablation colouring** from `stagnation_heat_flux` and
-      `recession`, both already carried through the history and unused.
-- [ ] **Performance and output.** Pure vectorised NumPy at ~0.2 s per
-      1600x900 frame — fine offline, nowhere near interactive. No GPU path,
-      no static-geometry caching, and GIF-only export through
-      Matplotlib + Pillow rather than H.264.
+- [x] ~~**Move the notebook helpers into `passes.viz.scene`.**~~ **Done** —
+      [`scene.py`](src/passes/viz/scene.py). `geodetic_to_cartesian`,
+      `starfield`, `ease`, `draw_track`, `draw_marker`, `globe_plate` and
+      the chase rig are now pure functions over history samples and a
+      camera, and `notebooks/animation.ipynb` defines none of them.
+
+      Two of them changed meaning in the move, and both changes are fixes:
+
+      * `ChaseRig` takes its heading from the sampled **velocity**, not
+        from a finite difference over a fixed six-sample look-ahead. The
+        old form made the framing a function of the *sampling density* —
+        the same trajectory at 400 and 900 samples was shot differently.
+      * The trail is bounded in **seconds**, not in samples. A Keplerian
+        arc sampled in true anomaly bunches near apogee, so a
+        sample-counted trail changes physical length over a run.
+
+- [x] ~~**`TrajectoryAnimator` façade**~~ **Done** —
+      [`animator.py`](src/passes/viz/animator.py). `frame_at(t)` returns a
+      `Frame` carrying the *state and camera it drew from*, which is what
+      makes the layer testable: `tests/test_viz.py` asserts the vehicle
+      appears at the projection of the true state through the frame's own
+      camera, rather than asserting a picture was produced.
+
+      `render_sequence` lays frames on a uniform grid **in time**, whose
+      endpoints are the history's endpoints. The truncation that cut every
+      animation at 86 % of its flight is now impossible by construction
+      rather than by vigilance.
+
+- [x] ~~**An oriented vehicle glyph.**~~ **Done** — `glyph_world` places
+      body-frame polylines by the direction cosine matrix of the integrated
+      quaternion, and is a pure function so the orientation is checked
+      arithmetically (nose at `position + scale * C.T @ NOSE_AXIS`, and
+      every pairwise distance preserved under rotation) rather than by eye.
+
+      Two caveats stated at the call site. The glyph is **not to scale** —
+      a 15 m vehicle at a 500 km stand-off subtends 30 nrad, about
+      1/200 000 of a pixel, so a true-scale glyph is an empty frame. And
+      the present flight model integrates attitude torque-free while drag
+      acts along the relative velocity, so **attitude does not feed back
+      into the force**: the glyph shows the rotational state that was
+      integrated, not an angle of attack the trajectory responded to.
+
+- [x] ~~**Sensor overlays driven by the coverage result.**~~ **Done** —
+      `draw_sites` colours each site idle / detecting-now / has-detected
+      from the same `CoverageResult` that produced the warning number, and
+      `horizon_ring` draws the visibility circle at the **vehicle's**
+      radius rather than on the ground (a surface footprint is about three
+      times too small at 150 km, understating every sensor by exactly the
+      amount the fractional argument turns on). The animator refuses
+      coverage whose clock lies outside the history — the one way this
+      layer could show detections from a different flight.
+
+      This needed a small extension to the physics layer: `DetectionWindow`
+      gained `last_detection_time`, without which "detecting now" and "has
+      detected" are indistinguishable.
+
+- [x] ~~**Thermal and ablation colouring.**~~ **Done** — `color_by` names
+      an `extras` series and the trail is drawn as a `LineCollection`
+      through it, with a HUD read-out in units a reader can hold rather
+      than raw SI. A faithful sequential map is black at its low end, so a
+      cold trail over a night ocean was invisible; a backing stroke keeps
+      the geometry legible while the colour still carries the value, so
+      dark reads as *cold* rather than as *absent*.
+
+- [x] ~~**Performance and output.**~~ **Done.**
+
+      * **GPU path.** `render` takes the same `backend` argument as the
+        batched integrator, since every per-pixel expression already used
+        the array API NumPy and CuPy share. Measured **344 ms → 22 ms** for
+        a 1280x720 frame, agreeing with the CPU path to 1e-11 in a colour
+        channel and 2e-13 relative in depth. The texture is uploaded once
+        via `to_device`; `render` refuses a host texture on a device
+        backend rather than silently re-uploading 200 MB per frame.
+      * **Static-geometry caching.** The starfield is cached per frame size
+        and returned read-only, and the texture is loaded once per
+        animator.
+      * **H.264 export.** `video_writer` dispatches on the output
+        extension. Measured on the same 130-frame 1280x720 run: **1.13 MB
+        of MP4 against 14.4 MB of GIF**, and GIF's 256-colour palette bands
+        the terminator and limb glow that this renderer exists to draw.
+
+- [ ] **Interactive rates.** 22 ms of render plus ~150 ms of Matplotlib
+      per frame — the bottleneck is now the *overlay* path, not the ray
+      tracer. Drawing the overlays into the image buffer directly, rather
+      than through Matplotlib artists, is the next order of magnitude.
+- [ ] **A real vehicle mesh.** The glyph is a wireframe cone with fins
+      because the renderer has no self-occlusion. A shaded solid needs a
+      depth buffer for scene geometry, not only for the sphere.
 
 ---
 

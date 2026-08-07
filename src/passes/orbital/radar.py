@@ -57,6 +57,7 @@ from passes.orbital.warning import DetectionWindow, detection_window
 
 __all__ = [
     "BOOST_PHASE_THRESHOLD_K",
+    "COALITIONS",
     "EARLY_WARNING_SITES",
     "SATELLITE_SENSORS",
     "BoostPhaseDetection",
@@ -66,6 +67,7 @@ __all__ = [
     "SensorCapability",
     "boost_phase_sensing",
     "coverage",
+    "network",
     "site",
 ]
 
@@ -85,6 +87,17 @@ class RadarSite:
         this is a modelling choice, not a published figure.
     note:
         What the site is, in one line.
+    coalition:
+        Whose early-warning picture this sensor feeds — ``"western"``,
+        ``"russia"`` or ``"non-aligned"``.
+
+        This is not bookkeeping. :func:`coverage` reduces a network to the
+        time of its **earliest** detection, so running a trajectory past a
+        list that contains sensors on *both* sides answers a question
+        nobody asked: a Russian launch is "detected" within a minute by a
+        Russian radar a few hundred kilometres from the pad, and the
+        resulting figure is not warning to anyone. Use :func:`network` to
+        select a side before calling :func:`coverage`.
     """
 
     name: str
@@ -92,6 +105,7 @@ class RadarSite:
     mask_elevation: float = np.deg2rad(5.0)
     note: str = ""
     capability: SensorCapability | None = None
+    coalition: str = "western"
 
 
 @dataclass(frozen=True)
@@ -172,6 +186,7 @@ def _site(
     note: str,
     mask_deg: float = 5.0,
     capability: SensorCapability | None = None,
+    coalition: str = "western",
 ) -> RadarSite:
     return RadarSite(
         name=name,
@@ -181,6 +196,7 @@ def _site(
         mask_elevation=np.deg2rad(mask_deg),
         note=note,
         capability=capability,
+        coalition=coalition,
     )
 
 
@@ -368,13 +384,13 @@ EARLY_WARNING_SITES: tuple[RadarSite, ...] = (
               note="Indigenous South African long-range radar, covers the "
                    "South Atlantic. Not integrated into any western "
                    "early-warning network.",
-          )),
+          ), coalition="non-aligned"),
     # --- Additional NATO and partner systems ---
     _site("Okno (Zelenograd)", 55.9, 43.2,
           note="AN/TPY-2-style, Vladimir region. Russian early-warning radar at "
                "the Okno site, publicly documented. Included for geographic "
                "completeness, not as a US/NATO system.",
-          capability=_TPY2),
+          capability=_TPY2, coalition="russia"),
     _site("Krasnoyarsk", 56.3, 93.0,
           note="UNIFIED GAZEL radar, Siberia. Russian early-warning radar, part "
                "of the Integrated Aerospace Defence Forces network. "
@@ -383,8 +399,51 @@ EARLY_WARNING_SITES: tuple[RadarSite, ...] = (
               "UHF", 5.0, 28.0,
               max_unambiguous_range_km=3000,
               min_detectable_velocity_mps=0.5,
-          )),
+          ), coalition="russia"),
 )
+
+#: The coalitions represented in :data:`EARLY_WARNING_SITES`.
+COALITIONS: tuple[str, ...] = ("western", "russia", "non-aligned")
+
+
+def network(
+    *coalitions: str, sites: tuple[RadarSite, ...] = EARLY_WARNING_SITES
+) -> tuple[RadarSite, ...]:
+    """The subset of ``sites`` belonging to the named coalitions.
+
+    Warning time is only meaningful relative to *a defender*, because
+    :func:`coverage` reduces a network to its earliest detection. Running a
+    trajectory past the full catalogue mixes both sides and produces a
+    number that is not warning to anyone: a launch from Dombarovskiy is
+    picked up at T+0.8 min by Okno, 900 km away, and every profile then
+    looks like it concedes roughly its own flight time.
+
+    That is not a small correction. Against the full catalogue a
+    minimum-energy arc from Dombarovskiy to the US east coast appears to
+    concede 29.0 minutes, first seen by Okno; against the western network
+    alone it concedes 27.3, first seen by Globus II/III in northern Norway
+    — a different sensor, a different bearing, and a different answer to
+    which coverage gap matters. For a launch site closer to a Russian radar
+    the distortion is total: everything is detected on the pad.
+
+    Raises
+    ------
+    ValueError
+        If a name matches no site, since a silent empty network would make
+        every profile look undetectable.
+    """
+    wanted = set(coalitions)
+    unknown = wanted - set(COALITIONS)
+    if unknown:
+        msg = (
+            f"unknown coalition(s) {sorted(unknown)}; known: {', '.join(COALITIONS)}"
+        )
+        raise ValueError(msg)
+    selected = tuple(s for s in sites if s.coalition in wanted)
+    if not selected:
+        msg = f"no sites in coalition(s) {sorted(wanted)}"
+        raise ValueError(msg)
+    return selected
 
 
 #: Space-based IR sensors for boost-phase detection.

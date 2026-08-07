@@ -283,15 +283,42 @@ A package records only what was *chosen*. Nothing derivable from those choices i
 
 The trade for a mid-latitude Eurasian launch against a US east-coast aimpoint, **against the original 13-site network**: 24 minutes of warning removed, paid for with 37 minutes of flight time and 780 m/s of burnout speed, with seven detecting sites reduced to one.
 
-**That advantage does not survive a larger network, and one station is responsible.** The site list has since grown to 22 including Exmouth and Cape Town, and the same scenario now gives the fractional profile *more* warning than the ballistic arc — 47.6 min against 29.0. Dropping Exmouth alone restores the original answer exactly. The reason separates two things worth keeping apart: warning runs from *first* detection to impact, and the fractional profile flies 69 minutes against 30, so being seen by **few** sensors and being seen **late** are different properties and only the second buys warning. Azimuth denial survives intact (2 detecting sites against 10); the warning advantage does not. Any warning figure from this framework should be quoted with the network it was computed against.
+**That advantage does not survive a larger network, and one station is responsible.** The site list has since grown to 22 including Exmouth and Cape Town, and the same scenario now gives the fractional profile *more* warning than the ballistic arc — 47.6 min against 27.3. Dropping Exmouth alone restores the original answer exactly. The reason separates two things worth keeping apart: warning runs from *first* detection to impact, and the fractional profile flies 73 minutes against 30, so being seen by **few** sensors and being seen **late** are different properties and only the second buys warning. Azimuth denial survives intact (2 detecting sites against 9); the warning advantage does not. Any warning figure from this framework should be quoted with the network it was computed against.
 
-This is a **strategic-stability analysis** of the kind published openly in the arms-control literature: line-of-sight geometry only, with no power-aperture, cross-section, track-initiation or decision-latency model, so every warning figure is an upper bound. Radar mask elevations are assumed rather than published, which is why the notebook sweeps them. Boost-phase infrared detection — the largest omission, and one that cuts against the fractional profile — is not modelled at all.
+**Whose network, too — and that was wrong until recently.** `coverage` reduces a network to its *earliest* detection, which is the right composition for warning but means the list must belong to one side. `EARLY_WARNING_SITES` is a catalogue, and it carries two Russian early-warning radars alongside nineteen western ones; every earlier warning figure was computed against the union. For a Eurasian launch that meant three of four profiles were first "detected" by **Okno**, 900 km from the pad, at T+0.8 min. `RadarSite.coalition` now records the side, `radar.network(...)` selects one, and `warning_comparison` defaults to the defender. The correction changes which sensor sets the answer, not merely the number.
+
+**A direct fractional profile separates flying low from arriving backwards.** `fobs_trajectory(..., direction="short")` flies the same parking altitude and pays the same insertion energy down the *minor* arc, and it is the control the comparison had been missing. Against the defender network, for a mid-latitude Eurasian launch: the direct profile concedes **15.6 min** to 1 detecting site, the depressed ballistic arc 20.8 min to 8, the minimum-energy arc 27.3 min to 9, and the long way round 47.6 min to 2. So **the small detecting set comes from altitude, and the reversed bearing costs 32 minutes of warning rather than buying any.** Whatever a fractional profile is worth has to lie in something a horizon-geometry model does not price — arriving from an azimuth the defence is not oriented along, which is not the same thing as radar horizon.
+
+This is a **strategic-stability analysis** of the kind published openly in the arms-control literature: line-of-sight geometry only, with no power-aperture, cross-section, track-initiation or decision-latency model, so every warning figure is an upper bound. Radar mask elevations are assumed rather than published, which is why the notebook sweeps them. Boost-phase infrared detection — the largest omission, and one that cuts against both fractional profiles — is not modelled in the comparison.
 
 Run it with `jupyter lab notebooks/`, after `pip install -e .`.
 
-[`notebooks/animation.ipynb`](notebooks/animation.ipynb) renders the same comparison in three dimensions. The Earth is **ray-traced** by [`passes.viz.globe`](src/passes/viz/globe.py) rather than drawn with `plot_surface`: a camera ray is intersected with the sphere per output pixel and the texture sampled bilinearly, so sharpness is limited by the texture and the frame size and never by a mesh. It also returns a depth buffer, which makes occlusion a per-point test — the reason trajectories no longer appear in front of the planet they are behind. A 1600×900 frame takes about 0.2 s.
+### Visualisation as a consumer of the simulation state
 
-The camera is a pinhole with a position, a look-at target and a field of view, driven by a chase rig that rides behind and above the vehicle along its own velocity. The shading model (Lambertian terrain, soft terminator, atmospheric limb, ocean glint) exists so the geometry reads clearly and is calibrated against nothing.
+[`notebooks/animation.ipynb`](notebooks/animation.ipynb) renders the same comparison in three dimensions, and holds no trajectory model, camera arithmetic or drawing code of its own. It builds histories, hands them to a `TrajectoryAnimator`, and prints numbers.
+
+That structure is the point. The earlier version rebuilt the vehicle's position in a notebook cell from sub-satellite points and altitudes — a *second* trajectory model, fed by the real one and agreeing with it only by habit. Three defects found by watching the output were all of that kind, and invisible to every physics test because the physics did not know the animation existed: animations that stopped at 86 % of the flight (`frame * (len(samples) // n_frames)` truncates), a fractional profile that *began* at 150 km, and a chase camera 96 km underground at lift-off. A fourth was not a rendering defect at all — the HUD reading a constant 150 km exposed a **faked descent**, a linear ramp at 850 m/s vertical where the verified `deorbit_burn` in the same package gives 8.3 minutes over 33.7° of arc.
+
+[`passes.viz`](src/passes/viz/) is layered so each piece can be checked against something:
+
+| module | responsibility |
+| --- | --- |
+| [`history.py`](src/passes/viz/history.py) | `SimulationHistory`, the one authoritative run record. `from_flight_result` carries the full coupled state; `from_trajectory` the lighter orbital scenarios. |
+| [`globe.py`](src/passes/viz/globe.py) | Ray-traced sphere, projection, depth test. |
+| [`scene.py`](src/passes/viz/scene.py) | Pure drawing primitives over history samples: tracks, markers, the oriented vehicle glyph, sensor overlays, the chase rig. |
+| [`animator.py`](src/passes/viz/animator.py) | `TrajectoryAnimator.frame_at(t)` and `render_sequence(...)`. |
+
+The Earth is **ray-traced** rather than drawn with `plot_surface`: a camera ray is intersected with the sphere per output pixel and the texture sampled bilinearly, so sharpness is limited by the texture and the frame size, never by a mesh. A depth buffer makes occlusion a per-point test — the reason trajectories no longer appear in front of the planet they are behind.
+
+Properties that used to depend on care now hold by construction:
+
+- **Frames lie on a uniform grid in *time*,** whose endpoints are the history's endpoints. The 86 % truncation cannot recur.
+- **A scenario trajectory reports `has_attitude == False`** rather than substituting an identity quaternion, so the animator draws a bare marker. A coupled `FlightResult` carries a real quaternion, and `glyph_world` places the vehicle by its direction cosine matrix — checked arithmetically, not by eye. The glyph is *not* to scale, and says so: 15 m at 500 km stand-off is 1/200 000 of a pixel.
+- **Sensor markers are coloured from the same `CoverageResult` that produced the warning number,** and the animator refuses coverage whose clock lies outside the history.
+- **The GPU path is the same renderer.** `render(..., backend="cupy")` measures **344 ms → 22 ms** for a 1280×720 frame, agreeing with the CPU to 1e-11 in a colour channel.
+- **H.264 output** through `video_writer`: 1.13 MB against 14.4 MB of GIF for the same 130-frame run, and no 256-colour banding across the terminator.
+
+The shading model (Lambertian terrain, soft terminator, atmospheric limb, ocean glint) exists so the geometry reads clearly and is calibrated against nothing.
 
 ---
 

@@ -218,6 +218,17 @@ class FlightSimulator:
         return self._cfg
 
     @property
+    def gravity(self) -> GravityModel:
+        """The gravity model this simulator integrates against.
+
+        Exposed because anything reading a result needs the same body
+        radius the states were produced with — a visualisation that took
+        its radius from somewhere else would place the surface in a
+        different spot from the trajectory.
+        """
+        return self._gravity
+
+    @property
     def layout(self) -> StateLayout:
         return self._layout
 

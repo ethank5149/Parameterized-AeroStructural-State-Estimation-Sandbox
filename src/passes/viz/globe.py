@@ -43,15 +43,29 @@ radiometry:
 
 None of it is calibrated against anything. It is stated here so that nobody
 mistakes a pretty frame for a radiative-transfer result.
+
+Where it runs
+-------------
+
+Every per-pixel expression below is written against the array API that
+NumPy and CuPy share, so :func:`render` takes the same ``backend`` argument
+as the batched integrator in :mod:`passes.batch.backend` and runs on either
+device. The texture must already live on the requested backend — see
+:func:`to_device` — because re-uploading a 4096x2048 texture once per frame
+would cost more than the render it was meant to accelerate.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+
+from passes.batch.backend import Backend, get_array_module, to_numpy
 
 __all__ = [
     "DEFAULT_TEXTURE",
@@ -61,6 +75,7 @@ __all__ = [
     "project",
     "render",
     "sun_direction",
+    "to_device",
 ]
 
 _FloatArray = NDArray[np.float64]
@@ -109,6 +124,17 @@ def load_texture(path: str | Path = DEFAULT_TEXTURE) -> _FloatArray:
 
     with Image.open(location) as handle:
         return np.asarray(np.asarray(handle.convert("RGB"), dtype=np.float64) / 255.0)
+
+
+def to_device(texture: _FloatArray, backend: Backend = "numpy") -> Any:
+    """Place a texture on the requested backend, once.
+
+    Kept explicit rather than done inside :func:`render` because the upload
+    is the expensive part: a 4096x2048x3 float64 texture is 200 MB, and
+    moving it per frame would swamp the render it was meant to speed up.
+    Upload at set-up, keep the handle, pass it to every frame.
+    """
+    return get_array_module(backend).asarray(texture)
 
 
 @dataclass(frozen=True)
@@ -212,47 +238,52 @@ def sun_direction(hour_angle: float, declination: float = 0.0) -> _FloatArray:
     )
 
 
-def _sample(texture: _FloatArray, latitude: _FloatArray, longitude: _FloatArray) -> _FloatArray:
+def _sample(texture: Any, latitude: Any, longitude: Any, xp: ModuleType) -> Any:
     """Bilinear texture lookup, wrapping in longitude and clamping in latitude."""
     rows, cols = texture.shape[0], texture.shape[1]
     # Texture row 0 is +90 latitude; column 0 is -180 longitude.
     v = (0.5 - latitude / np.pi) * (rows - 1)
     u = ((longitude + np.pi) / (2.0 * np.pi)) * cols
 
-    v0 = np.clip(np.floor(v).astype(np.int64), 0, rows - 1)
-    v1 = np.clip(v0 + 1, 0, rows - 1)
-    u0 = np.mod(np.floor(u).astype(np.int64), cols)
-    u1 = np.mod(u0 + 1, cols)
+    v0 = xp.clip(xp.floor(v).astype(xp.int64), 0, rows - 1)
+    v1 = xp.clip(v0 + 1, 0, rows - 1)
+    u0 = xp.mod(xp.floor(u).astype(xp.int64), cols)
+    u1 = xp.mod(u0 + 1, cols)
     fv = (v - v0)[..., None]
-    fu = (u - np.floor(u))[..., None]
+    fu = (u - xp.floor(u))[..., None]
 
     top = texture[v0, u0] * (1.0 - fu) + texture[v0, u1] * fu
     bottom = texture[v1, u0] * (1.0 - fu) + texture[v1, u1] * fu
-    return np.asarray(top * (1.0 - fv) + bottom * fv)
+    return top * (1.0 - fv) + bottom * fv
 
 
-def _rays(camera: Camera) -> tuple[_FloatArray, _FloatArray]:
-    """Origin and per-pixel unit directions for the camera."""
+def _rays(camera: Camera, xp: ModuleType) -> tuple[_FloatArray, Any]:
+    """Origin and per-pixel unit directions for the camera.
+
+    The origin stays on the host — it is three numbers, and keeping it there
+    lets the ray-sphere coefficients be plain Python floats on either
+    backend.
+    """
     right, up, forward = camera.basis()
     aspect = camera.width / camera.height
     half_h = np.tan(0.5 * camera.fov)
     half_w = half_h * aspect
     # Pixel centres, y increasing downward so row 0 is the top of the image.
-    xs = np.linspace(-half_w, half_w, camera.width)
-    ys = np.linspace(half_h, -half_h, camera.height)
-    grid_x, grid_y = np.meshgrid(xs, ys)
+    xs = xp.linspace(-half_w, half_w, camera.width)
+    ys = xp.linspace(half_h, -half_h, camera.height)
+    grid_x, grid_y = xp.meshgrid(xs, ys)
     directions = (
-        forward[None, None, :]
-        + grid_x[..., None] * right[None, None, :]
-        + grid_y[..., None] * up[None, None, :]
+        xp.asarray(forward)[None, None, :]
+        + grid_x[..., None] * xp.asarray(right)[None, None, :]
+        + grid_y[..., None] * xp.asarray(up)[None, None, :]
     )
-    directions /= np.linalg.norm(directions, axis=-1, keepdims=True)
+    directions /= xp.linalg.norm(directions, axis=-1, keepdims=True)
     return np.asarray(camera.position, dtype=np.float64), directions
 
 
 def render(
     camera: Camera,
-    texture: _FloatArray,
+    texture: Any,
     radius: float,
     sun: _FloatArray | None = None,
     ambient: float = 0.12,
@@ -260,6 +291,7 @@ def render(
     night: float = 0.16,
     specular: float = 0.35,
     background: _FloatArray | None = None,
+    backend: Backend = "numpy",
 ) -> tuple[_FloatArray, _FloatArray]:
     """Render the globe, returning an RGB image and a depth buffer.
 
@@ -288,6 +320,11 @@ def render(
     background:
         RGB image of shape ``(height, width, 3)`` to composite the globe
         over. ``None`` gives a starfield-free dark background.
+    backend:
+        ``"numpy"`` or ``"cupy"``. On ``"cupy"`` the texture must already be
+        a device array from :func:`to_device`; the returned image and depth
+        buffer are brought back to the host, because their only consumers
+        are Matplotlib and the projection test, both of which are host-side.
 
     Returns
     -------
@@ -300,24 +337,32 @@ def render(
     if radius <= 0.0:
         msg = f"radius must be positive, got {radius}"
         raise ValueError(msg)
-    origin, directions = _rays(camera)
+    xp = get_array_module(backend)
+    if backend != "numpy" and isinstance(texture, np.ndarray):
+        msg = (
+            f"backend {backend!r} needs a device-resident texture; call "
+            "passes.viz.globe.to_device(texture, backend) once at set-up "
+            "rather than uploading 200 MB per frame"
+        )
+        raise TypeError(msg)
+    origin, directions = _rays(camera, xp)
 
     # Ray-sphere intersection about the origin: |o + t d|^2 = R^2.
-    b = 2.0 * np.einsum("ijk,k->ij", directions, origin)
+    b = 2.0 * xp.einsum("ijk,k->ij", directions, xp.asarray(origin))
     c = float(origin @ origin) - radius * radius
     discriminant = b * b - 4.0 * c
     hit = discriminant > 0.0
-    sqrt_disc = np.sqrt(np.where(hit, discriminant, 0.0))
+    sqrt_disc = xp.sqrt(xp.where(hit, discriminant, 0.0))
     t_near = 0.5 * (-b - sqrt_disc)
     hit &= t_near > 0.0
 
-    depth = np.where(hit, t_near, np.inf)
-    points = origin[None, None, :] + t_near[..., None] * directions
+    depth = xp.where(hit, t_near, np.inf)
+    points = xp.asarray(origin)[None, None, :] + t_near[..., None] * directions
     normals = points / radius
 
-    latitude = np.arcsin(np.clip(normals[..., 2], -1.0, 1.0))
-    longitude = np.arctan2(normals[..., 1], normals[..., 0])
-    albedo = _sample(texture, latitude, longitude)
+    latitude = xp.arcsin(xp.clip(normals[..., 2], -1.0, 1.0))
+    longitude = xp.arctan2(normals[..., 1], normals[..., 0])
+    albedo = _sample(texture, latitude, longitude, xp)
 
     light = (
         np.asarray(sun, dtype=np.float64)
@@ -325,44 +370,46 @@ def render(
         else -np.asarray(camera.basis()[2], dtype=np.float64)
     )
     light = light / float(np.linalg.norm(light))
-    cosine = np.einsum("ijk,k->ij", normals, light)
+    cosine = xp.einsum("ijk,k->ij", normals, xp.asarray(light))
 
     # Soft terminator: a hard step reads as an aliasing bug on a sphere.
-    day = np.clip(cosine, 0.0, 1.0) ** 0.75
-    twilight = np.clip((cosine + 0.12) / 0.24, 0.0, 1.0)
+    day = xp.clip(cosine, 0.0, 1.0) ** 0.75
+    twilight = xp.clip((cosine + 0.12) / 0.24, 0.0, 1.0)
     diffuse = (ambient + (1.0 - ambient) * day)[..., None]
 
     lit = albedo * diffuse
-    dark = albedo * night * np.array([0.55, 0.65, 1.0])
+    dark = albedo * night * xp.asarray([0.55, 0.65, 1.0])
     shaded = dark + (lit - dark) * twilight[..., None]
 
     if atmosphere > 0.0:
         view = -directions
-        grazing = 1.0 - np.clip(np.einsum("ijk,ijk->ij", normals, view), 0.0, 1.0)
-        rim = grazing**3 * np.clip(cosine + 0.25, 0.0, 1.0)
-        shaded = shaded + atmosphere * rim[..., None] * np.array([0.30, 0.52, 0.95])
+        grazing = 1.0 - xp.clip(xp.einsum("ijk,ijk->ij", normals, view), 0.0, 1.0)
+        rim = grazing**3 * xp.clip(cosine + 0.25, 0.0, 1.0)
+        shaded = shaded + atmosphere * rim[..., None] * xp.asarray([0.30, 0.52, 0.95])
 
     if specular > 0.0:
         # Biased toward dark texels so continents do not gleam.
-        halfway = light - directions
-        halfway /= np.linalg.norm(halfway, axis=-1, keepdims=True)
-        spec = np.clip(np.einsum("ijk,ijk->ij", normals, halfway), 0.0, 1.0) ** 48.0
-        ocean = np.clip(1.0 - albedo.mean(axis=-1) * 2.2, 0.0, 1.0)
-        shaded = shaded + (specular * spec * ocean * np.clip(cosine, 0.0, 1.0))[..., None]
+        halfway = xp.asarray(light) - directions
+        halfway /= xp.linalg.norm(halfway, axis=-1, keepdims=True)
+        spec = xp.clip(xp.einsum("ijk,ijk->ij", normals, halfway), 0.0, 1.0) ** 48.0
+        ocean = xp.clip(1.0 - albedo.mean(axis=-1) * 2.2, 0.0, 1.0)
+        shaded = shaded + (specular * spec * ocean * xp.clip(cosine, 0.0, 1.0))[..., None]
 
     if background is None:
-        image = np.zeros((camera.height, camera.width, 3), dtype=np.float64)
+        image = xp.zeros((camera.height, camera.width, 3), dtype=xp.float64)
     else:
-        image = np.array(background, dtype=np.float64)
-        if image.shape != (camera.height, camera.width, 3):
+        if background.shape != (camera.height, camera.width, 3):
             msg = (
                 f"background must have shape {(camera.height, camera.width, 3)}, "
-                f"got {image.shape}"
+                f"got {background.shape}"
             )
             raise ValueError(msg)
+        image = xp.asarray(background, dtype=xp.float64)
 
-    image = np.where(hit[..., None], np.clip(shaded, 0.0, 1.0), image)
-    return image, depth
+    image = xp.where(hit[..., None], xp.clip(shaded, 0.0, 1.0), image)
+    if backend == "numpy":
+        return np.asarray(image), np.asarray(depth)
+    return to_numpy(image), to_numpy(depth)
 
 
 def project(

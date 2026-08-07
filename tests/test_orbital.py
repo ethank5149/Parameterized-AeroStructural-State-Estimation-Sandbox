@@ -5,7 +5,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from passes.geodesy import WGS84_MEAN_RADIUS, GeodeticPosition, great_circle_range
+from passes.geodesy import (
+    WGS84_MEAN_RADIUS,
+    GeodeticPosition,
+    great_circle_bearing,
+    great_circle_range,
+)
 from passes.orbital import (
     EARTH,
     EARTH_ROTATION_RATE,
@@ -31,10 +36,12 @@ from passes.orbital import (
 )
 from passes.orbital.fobs import fractional_insertion
 from passes.orbital.radar import (
+    COALITIONS,
     EARLY_WARNING_SITES,
     SATELLITE_SENSORS,
     boost_phase_sensing,
     coverage,
+    network,
 )
 from passes.orbital.radar import site as radar_site
 from passes.orbital.scenario import (
@@ -1292,3 +1299,181 @@ class TestFobsBoostPhase:
     def test_rejects_a_negative_boost_duration(self):
         with pytest.raises(ValueError, match="boost_duration"):
             fobs_trajectory(self._LAUNCH, self._TARGET, boost_duration=-1.0)
+
+
+class TestDirectFractionalProfile:
+    """The control that separates flying *low* from arriving *backwards*.
+
+    The fractional concept bundles two claims — that a low parking altitude
+    denies horizon, and that the reversed approach bearing denies azimuth
+    coverage — and one warning number for the pair cannot say which does the
+    work. ``direction="short"`` flies the same altitude down the minor arc,
+    so the difference from the long way is attributable to the bearing
+    alone.
+    """
+
+    _LAUNCH = GeodeticPosition.from_degrees(51.0, 59.0, 120.0, "launch")
+    _TARGET = GeodeticPosition.from_degrees(38.87, -77.06, 24.0, "target")
+
+    def _profiles(self, samples=700):
+        return (
+            fobs_trajectory(self._LAUNCH, self._TARGET, samples=samples),
+            fobs_trajectory(
+                self._LAUNCH, self._TARGET, samples=samples, direction="short"
+            ),
+        )
+
+    def test_the_direct_profile_takes_the_minor_arc(self):
+        long_way, direct = self._profiles()
+        arc = float(great_circle_range(self._LAUNCH, self._TARGET) / WGS84_MEAN_RADIUS)
+        # Both carry the same Earth-rotation lead, so neither is exactly the
+        # static separation; the direct one is near it and the long one is
+        # near its complement.
+        assert direct.range_angle == pytest.approx(arc, rel=0.05)
+        assert long_way.range_angle == pytest.approx(2.0 * np.pi - arc, rel=0.05)
+        assert direct.range_angle < np.pi < long_way.range_angle
+
+    def test_the_direct_profile_leaves_on_the_bearing_of_the_target(self):
+        """The defining difference. The long way departs on the reversed
+        bearing, which is what puts the approach over the far hemisphere.
+
+        Checked without Earth rotation so the comparison is exact: with
+        rotation on, the profile is aimed at a lead point some 6 degrees
+        east and the track itself is carried west, and neither offset is
+        what this test is about.
+        """
+        bearing = float(great_circle_bearing(self._LAUNCH, self._TARGET))
+        for way, expected in (("short", bearing), ("long", bearing + np.pi)):
+            trajectory = fobs_trajectory(
+                self._LAUNCH, self._TARGET, samples=200,
+                direction=way, earth_rotation=False,
+            )
+            flown = float(great_circle_bearing(self._LAUNCH, trajectory.subpoints[3]))
+            error = abs(float((flown - expected + np.pi) % (2 * np.pi) - np.pi))
+            assert error < 1e-6, f"{way} way departed {np.rad2deg(error):.2f} deg off"
+
+    def test_the_direct_profile_closes_on_the_target_from_the_start(self):
+        """The same statement with rotation left on, where an exact bearing
+        is not meaningful: the direct profile's range to the target falls
+        immediately, the long way's rises for most of the flight."""
+        long_way, direct = self._profiles(samples=300)
+        for trajectory, closing in ((direct, True), (long_way, False)):
+            ranges = np.array([
+                great_circle_range(p, self._TARGET) for p in trajectory.subpoints[:40]
+            ])
+            assert bool(ranges[-1] < ranges[0]) is closing
+
+    def test_both_share_the_altitude_and_therefore_the_energy(self):
+        """A direct fractional profile is not a cheap option: it still pays
+        full orbital insertion and buys no bearing advantage for it."""
+        long_way, direct = self._profiles()
+        assert direct.burnout_speed == pytest.approx(long_way.burnout_speed, rel=1e-12)
+        assert direct.apogee == pytest.approx(long_way.apogee, rel=1e-9)
+
+    def test_the_direct_profile_is_much_shorter_in_time(self):
+        long_way, direct = self._profiles()
+        assert direct.flight_time < 0.4 * long_way.flight_time
+
+    def test_it_still_starts_and_ends_at_the_ground(self):
+        _, direct = self._profiles()
+        assert direct.altitudes[0] == pytest.approx(0.0, abs=1.0)
+        assert direct.altitudes[-1] == pytest.approx(0.0, abs=1.0)
+        assert np.all(np.diff(direct.times) > 0.0)
+
+    def test_the_label_distinguishes_it(self):
+        long_way, direct = self._profiles(samples=200)
+        assert long_way.label != direct.label
+        assert "direct" in direct.label
+
+    def test_a_range_too_short_to_hold_the_conic_is_refused(self):
+        """The minor arc has to contain a boost and a 60-degree deorbit
+        conic. On the long way there are five radians to spend and this
+        never binds; on the short way it does, and a profile that descends
+        before it finishes ascending is worse than an error."""
+        with pytest.raises(ValueError, match="cannot contain"):
+            fobs_trajectory(
+                GeodeticPosition.from_degrees(51.0, 59.0),
+                GeodeticPosition.from_degrees(52.0, 62.0),
+                direction="short",
+            )
+
+    def test_an_unknown_direction_is_refused(self):
+        with pytest.raises(ValueError, match="'long' or 'short'"):
+            fobs_trajectory(self._LAUNCH, self._TARGET, direction="sideways")
+
+    def test_low_altitude_alone_already_denies_most_of_the_network(self):
+        """The finding this control exists to expose. Against the 22-site
+        network the *direct* low profile is seen by as few sites as the long
+        way round — so the small detecting set comes from altitude, not from
+        the reversed bearing. The long way then concedes far more warning,
+        because warning runs from first detection and it flies three times
+        as long."""
+        long_way, direct = self._profiles(samples=800)
+        sites = tuple(EARLY_WARNING_SITES)
+        long_cover = coverage(
+            long_way.times, long_way.altitudes, long_way.subpoints, sites
+        )
+        direct_cover = coverage(
+            direct.times, direct.altitudes, direct.subpoints, sites
+        )
+        assert len(direct_cover.detecting_sites) <= len(long_cover.detecting_sites)
+        assert direct_cover.warning_time < 0.6 * long_cover.warning_time
+
+
+class TestCoalitionNetworks:
+    """Warning is only meaningful relative to a defender.
+
+    :func:`coverage` reduces a network to its *earliest* detection, so
+    running a trajectory past a catalogue containing sensors on both sides
+    answers a question nobody asked. This was a real defect in the notebook
+    figures: three of four profiles launched from Dombarovskiy were first
+    "detected" by Okno, a Russian radar 900 km from the pad.
+    """
+
+    def test_every_site_declares_a_known_coalition(self):
+        assert {s.coalition for s in EARLY_WARNING_SITES} <= set(COALITIONS)
+
+    def test_the_russian_sites_are_not_in_the_western_network(self):
+        western = {s.name for s in network("western")}
+        assert "Okno (Zelenograd)" not in western
+        assert "Krasnoyarsk" not in western
+        assert "Fylingdales" in western
+
+    def test_cape_town_is_neither(self):
+        """Its own note says it is not integrated into any western
+        early-warning network, and nothing enforced that until now."""
+        assert radar_site("Cape Town").coalition == "non-aligned"
+        assert "Cape Town" not in {s.name for s in network("western")}
+        assert "Cape Town" in {s.name for s in network("western", "non-aligned")}
+
+    def test_selecting_several_coalitions_unions_them(self):
+        both = network("western", "russia")
+        assert len(both) == len(network("western")) + len(network("russia"))
+
+    def test_an_unknown_or_empty_coalition_is_refused(self):
+        """A silent empty network would make every profile look
+        undetectable, which is the most dangerous wrong answer available."""
+        with pytest.raises(ValueError, match="unknown coalition"):
+            network("nato")
+        with pytest.raises(ValueError, match="no sites in coalition"):
+            network("russia", sites=network("western"))
+
+    def test_the_launchers_own_radar_changes_who_detects_first(self):
+        """The defect, quantified. Including the launching side's sensors
+        does not merely add a row — it changes which sensor sets the
+        warning, and therefore which coverage gap the analysis is about."""
+        launch = GeodeticPosition.from_degrees(51.0, 59.0, 120.0, "launch")
+        target = GeodeticPosition.from_degrees(38.87, -77.06, 24.0, "target")
+        trajectory = ballistic_trajectory(launch, target, samples=600)
+
+        everything = coverage(
+            trajectory.times, trajectory.altitudes, trajectory.subpoints,
+            tuple(EARLY_WARNING_SITES),
+        )
+        defender = coverage(
+            trajectory.times, trajectory.altitudes, trajectory.subpoints,
+            network("western", "non-aligned"),
+        )
+        assert everything.first_detecting_site == "Okno (Zelenograd)"
+        assert defender.first_detecting_site != everything.first_detecting_site
+        assert defender.warning_time < everything.warning_time

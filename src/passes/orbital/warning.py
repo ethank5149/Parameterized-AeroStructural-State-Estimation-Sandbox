@@ -166,6 +166,13 @@ class DetectionWindow:
         separately from the warning time: a profile can be detected early
         and then lost behind the horizon again, which a single warning
         number hides.
+    last_detection_time:
+        Time of the **last** sample above the mask (s); ``nan`` when never
+        detected. With ``first_detection_time`` this bounds the interval
+        the site contributes anything over, which ``visible_fraction``
+        summarises but does not locate. Note the pair spans any gaps: a
+        trajectory that sets and rises again is bracketed, not split, and
+        ``visible_fraction`` is what reveals the difference.
     """
 
     detected: bool
@@ -173,6 +180,7 @@ class DetectionWindow:
     warning_time: float
     first_detection_altitude: float
     visible_fraction: float
+    last_detection_time: float = float("nan")
 
 
 def detection_window(
@@ -225,11 +233,13 @@ def detection_window(
     fraction = float(np.count_nonzero(visible) / visible.size)
     if not np.any(visible):
         return DetectionWindow(False, float("nan"), float("nan"), float("nan"), 0.0)
-    first = int(np.argmax(visible))
+    seen = np.flatnonzero(visible)
+    first, last = int(seen[0]), int(seen[-1])
     return DetectionWindow(
         detected=True,
         first_detection_time=float(t[first]),
         warning_time=float(t[-1] - t[first]),
         first_detection_altitude=float(h[first]),
         visible_fraction=fraction,
+        last_detection_time=float(t[last]),
     )

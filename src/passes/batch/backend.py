@@ -22,11 +22,25 @@ Backend = Literal["numpy", "cupy"]
 
 
 def cuda_available() -> bool:
-    """True if CuPy imports and a CUDA device answers."""
+    """True if CuPy imports, a device answers, **and a kernel actually runs**.
+
+    The last clause is not paranoia. A machine can have a driver and a
+    visible GPU while CuPy still cannot compile anything, because its JIT
+    needs CUDA toolkit *headers* that ship separately from the driver:
+    ``getDeviceCount()`` returns 1 and the first elementwise operation then
+    raises ``Failed to find CUDA headers``. Reporting availability from the
+    device count alone therefore hands callers a backend that fails on
+    first use, which is worse than reporting it unavailable.
+
+    A one-element reduction is enough to force a kernel launch, and it
+    costs a few milliseconds once.
+    """
     try:
         import cupy
 
-        return bool(cupy.cuda.runtime.getDeviceCount() > 0)
+        if cupy.cuda.runtime.getDeviceCount() < 1:
+            return False
+        return bool(float(cupy.asarray([1.0, 2.0]).sum()) == 3.0)
     except Exception:
         return False
 

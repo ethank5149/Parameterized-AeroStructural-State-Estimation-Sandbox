@@ -54,6 +54,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -70,7 +71,7 @@ from passes.guidance.lofting import (
     optimum_burnout_angle,
 )
 from passes.orbital.fobs import EARTH_ROTATION_RATE
-from passes.orbital.radar import EARLY_WARNING_SITES, CoverageResult, RadarSite, coverage
+from passes.orbital.radar import CoverageResult, RadarSite, coverage, network
 
 __all__ = [
     "Trajectory",
@@ -316,6 +317,7 @@ def fobs_trajectory(
     perigee_radius: float | None = None,
     boost_duration: float = 300.0,
     boost_range: float = 400.0e3,
+    direction: Literal["long", "short"] = "long",
 ) -> Trajectory:
     """A fractional orbital profile taking the long way round.
 
@@ -328,6 +330,28 @@ def fobs_trajectory(
     ----------
     parking_altitude:
         Constant altitude of the parking arc (m).
+    direction:
+        Which way round the great circle to fly.
+
+        ``"long"`` is the fractional orbital concept: the major arc
+        :math:`2\\pi-\\theta`, arriving on the reversed bearing.
+
+        ``"short"`` flies the same low parking altitude down the **minor**
+        arc :math:`\\theta`, on the direct bearing, and exists as a control.
+        The fractional concept bundles two separate claims — that flying
+        *low* denies horizon, and that arriving from the *opposite* bearing
+        denies azimuth coverage — and quoting one warning number for the
+        pair makes it impossible to say which is doing the work. A direct
+        low profile isolates the first: same altitude, same sensor network,
+        same aimpoint, ordinary approach geometry. Whatever warning it
+        concedes is what altitude alone buys, and the difference from the
+        long way is what the reversed approach buys.
+
+        It is also the right comparison against a depressed ballistic arc,
+        which is the other way of trading energy for a low, fast flight down
+        the same minor arc. Note it is **not** a cheap option: a direct
+        profile still pays full orbital insertion, so it costs the same
+        burnout speed as the long way while giving up the reversed bearing.
     entry_altitude:
         Altitude at which the descent is taken to reach the atmosphere; the
         last part of the profile drops from parking to this and then to the
@@ -371,19 +395,30 @@ def fobs_trajectory(
         msg = f"boost_duration must be finite and >= 0, got {boost_duration}"
         raise ValueError(msg)
 
+    if direction not in ("long", "short"):
+        msg = f"direction must be 'long' or 'short', got {direction!r}"
+        raise ValueError(msg)
+    long_way = direction == "long"
+
+    def _arc(aim: GeodeticPosition) -> float:
+        minor = great_circle_range(launch, aim) / body_radius
+        return float(2.0 * np.pi - minor if long_way else minor)
+
     def elapsed_for(aim: GeodeticPosition) -> float:
-        arc = 2.0 * np.pi - great_circle_range(launch, aim) / body_radius
-        return float(boost_duration + (arc - boost_arc) * radius / speed)
+        return float(boost_duration + (_arc(aim) - boost_arc) * radius / speed)
 
     if earth_rotation:
         aimpoint, _ = leading_aimpoint(launch, target, elapsed_for)
     else:
         aimpoint = target
-    theta = 2.0 * np.pi - great_circle_range(launch, aimpoint) / body_radius
+    theta = _arc(aimpoint)
 
-    # Away from the aim point: reversed bearing, so the approach arrives
-    # from the opposite side. This is the defining geometry of the profile.
-    bearing = float((great_circle_bearing(launch, aimpoint) + np.pi) % (2.0 * np.pi))
+    # Away from the aim point on the long way: reversed bearing, so the
+    # approach arrives from the opposite side. That is the defining geometry
+    # of the fractional profile, and taking the minor arc instead is exactly
+    # what the "short" control gives up.
+    heading = float(great_circle_bearing(launch, aimpoint))
+    bearing = float((heading + np.pi) % (2.0 * np.pi)) if long_way else heading
     swept = np.linspace(0.0, theta, samples)
     inertial = [great_circle_point(launch, bearing, float(s)) for s in swept]
 
@@ -446,6 +481,20 @@ def fobs_trajectory(
     impact_anomaly = 2.0 * np.pi - float(np.arccos(cos_impact))
     descent_arc = impact_anomaly - np.pi  # apogee sits at nu = pi
 
+    # On the long way there are 4-5 radians to spend and this never binds.
+    # On the minor arc it can: the deorbit conic needs some 60 degrees, the
+    # boost a few more, and a short-range shot simply has nowhere to put a
+    # parking phase. Refusing is right — the alternative is a profile that
+    # is descending before it has finished ascending.
+    if theta <= boost_arc + descent_arc:
+        msg = (
+            f"a {direction}-way fractional profile over {np.rad2deg(theta):.1f} deg "
+            f"of arc cannot contain a {np.rad2deg(boost_arc):.1f} deg boost and a "
+            f"{np.rad2deg(descent_arc):.1f} deg deorbit conic; raise perigee_radius, "
+            "shorten the boost, or use a ballistic profile at this range"
+        )
+        raise ValueError(msg)
+
     altitudes = np.full(samples, parking_altitude, dtype=np.float64)
     if np.any(ascending):
         # Rises quickly and flattens toward insertion, which is the shape a
@@ -478,7 +527,7 @@ def fobs_trajectory(
         elapsed[descending] = start + offsets - offsets[0]
 
     return Trajectory(
-        label="fractional-orbital",
+        label="fractional-orbital" if long_way else "fractional-orbital (direct)",
         times=np.asarray(elapsed, dtype=np.float64),
         altitudes=altitudes,
         subpoints=subpoints,
@@ -519,12 +568,32 @@ def warning_comparison(
     target: GeodeticPosition,
     flight_path_angle: float | None = None,
     parking_altitude: float = 150.0e3,
-    sites: tuple[RadarSite, ...] = EARLY_WARNING_SITES,
+    sites: tuple[RadarSite, ...] | None = None,
     samples: int = 400,
     body_radius: float = WGS84_MEAN_RADIUS,
     earth_rotation: bool = True,
 ) -> WarningComparison:
-    """Fly both profiles between the same points, past the same sensors."""
+    """Fly both profiles between the same points, past the same sensors.
+
+    Parameters
+    ----------
+    sites:
+        Sensor network. Defaults to
+        ``network("western", "non-aligned")`` rather than the whole of
+        :data:`~passes.orbital.radar.EARLY_WARNING_SITES`, and the
+        distinction is not cosmetic: the catalogue contains sensors on
+        **both** sides, and :func:`~passes.orbital.radar.coverage` reduces a
+        network to its *earliest* detection. Passing the full catalogue for
+        a Russian launch therefore reports a Russian radar seeing its own
+        missile a minute after lift-off, which is not warning to anybody.
+
+        Pass an explicit tuple to model a different defender — including
+        the full catalogue, if a bilateral picture is genuinely what is
+        wanted.
+    """
+    network_sites = (
+        network("western", "non-aligned") if sites is None else tuple(sites)
+    )
     ballistic = ballistic_trajectory(
         launch, target, flight_path_angle, samples, body_radius, earth_rotation
     )
@@ -540,9 +609,10 @@ def warning_comparison(
         ballistic=ballistic,
         fobs=fobs,
         ballistic_coverage=coverage(
-            ballistic.times, ballistic.altitudes, ballistic.subpoints, sites, body_radius
+            ballistic.times, ballistic.altitudes, ballistic.subpoints,
+            network_sites, body_radius,
         ),
         fobs_coverage=coverage(
-            fobs.times, fobs.altitudes, fobs.subpoints, sites, body_radius
+            fobs.times, fobs.altitudes, fobs.subpoints, network_sites, body_radius
         ),
     )

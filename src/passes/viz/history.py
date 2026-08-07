@@ -186,6 +186,47 @@ class SimulationHistory:
                 )
         return state
 
+    def between(self, start: float, stop: float) -> SimulationHistory:
+        """A new history covering ``[start, stop]`` seconds.
+
+        Two uses, both real. A terminal-phase animation wants the last
+        minutes at their own pace rather than as four frames of a whole
+        flight. And the coupled simulator has no ground-stop event — it
+        integrates through the surface and keeps going, reaching 14 km
+        *below* it in 200 s — so an honest animation of an entry has to be
+        cut at impact rather than shown burrowing.
+
+        Endpoints are included by interpolation, so the result starts and
+        ends exactly where asked rather than at the nearest stored sample.
+        """
+        lo = float(np.clip(start, self.times[0], self.times[-1]))
+        hi = float(np.clip(stop, self.times[0], self.times[-1]))
+        if not hi > lo:
+            msg = f"need stop > start within the recorded span, got {start} to {stop}"
+            raise ValueError(msg)
+        interior = (self.times > lo) & (self.times < hi)
+        states = [self.sample(lo), *(self.sample(float(t)) for t in self.times[interior]),
+                  self.sample(hi)]
+        extras = (
+            {name: np.array([s[name] for s in states]) for name in self.extras}
+            if self.extras
+            else None
+        )
+        return SimulationHistory(
+            label=self.label,
+            times=np.array([s["time"] for s in states]),
+            positions=np.stack([s["position"] for s in states]),
+            velocities=(
+                None if self.velocities is None
+                else np.stack([s["velocity"] for s in states])
+            ),
+            quaternions=(
+                None if self.quaternions is None
+                else np.stack([s["quaternion"] for s in states])
+            ),
+            extras=extras,
+        )
+
     # -- producers -------------------------------------------------------
 
     @classmethod
