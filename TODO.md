@@ -820,9 +820,67 @@ enough to say what they are worth and what the catch is.
 
 ### 9.7c FOBS, rigorously
 
+- [!] **The fractional profile's altitude was the one quantity in it that
+      no dynamics produced.** The parking arc was flown at a *constant*
+      altitude — a prescription, not an orbit — and the boost that reached
+      it was a stated ramp of altitude against arc. Both are now solved.
+
+      The boost is a **gravity turn**: speed grows as
+      :math:`v_{bo}\\tau`, the flight-path angle pitches over from vertical
+      as :math:`\\gamma_{bo} + (\\pi/2-\\gamma_{bo})(1-\\tau)^{2.5}`, and
+      altitude and downrange are integrals of it. What it replaced was not
+      merely unrealistic but **internally inconsistent**: the ramp's own
+      shape implied a burnout speed of **2,666 m/s** where the profile it
+      fed needed 7,830 — a factor of three — and it left the pad at a
+      flight-path angle of **37 degrees**. Neither error touched a warning
+      number, because altitude and ground track were being *told* what to
+      be, which is exactly the failure mode this whole section exists to
+      catch.
+
+      The three boost parameters are not independent, and the model now
+      says so: at a fixed burnout speed the path length is fixed by the
+      speed law, and only its split between up and downrange is free. So
+      **downrange is derived**, not assumed — 662 km for a 180 s burn to
+      orbital speed, which is the right order for an ICBM-class boost — and
+      the burnout angle falls out at 2-4 degrees, which is the check that
+      the boost and the parking arc describe the same vehicle. A burn too
+      long for the parking altitude is refused rather than returned as a
+      climb that is not one.
+
+      The parking arc is now an **ellipse**, 170 x 250 km by default, timed
+      by Kepler. Altitude varies over the arc as it must; the previous flat
+      150 km was both arbitrary and unphysical. 170 km sits in the band open
+      sources quote for the R-36O, and the notebook sweeps it from 120 to
+      500 km rather than resting on the number.
+
+- [!] **A fractional profile necessarily enters an order of magnitude
+      shallower than a ballistic one**, and this is a cost the concept is
+      rarely charged for. The deorbit burn is now a real
+      :math:`\\Delta v` — 182 m/s, computed from the *vector* difference
+      between the parking ellipse's velocity at the burn point and the
+      descent conic's apogee velocity, so the radial component is not
+      dropped — and the entry flight-path angle falls out of the descent
+      conic:
+
+      | profile | entry angle | descent ground track |
+      | --- | --- | --- |
+      | fractional, long way | **-2.5 deg** | 8,159 km |
+      | fractional, direct | **-1.7 deg** | ~8,000 km |
+      | ballistic, depressed | -12.6 deg | — |
+      | ballistic, minimum energy | -24.5 deg | — |
+
+      Deorbiting from orbital speed cannot buy a steep entry without
+      removing kilometres per second, so the descent conic spans a quarter
+      of the planet and **the vehicle is committed 13.6 minutes and 8,000 km
+      before impact**. That bounds how much surprise a parking arc can buy,
+      and it implies a long, shallow, high-heat-load entry the ballistic
+      RV does not fly. Neither consequence is priced here — accuracy and
+      terminal vulnerability need an engagement model — but the geometry
+      forcing them is now explicit rather than absent.
+
 - [!] **Every warning figure before this entry was computed against a
-      network containing *both sides'* sensors.** Recorded first because it
-      corrupts every number below it.
+      network containing *both sides'* sensors.** Recorded because it
+      corrupted every number below it.
 
       `coverage` reduces a network to its **earliest** detection. That is
       the right composition for warning — one site is enough to raise an
@@ -842,10 +900,13 @@ enough to say what they are worth and what the catch is.
 
       The correction changes *which sensor sets the answer*, not merely the
       number: minimum-energy ballistic goes 29.0 min / Okno → **27.3 min /
-      Globus II/III**, and the direct fractional profile 19.5 / Okno →
-      **15.6 / Globus II/III**. `RadarSite.coalition` now records the side,
+      Globus II/III**, and the direct fractional profile 19.1 / Okno →
+      **16.0 / Globus II/III**. `RadarSite.coalition` now records the side,
       `radar.network(...)` selects one, and `warning_comparison` defaults
-      to the defender rather than the union.
+      to `network("western")` — the only network these analyses are about.
+      Cape Town is excluded with the Russian pair: its own entry records
+      that it is not integrated into any western early-warning network, so
+      its returns are not on this picture either.
 
 - [!] **The reversed bearing buys no measurable warning, and costs a great
       deal.** `fobs_trajectory(..., direction="short")` is the control the
@@ -858,14 +919,14 @@ enough to say what they are worth and what the catch is.
 
       | profile | warning | detecting sites | V_bo | flight |
       | --- | --- | --- | --- | --- |
-      | fractional, direct | **15.6 min** | 1 | 7,818 m/s | 23.7 min |
+      | fractional, direct | **16.0 min** | 1 | 7,830 m/s | 21.2 min |
       | ballistic, depressed | 20.8 min | 8 | 7,176 m/s | 24.0 min |
       | ballistic, minimum energy | 27.3 min | 9 | 6,986 m/s | 29.8 min |
-      | fractional, long way | 47.6 min | 2 | 7,818 m/s | 73.4 min |
+      | fractional, long way | 49.7 min | 2 | 7,830 m/s | 71.8 min |
 
       Two things fall out. **The small detecting set comes from altitude,
       not from the bearing** — the direct profile is seen by *fewer* sites
-      than the long way. And **the long way costs 32 minutes of warning**,
+      than the long way. And **the long way costs 34 minutes of warning**,
       because warning runs from first detection and it flies three times as
       long.
 

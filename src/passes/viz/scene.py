@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from matplotlib.patches import Rectangle
 from numpy.typing import NDArray
 
 from passes.batch.backend import Backend
@@ -64,11 +65,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "NOSE_AXIS",
+    "PHASE_COLORS",
     "ChaseRig",
     "SceneStyle",
     "draw_horizon_ring",
     "draw_marker",
     "draw_sites",
+    "draw_timeline",
     "draw_track",
     "draw_vehicle",
     "ease",
@@ -82,6 +85,17 @@ __all__ = [
 ]
 
 _FloatArray = NDArray[np.float64]
+
+#: Colours for the declared flight phases. Named rather than positional so
+#: the same leg keeps its colour across profiles of different structure.
+PHASE_COLORS: dict[str, str] = {
+    "boost": "#FF6B35",
+    "ascent": "#FF6B35",
+    "parking coast": "#4CC9F0",
+    "deorbit coast": "#B388FF",
+    "descent": "#B388FF",
+    "entry": "#FF3B30",
+}
 
 #: Body-frame nose direction assumed by the vehicle glyph. The flight model
 #: is torque-free with drag along the relative velocity, so no force term
@@ -737,3 +751,70 @@ def draw_horizon_ring(
         zorder=zorder,
         body_radius=body_radius,
     )
+
+
+def draw_timeline(
+    ax: Axes,
+    phases: Sequence[Any],
+    events: Sequence[Any],
+    time: float,
+    duration: float,
+    left: float = 0.06,
+    right: float = 0.94,
+    bottom: float = 0.055,
+    height: float = 0.022,
+    style: SceneStyle | None = None,
+) -> None:
+    """A phase strip with event ticks and a playhead, in axes fractions.
+
+    This exists because of a specific complaint about the animations, and
+    it is a fair one: a chase camera at orbital altitude shows the ground
+    scrolling and little else, so a viewer cannot tell a parking coast from
+    a deorbit coast, or judge how much flight is left. A HUD clock answers
+    "when"; it does not answer "where in the plan".
+
+    The strip is **linear in flight time**, deliberately, even when the
+    frames themselves are not. Phase-paced playback stretches the short,
+    eventful legs, and a timeline that stretched with it would hide exactly
+    the distortion it is there to make legible: the playhead visibly
+    crawling through the parking coast and sprinting through entry is the
+    honest picture of what the pacing is doing.
+    """
+    palette = style or SceneStyle()
+    if duration <= 0.0:
+        return
+    span = right - left
+
+    ax.add_patch(
+        Rectangle((left, bottom), span, height, transform=ax.transAxes,
+                  facecolor="#FFFFFF", alpha=0.10, edgecolor="none", zorder=9)
+    )
+    for phase in phases:
+        start = left + span * float(np.clip(phase.start_time / duration, 0.0, 1.0))
+        width = span * float(np.clip(phase.duration / duration, 0.0, 1.0))
+        if width <= 0.0:
+            continue
+        colour = PHASE_COLORS.get(phase.name, palette.track)
+        ax.add_patch(
+            Rectangle((start, bottom), width, height, transform=ax.transAxes,
+                      facecolor=colour, alpha=0.75, edgecolor="none", zorder=10)
+        )
+        if width > 0.07:
+            ax.text(start + 0.5 * width, bottom + 0.5 * height, phase.name,
+                    transform=ax.transAxes, color="black", fontsize=8,
+                    ha="center", va="center", zorder=12, weight="bold")
+
+    for event in events:
+        x = left + span * float(np.clip(event.time / duration, 0.0, 1.0))
+        ax.plot([x, x], [bottom + height, bottom + height + 0.012],
+                transform=ax.transAxes, color="white", linewidth=1.0,
+                alpha=0.8, zorder=11)
+
+    playhead = left + span * float(np.clip(time / duration, 0.0, 1.0))
+    ax.plot([playhead, playhead], [bottom - 0.008, bottom + height + 0.008],
+            transform=ax.transAxes, color="white", linewidth=2.0, zorder=13)
+    ax.text(left, bottom - 0.028, "T+0", transform=ax.transAxes, color="#BFD9FF",
+            fontsize=8, ha="left", va="top", family="monospace", zorder=12)
+    ax.text(right, bottom - 0.028, f"T+{duration / 60:.0f} min", transform=ax.transAxes,
+            color="#BFD9FF", fontsize=8, ha="right", va="top",
+            family="monospace", zorder=12)

@@ -84,6 +84,7 @@ __all__ = [
     "fobs_trajectory",
     "great_circle_point",
     "leading_aimpoint",
+    "max_boost_duration",
     "warning_comparison",
 ]
 
@@ -272,6 +273,31 @@ class AscentProfile:
     @property
     def duration(self) -> float:
         return float(self.times[-1])
+
+
+def max_boost_duration(
+    burnout_altitude: float,
+    burnout_speed: float,
+    pitch_exponent: float = 2.5,
+    samples: int = 512,
+) -> float:
+    """Longest burn that still ends *ascending* at the requested altitude.
+
+    A real coupling rather than a numerical nuisance: at a fixed burnout
+    speed the path length grows with the burn, so a low parking orbit and a
+    long burn are not compatible — the vehicle would have to be descending
+    when the engines stop. Insert at 120 km and the ceiling is about 165 s;
+    at 250 km it is well past any sensible burn.
+
+    Exposed because a parking-altitude sweep needs it. The alternative is
+    catching the exception :func:`ascent_profile` raises, which works but
+    hides the trade the sweep exists to show.
+    """
+    tau = np.linspace(0.0, 1.0, int(samples))
+    gamma = 0.5 * np.pi * (1.0 - tau) ** pitch_exponent
+    integrand = tau * np.sin(gamma)
+    climb = float(np.sum(0.5 * (integrand[1:] + integrand[:-1]) * np.diff(tau)))
+    return float(burnout_altitude / (burnout_speed * climb))
 
 
 def ascent_profile(
@@ -559,7 +585,7 @@ def fobs_trajectory(
     body_radius: float = WGS84_MEAN_RADIUS,
     earth_rotation: bool = True,
     perigee_radius: float | None = None,
-    boost_duration: float = 180.0,
+    boost_duration: float | None = 180.0,
     direction: Literal["long", "short"] = "long",
 ) -> Trajectory:
     """A fractional orbital profile taking the long way round.
@@ -678,6 +704,14 @@ def fobs_trajectory(
         )
         raise ValueError(msg)
 
+    if boost_duration is None:
+        # A stated policy, not a silent repair: take the longest burn the
+        # requested parking altitude can accept, with 10 % of margin, and
+        # cap it at the nominal 180 s. Used by sweeps over parking
+        # altitude, where a fixed burn is infeasible at the low end.
+        boost_duration = min(
+            180.0, 0.9 * max_boost_duration(parking_altitude, speed)
+        )
     if not (np.isfinite(boost_duration) and boost_duration > 0.0):
         msg = f"boost_duration must be finite and > 0, got {boost_duration}"
         raise ValueError(msg)

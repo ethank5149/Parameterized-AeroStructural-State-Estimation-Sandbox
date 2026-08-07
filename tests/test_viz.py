@@ -852,3 +852,131 @@ class TestHistoryWindow:
         window = history.between(-500.0, 5000.0)
         assert float(window.times[0]) == pytest.approx(float(history.times[0]))
         assert float(window.times[-1]) == pytest.approx(float(history.times[-1]))
+
+
+class TestPacing:
+    """Frames spent where something happens.
+
+    Uniform pacing is defensible and unwatchable on a fractional orbital
+    profile: 4 % boost, 71 % parking coast, 25 % descent, so at 130 frames
+    the whole powered ascent got 5 and the parking coast got 92 of a scene
+    in which nothing visibly changes.
+    """
+
+    @staticmethod
+    def _history():
+        from passes.geodesy import GeodeticPosition
+        from passes.orbital.scenario import fobs_trajectory
+
+        trajectory = fobs_trajectory(
+            GeodeticPosition.from_degrees(51.0, 59.0, 120.0, "launch"),
+            GeodeticPosition.from_degrees(38.87, -77.06, 24.0, "target"),
+            samples=400,
+        )
+        return SimulationHistory.from_trajectory(trajectory, _R)
+
+    def _animator(self, **kwargs):
+        return TrajectoryAnimator(
+            self._history(), texture=_checker(64, 128), width=64, height=64, **kwargs
+        )
+
+    def test_both_pacings_span_the_whole_history_exactly(self):
+        """Whatever the pacing does in between, it may not lose either end
+        — that was the defect the time grid exists to prevent."""
+        history = self._history()
+        for pacing in ("uniform", "phase"):
+            grid = self._animator(pacing=pacing).times(120)
+            assert grid.size == 120
+            assert float(grid[0]) == float(history.times[0])
+            assert float(grid[-1]) == float(history.times[-1])
+            assert np.all(np.diff(grid) > 0.0), f"{pacing} grid must be monotone"
+
+    def test_phase_pacing_gives_the_short_legs_more_frames(self):
+        history = self._history()
+        boost = next(p for p in history.phases if p.name == "boost")
+
+        def frames_in_boost(pacing):
+            grid = self._animator(pacing=pacing).times(130)
+            return int(np.count_nonzero(grid <= boost.end_time))
+
+        # Measured on the reference profile at 130 frames: 6 -> 17.
+        assert frames_in_boost("phase") > 2.5 * frames_in_boost("uniform")
+
+    def test_phase_pacing_still_leaves_the_long_leg_dominant(self):
+        """Compressing the coast is the point; deleting it is not. The
+        parking arc is most of the flight and should still read that way."""
+        history = self._history()
+        coast = next(p for p in history.phases if p.name == "parking coast")
+        grid = self._animator(pacing="phase").times(130)
+        inside = np.count_nonzero((grid >= coast.start_time) & (grid <= coast.end_time))
+        assert 0.25 < inside / grid.size < 0.75
+
+    def test_every_phase_gets_at_least_one_frame(self):
+        grid = self._animator(pacing="phase").times(40)
+        for phase in self._history().phases:
+            covered = np.count_nonzero(
+                (grid >= phase.start_time) & (grid <= phase.end_time)
+            )
+            assert covered >= 1, f"{phase.name} was skipped entirely"
+
+    def test_the_reported_playback_rate_matches_the_pacing(self):
+        """The HUD states the rate because phase pacing makes it
+        deliberately non-constant; a viewer who cannot see the rate cannot
+        tell a long coast from a fast one."""
+        animator = self._animator(pacing="phase")
+        history = self._history()
+        boost = next(p for p in history.phases if p.name == "boost")
+        coast = next(p for p in history.phases if p.name == "parking coast")
+        during_boost = animator.playback_rate(0.5 * boost.end_time, 130, 20)
+        during_coast = animator.playback_rate(
+            0.5 * (coast.start_time + coast.end_time), 130, 20
+        )
+        # Measured: x214 through boost against x1,015 through the coast.
+        assert during_coast > 4.0 * during_boost
+
+        uniform = self._animator(pacing="uniform")
+        flat = [uniform.playback_rate(t, 130, 20) for t in (10.0, 2000.0, 4000.0)]
+        assert max(flat) == pytest.approx(min(flat), rel=1e-12)
+
+    def test_an_unknown_pacing_is_refused(self):
+        with pytest.raises(ValueError, match="pacing must be"):
+            self._animator(pacing="dramatic")
+
+    def test_a_history_without_phases_falls_back_to_uniform(self):
+        plain = SimulationHistory(
+            label="bare",
+            times=np.linspace(0.0, 100.0, 20),
+            positions=np.stack(
+                [np.full(20, _R + 1e5), np.linspace(0.0, 1e6, 20), np.zeros(20)], axis=1
+            ),
+        )
+        animator = TrajectoryAnimator(
+            plain, texture=_checker(64, 128), width=64, height=64, pacing="phase"
+        )
+        assert np.allclose(animator.times(11), np.linspace(0.0, 100.0, 11))
+
+    def test_the_frame_reports_the_phase_it_was_drawn_in(self):
+        animator = self._animator(pacing="phase")
+        history = self._history()
+        boost = next(p for p in history.phases if p.name == "boost")
+        assert animator.frame_at(0.5 * boost.end_time).state["phase"] == "boost"
+        coast = next(p for p in history.phases if p.name == "parking coast")
+        mid = 0.5 * (coast.start_time + coast.end_time)
+        assert animator.frame_at(mid).state["phase"] == "parking coast"
+
+    def test_the_timeline_draws_one_block_per_phase(self):
+        """A chase camera at orbital altitude shows scrolling ground and
+        little else, so the strip is what tells a viewer where in the plan
+        they are."""
+        from matplotlib.patches import Rectangle
+
+        frame = self._animator(pacing="phase", timeline=True).frame_at(2000.0)
+        blocks = [p for p in frame.axes.patches if isinstance(p, Rectangle)]
+        # one background track plus one block per phase
+        assert len(blocks) == len(self._history().phases) + 1
+
+    def test_the_timeline_can_be_turned_off(self):
+        from matplotlib.patches import Rectangle
+
+        frame = self._animator(timeline=False).frame_at(2000.0)
+        assert not [p for p in frame.axes.patches if isinstance(p, Rectangle)]

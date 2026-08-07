@@ -1,5 +1,6 @@
 """Orbital mechanics and the coast phase (Paper II, §7)."""
 
+import itertools
 from pathlib import Path
 
 import numpy as np
@@ -49,6 +50,7 @@ from passes.orbital.scenario import (
     ballistic_trajectory,
     fobs_trajectory,
     leading_aimpoint,
+    max_boost_duration,
     warning_comparison,
 )
 from passes.orbital.warning import (
@@ -1357,7 +1359,7 @@ class TestFobsBoostPhase:
         """At a fixed burnout speed a longer burn covers more path, so a low
         parking altitude eventually demands the vehicle be *descending* when
         the engines stop. Refusing beats returning a climb that is not one."""
-        with pytest.raises(ValueError, match="still\\s+ascending"):
+        with pytest.raises(ValueError, match=r"still\s+ascending"):
             fobs_trajectory(
                 self._LAUNCH, self._TARGET, parking_altitude=150e3,
                 boost_duration=600.0, samples=200,
@@ -1658,7 +1660,7 @@ class TestPhasesAndEvents:
             assert phases, f"{trajectory.label} declares no phases"
             assert phases[0].start_time == pytest.approx(0.0, abs=1e-9)
             assert phases[-1].end_time == pytest.approx(trajectory.flight_time, rel=1e-9)
-            for earlier, later in zip(phases, phases[1:], strict=False):
+            for earlier, later in itertools.pairwise(phases):
                 assert later.start_time == pytest.approx(earlier.end_time, rel=1e-12)
                 assert earlier.duration > 0.0
 
@@ -1745,3 +1747,63 @@ class TestPhasesAndEvents:
                 )
                 miss = great_circle_range(trajectory.subpoints[-1], self._TARGET)
                 assert miss < 1.0, f"{direction} at {samples} samples missed {miss:.1f} m"
+
+
+class TestBoostFeasibility:
+    """A low parking orbit and a long burn are not compatible.
+
+    At a fixed burnout speed the boost path length grows with the burn, so
+    putting only a little of it into altitude eventually requires the
+    vehicle to be *descending* when the engines stop. That is a real
+    coupling between two parameters that used to be independent because the
+    ascent was prescribed rather than solved.
+    """
+
+    _LAUNCH = GeodeticPosition.from_degrees(51.0, 59.0, 120.0, "launch")
+    _TARGET = GeodeticPosition.from_degrees(38.87, -77.06, 24.0, "target")
+
+    def test_the_ceiling_rises_with_the_parking_altitude(self):
+        speed = 7830.0
+        ceilings = [max_boost_duration(h, speed) for h in (120e3, 170e3, 250e3)]
+        assert ceilings == sorted(ceilings)
+        assert 150.0 < ceilings[0] < 185.0
+
+    def test_the_ceiling_is_exactly_where_ascent_profile_gives_up(self):
+        """The two must agree, or a sweep that trusts the ceiling still
+        raises."""
+        speed, altitude = 7830.0, 150e3
+        ceiling = max_boost_duration(altitude, speed)
+        ascent_profile(altitude, speed, 0.999 * ceiling)
+        with pytest.raises(ValueError, match="still ascending"):
+            ascent_profile(altitude, speed, 1.01 * ceiling)
+
+    def test_at_the_ceiling_the_burnout_angle_goes_to_zero(self):
+        speed, altitude = 7830.0, 150e3
+        profile = ascent_profile(altitude, speed, 0.999 * max_boost_duration(altitude, speed))
+        assert 0.0 <= np.rad2deg(profile.burnout_angle) < 0.5
+
+    def test_boost_duration_none_picks_a_feasible_burn(self):
+        """The policy a parking-altitude sweep needs, stated rather than
+        applied silently: the longest burn the altitude accepts, with
+        margin, capped at the nominal 180 s."""
+        low = fobs_trajectory(
+            self._LAUNCH, self._TARGET, parking_altitude=120e3,
+            boost_duration=None, samples=300,
+        )
+        high = fobs_trajectory(
+            self._LAUNCH, self._TARGET, parking_altitude=300e3,
+            boost_duration=None, samples=300,
+        )
+        low_insertion = next(e.time for e in low.events if e.name == "insertion")
+        high_insertion = next(e.time for e in high.events if e.name == "insertion")
+        assert low_insertion < 180.0, "a 120 km insertion cannot take the full 180 s"
+        assert high_insertion == pytest.approx(180.0), "and 300 km is capped at nominal"
+
+    def test_a_fixed_boost_that_is_infeasible_still_raises(self):
+        """`None` is opt-in. A caller who names a burn gets told when it
+        cannot be flown rather than quietly given a different one."""
+        with pytest.raises(ValueError, match="still ascending"):
+            fobs_trajectory(
+                self._LAUNCH, self._TARGET, parking_altitude=120e3,
+                boost_duration=180.0, samples=200,
+            )

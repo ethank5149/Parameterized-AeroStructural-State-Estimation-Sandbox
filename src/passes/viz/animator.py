@@ -58,11 +58,13 @@ from passes.geodesy import WGS84_MEAN_RADIUS
 from passes.viz.globe import Camera, load_texture, project, render, to_device
 from passes.viz.history import SimulationHistory
 from passes.viz.scene import (
+    PHASE_COLORS,
     ChaseRig,
     SceneStyle,
     draw_horizon_ring,
     draw_marker,
     draw_sites,
+    draw_timeline,
     draw_track,
     draw_vehicle,
     starfield,
@@ -200,10 +202,28 @@ class TrajectoryAnimator:
     markers:
         Fixed world points to draw, as ``{label: (position, kwargs)}``.
     sun:
-        Sun direction for the shading, or ``None`` to light from the camera.
-        ``None`` is usually right for a chase: a launch site and an aimpoint
-        half a globe apart cannot both be in daylight, so a true subsolar
-        point plays the last minutes of the run in the dark.
+        Explicit light direction in the body frame. Overrides ``lighting``.
+    lighting:
+        How the globe is lit, and all three options are stated cheats
+        because the honest one does not work for a chase.
+
+        ``"sun"`` needs an explicit ``sun`` and is physically right, but a
+        launch site and an aimpoint half a globe apart cannot both be in
+        daylight, so a true subsolar point plays the last minutes of the run
+        in the dark. The static plates use it, where the terminator can be
+        seen properly.
+
+        ``"camera"`` lights from the eye, which removes the terminator — and
+        removes most of the picture with it. A chase camera looks roughly
+        *along* the surface, so the ground it can see is at grazing
+        incidence to a light coming from behind the lens, and the frame
+        comes out nearly black.
+
+        ``"track"`` is the default: the light follows the vehicle's own
+        local vertical, so the ground directly beneath it is always fully
+        lit and stays lit as the vehicle moves. It is not a real sun and
+        does not pretend to be one; it is a key light on the thing being
+        filmed.
     color_by:
         Name of an ``extras`` series to colour the trail by. Ignored with a
         stated warning if the history does not carry it, rather than
@@ -228,14 +248,18 @@ class TrajectoryAnimator:
         coverage: CoverageResult | None = None,
         markers: Mapping[str, tuple[_FloatArray, Mapping[str, Any]]] | None = None,
         sun: _FloatArray | None = None,
+        lighting: str = "track",
         color_by: str | None = None,
         trail_seconds: float | None = None,
         width: int = 1280,
         height: int = 720,
-        ambient: float = 0.30,
+        ambient: float = 0.22,
         atmosphere: float = 0.55,
         specular: float = 0.06,
         horizon_rings: bool = True,
+        timeline: bool = True,
+        pacing: str = "phase",
+        pacing_exponent: float = 0.45,
         backend: Backend = "numpy",
     ) -> None:
         if width < 2 or height < 2:
@@ -249,9 +273,23 @@ class TrajectoryAnimator:
         self.coverage = coverage
         self.markers = dict(markers or {})
         self.sun = None if sun is None else np.asarray(sun, dtype=np.float64)
+        if lighting not in ("track", "camera", "sun"):
+            msg = f"lighting must be 'track', 'camera' or 'sun', got {lighting!r}"
+            raise ValueError(msg)
+        if lighting == "sun" and sun is None:
+            msg = "lighting='sun' needs an explicit sun direction"
+            raise ValueError(msg)
+        self.lighting = lighting
         self.width, self.height = int(width), int(height)
         self.ambient, self.atmosphere, self.specular = ambient, atmosphere, specular
         self.horizon_rings = horizon_rings
+        self.timeline = timeline
+        if pacing not in ("phase", "uniform"):
+            msg = f"pacing must be 'phase' or 'uniform', got {pacing!r}"
+            raise ValueError(msg)
+        self.pacing = pacing
+        self.pacing_exponent = float(pacing_exponent)
+        self._playback: tuple[int, int] | None = None
         self.backend: Backend = backend
 
         # to_device is a no-op when the texture already lives on the
@@ -321,11 +359,22 @@ class TrajectoryAnimator:
         ax.clear()
         ax.axis("off")
 
+        # A key light on the vehicle rather than a sun on the planet: see
+        # the `lighting` parameter for why a chase cannot use either of the
+        # honest alternatives.
+        if self.sun is not None:
+            light = self.sun
+        elif self.lighting == "track":
+            position = np.asarray(state["position"], dtype=np.float64)
+            light = position / max(float(np.linalg.norm(position)), 1e-12)
+        else:
+            light = None
+
         image, _ = render(
             camera,
             self._texture,
             self.body_radius,
-            sun=self.sun,
+            sun=light,
             ambient=self.ambient,
             atmosphere=self.atmosphere,
             specular=self.specular,
@@ -340,6 +389,11 @@ class TrajectoryAnimator:
         self._draw_vehicle(ax, camera, state)
         self._draw_overlays(ax, camera, state, t)
         self._draw_hud(ax, state, t)
+        if self.timeline and history.phases:
+            draw_timeline(
+                ax, history.phases, history.events, t - history.times[0],
+                history.duration, style=self.style,
+            )
         return Frame(t, state, camera, ax, self.body_radius)
 
     def _draw_paths(self, ax: Axes, camera: Camera, t: float) -> None:
@@ -419,17 +473,48 @@ class TrajectoryAnimator:
                 ax, point, camera, body_radius=self.body_radius, **dict(kwargs)
             )
 
+        # Where each declared event happens, in the world. Past events are
+        # solid and the next one hollow, so the picture answers "what just
+        # happened" and "what is coming" without reading the HUD.
+        for event in self.history.events:
+            if event.name in ("lift-off", "impact"):
+                continue
+            past = event.time <= t
+            draw_marker(
+                ax, self.history.sample(event.time)["position"], camera,
+                body_radius=self.body_radius, s=70, marker="D",
+                c="#FFD166" if past else "none",
+                edgecolors="#FFD166", linewidths=1.4, zorder=6,
+            )
+
     def _draw_hud(self, ax: Axes, state: Mapping[str, Any], t: float) -> None:
         history, style = self.history, self.style
         altitude = float(np.linalg.norm(state["position"])) - self.body_radius
         speed = float(np.linalg.norm(state["velocity"]))
-        lines = [
+        phase = history.phase_at(t)
+        lines: list[tuple[str, str, int, str]] = [
             (history.label, style.track, 16, "bold"),
+        ]
+        if phase:
+            lines.append((phase.upper(), PHASE_COLORS.get(phase, style.track), 13, "bold"))
+        lines += [
             (f"T+{t / 60:6.1f} min", style.text, 14, "normal"),
             (f"altitude {altitude / 1e3:7.1f} km", "#BFD9FF", 12, "normal"),
             (f"speed    {speed / 1e3:7.2f} km/s", "#BFD9FF", 12, "normal"),
             (f"to end   {(history.times[-1] - t) / 60:6.1f} min", "#FFB4A8", 12, "normal"),
         ]
+        upcoming = history.next_event(t)
+        if upcoming is not None:
+            lines.append((
+                f"next {upcoming.name} in {(upcoming.time - t) / 60:4.1f} min",
+                "#FFD166", 11, "normal",
+            ))
+        if self._playback is not None:
+            n_frames, fps = self._playback
+            lines.append((
+                f"playback x{self.playback_rate(t, n_frames, fps):,.0f} real time",
+                "#9AA7B2", 10, "normal",
+            ))
         if self.color_by is not None and self.color_by in state:
             lines.append((_format_extra(self.color_by, state[self.color_by]),
                           "#FFD166", 12, "normal"))
@@ -453,18 +538,61 @@ class TrajectoryAnimator:
     # -- a sequence ------------------------------------------------------
 
     def times(self, n_frames: int) -> _FloatArray:
-        """The uniform time grid a sequence of ``n_frames`` is drawn on.
+        """The time grid a sequence of ``n_frames`` is drawn on.
 
         Exposed so a caller — or a test — can check the endpoints without
         rendering anything. They are the history's own endpoints, which is
         the property the index-strided version failed to have.
+
+        With ``pacing="phase"`` the grid is **piecewise** uniform in time:
+        each declared phase gets a share of the frames set by
+        ``duration ** pacing_exponent`` rather than by duration alone.
+        Uniform pacing is defensible and unwatchable here — a fractional
+        orbital profile is 4 % boost, 71 % parking coast and 25 % descent,
+        so at 130 frames the entire powered ascent got 5 of them and the
+        parking coast got 92 of a scene in which nothing visibly changes.
+        The exponent compresses the long quiet leg without deleting it: at
+        0.45 the same run gives boost 17, parking 63, deorbit 32, entry 18.
+
+        Implemented as a piecewise-linear warp sampled uniformly, which
+        makes the endpoints exact and the grid strictly increasing by
+        construction rather than by rounding frame counts and hoping.
         """
         if n_frames < 2:
             msg = f"need at least two frames, got {n_frames}"
             raise ValueError(msg)
-        return np.linspace(
-            float(self.history.times[0]), float(self.history.times[-1]), int(n_frames)
-        )
+        start, stop = float(self.history.times[0]), float(self.history.times[-1])
+        phases = self.history.phases
+        if self.pacing == "uniform" or not phases:
+            return np.linspace(start, stop, int(n_frames))
+
+        weights = np.array([max(p.duration, 0.0) ** self.pacing_exponent for p in phases])
+        total = float(weights.sum())
+        if total <= 0.0:  # pragma: no cover - a zero-length flight
+            return np.linspace(start, stop, int(n_frames))
+        edges_u = np.concatenate([[0.0], np.cumsum(weights / total)])
+        edges_t = np.array([p.start_time for p in phases] + [phases[-1].end_time])
+        grid = np.interp(np.linspace(0.0, 1.0, int(n_frames)), edges_u, edges_t)
+        grid[0], grid[-1] = start, stop
+        return np.asarray(grid)
+
+    def playback_rate(self, time: float, n_frames: int, fps: int) -> float:
+        """Multiple of real time the frame at ``time`` plays back at.
+
+        Reported in the HUD because phase pacing deliberately makes it
+        non-constant, and a viewer who cannot see the rate cannot tell a
+        long coast from a fast one.
+        """
+        phases = self.history.phases
+        video = n_frames / max(fps, 1)
+        if self.pacing == "uniform" or not phases:
+            return float(self.history.duration / video)
+        weights = np.array([max(p.duration, 0.0) ** self.pacing_exponent for p in phases])
+        share = weights / float(weights.sum())
+        for phase, fraction in zip(phases, share, strict=True):
+            if phase.contains(time):
+                return float(phase.duration / max(fraction * video, 1e-9))
+        return float(self.history.duration / video)
 
     def render_sequence(
         self,
@@ -500,6 +628,7 @@ class TrajectoryAnimator:
             raise ValueError(msg)
 
         grid = self.times(n_frames)
+        self._playback = (int(n_frames), int(fps))
         fig = plt.figure(figsize=(self.width / 100, self.height / 100), dpi=100)
         fig.patch.set_facecolor("black")
         ax = fig.add_axes((0.0, 0.0, 1.0, 1.0))
