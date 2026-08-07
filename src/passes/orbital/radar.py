@@ -94,10 +94,17 @@ class RadarSite:
         This is not bookkeeping. :func:`coverage` reduces a network to the
         time of its **earliest** detection, so running a trajectory past a
         list that contains sensors on *both* sides answers a question
-        nobody asked: a Russian launch is "detected" within a minute by a
+        nobody asked: a Eurasian launch is "detected" within a minute by a
         Russian radar a few hundred kilometres from the pad, and the
-        resulting figure is not warning to anyone. Use :func:`network` to
-        select a side before calling :func:`coverage`.
+        resulting figure is not warning to anyone.
+
+        **Only ``"western"`` sensors belong in a warning analysis here.**
+        The others are catalogued for geographic reference — the Russian
+        pair because leaving a documented radar out of a coverage map is
+        its own distortion, Cape Town because its own note records that it
+        is not integrated into any western network. Neither would be
+        accessible to a US/NATO warning picture, so neither should set a
+        warning time. :func:`network` is how you say which you mean.
     """
 
     name: str
@@ -416,7 +423,8 @@ def network(
     trajectory past the full catalogue mixes both sides and produces a
     number that is not warning to anyone: a launch from Dombarovskiy is
     picked up at T+0.8 min by Okno, 900 km away, and every profile then
-    looks like it concedes roughly its own flight time.
+    looks like it concedes roughly its own flight time. For a US/NATO
+    warning picture the argument is ``network("western")``.
 
     That is not a small correction. Against the full catalogue a
     minimum-energy arc from Dombarovskiy to the US east coast appears to

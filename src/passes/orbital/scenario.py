@@ -74,8 +74,12 @@ from passes.orbital.fobs import EARTH_ROTATION_RATE
 from passes.orbital.radar import CoverageResult, RadarSite, coverage, network
 
 __all__ = [
+    "AscentProfile",
+    "Event",
+    "Phase",
     "Trajectory",
     "WarningComparison",
+    "ascent_profile",
     "ballistic_trajectory",
     "fobs_trajectory",
     "great_circle_point",
@@ -85,6 +89,11 @@ __all__ = [
 
 _FloatArray = NDArray[np.float64]
 _MU = 3.986004418e14
+
+#: Conventional entry interface (m). Not a physical boundary — the
+#: atmosphere has no edge — but the altitude at which aerodynamic
+#: deceleration starts to matter, and the one every entry text uses.
+_ENTRY_INTERFACE = 100.0e3
 
 
 def great_circle_point(
@@ -176,6 +185,188 @@ def leading_aimpoint(
 
 
 @dataclass(frozen=True)
+class Phase:
+    """A named stretch of a flight, with the clock it occupies.
+
+    Carried on the trajectory rather than reconstructed downstream. A
+    renderer that inferred "this must be the parking arc because the
+    altitude stopped changing" would be guessing at something the producer
+    knows exactly, and would guess wrong for a lofted ballistic arc whose
+    altitude also flattens near apogee.
+    """
+
+    name: str
+    start_time: float
+    end_time: float
+    note: str = ""
+
+    @property
+    def duration(self) -> float:
+        return float(self.end_time - self.start_time)
+
+    def contains(self, time: float) -> bool:
+        return bool(self.start_time <= time <= self.end_time)
+
+
+@dataclass(frozen=True)
+class Event:
+    """An instant worth marking: burnout, a burn, an interface crossing."""
+
+    name: str
+    time: float
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class AscentProfile:
+    """The boost leg, as a self-consistent gravity turn.
+
+    Parameterised by the two quantities that are actually known — how long
+    the vehicle burns, and how fast it has to be going at the end — with
+    **downrange derived** rather than assumed. The three cannot be chosen
+    independently: a vehicle accelerating to :math:`v_{bo}` over
+    :math:`t_{bo}` covers a path length fixed by the speed law, and only
+    the split of that path between up and downrange is free.
+
+    That is what the previous stated ramp got wrong, and badly. It
+    prescribed altitude against *arc* and time against the square root of
+    arc, with downrange a free parameter; the shape it produced implied a
+    burnout speed of **2,666 m/s** where the profile it fed needed 7,818 —
+    a factor of three — and it left the pad at a flight-path angle of
+    **37 degrees** instead of going up. Neither error was visible in any
+    warning number, because warning depends on altitude and ground track
+    and both of those were being *told* what to be.
+
+    The model here is kinematic, not propulsive: speed grows as
+    :math:`v_{bo}\\tau` and the flight-path angle pitches over as
+    :math:`\\gamma_{bo} + (\\pi/2 - \\gamma_{bo})(1-\\tau)^{n}` from
+    vertical at lift-off. Altitude and downrange are then integrals of it,
+    so the profile is consistent with itself by construction. It carries no
+    gravity loss, no drag loss and no staging, which is why the implied
+    mean acceleration comes out around 4.4 g rather than the ~2 g of a real
+    first stage — the model reproduces the *trajectory*, not the propulsion
+    needed to fly it.
+
+    Attributes
+    ----------
+    times, altitudes, downranges:
+        Sampled boost leg (s, m, m), starting at zero.
+    burnout_angle:
+        Flight-path angle at burnout (rad). Falls out of the solve rather
+        than being assumed, and near-zero is the correct answer for a
+        circular insertion.
+    burnout_speed:
+        Speed at burnout (m/s) — the circular speed the parking arc needs.
+    """
+
+    times: _FloatArray
+    altitudes: _FloatArray
+    downranges: _FloatArray
+    burnout_angle: float
+    burnout_speed: float
+
+    @property
+    def ground_range(self) -> float:
+        return float(self.downranges[-1])
+
+    @property
+    def duration(self) -> float:
+        return float(self.times[-1])
+
+
+def ascent_profile(
+    burnout_altitude: float,
+    burnout_speed: float,
+    duration: float,
+    pitch_exponent: float = 2.5,
+    samples: int = 512,
+) -> AscentProfile:
+    """Solve a gravity-turn boost that ends where the parking arc starts.
+
+    Parameters
+    ----------
+    burnout_altitude:
+        Altitude at the end of boost (m).
+    burnout_speed:
+        Speed at the end of boost (m/s).
+    duration:
+        Burn time (s).
+    pitch_exponent:
+        Shape of the pitch-over. Larger holds the vehicle vertical longer.
+    samples:
+        Resolution of the integration.
+
+    Raises
+    ------
+    ValueError
+        If no positive burnout angle reaches the requested altitude in the
+        requested time. That is a real constraint rather than a numerical
+        failure: at a fixed burnout speed a longer burn covers more path,
+        so a *low* burnout altitude eventually demands the vehicle be
+        descending before the engines stop. At 7.8 km/s and 150 km it binds
+        at about 200 s.
+    """
+    for name, value in (
+        ("burnout_altitude", burnout_altitude),
+        ("burnout_speed", burnout_speed),
+        ("duration", duration),
+    ):
+        if not (np.isfinite(value) and value > 0.0):
+            msg = f"{name} must be finite and > 0, got {value}"
+            raise ValueError(msg)
+    if pitch_exponent <= 0.0:
+        msg = f"pitch_exponent must be > 0, got {pitch_exponent}"
+        raise ValueError(msg)
+
+    tau = np.linspace(0.0, 1.0, int(samples))
+    scale = float(burnout_speed) * float(duration)
+
+    def climb(angle: float) -> _FloatArray:
+        gamma = angle + (0.5 * np.pi - angle) * (1.0 - tau) ** pitch_exponent
+        integrand = tau * np.sin(gamma)
+        return np.asarray(
+            scale * np.concatenate([[0.0], np.cumsum(0.5 * (integrand[1:] + integrand[:-1])
+                                                     * np.diff(tau))])
+        )
+
+    # Monotone in the burnout angle: a steeper finish climbs further. The
+    # bracket starts at zero because a non-positive burnout angle means the
+    # vehicle is level or descending at the end of boost, which is not an
+    # ascent.
+    reachable = float(climb(0.0)[-1])
+    if reachable > burnout_altitude:
+        msg = (
+            f"a {duration:.0f} s burn to {burnout_speed:,.0f} m/s already climbs "
+            f"{reachable / 1e3:,.0f} km before its flight-path angle reaches zero, "
+            f"so it cannot burn out at {burnout_altitude / 1e3:,.0f} km still "
+            "ascending; shorten the burn or raise the parking altitude"
+        )
+        raise ValueError(msg)
+
+    low, high = 0.0, 0.5 * np.pi - 1e-9
+    for _ in range(200):
+        mid = 0.5 * (low + high)
+        if climb(mid)[-1] < burnout_altitude:
+            low = mid
+        else:
+            high = mid
+    angle = 0.5 * (low + high)
+
+    gamma = angle + (0.5 * np.pi - angle) * (1.0 - tau) ** pitch_exponent
+    downrange = tau * np.cos(gamma)
+    ground = scale * np.concatenate(
+        [[0.0], np.cumsum(0.5 * (downrange[1:] + downrange[:-1]) * np.diff(tau))]
+    )
+    return AscentProfile(
+        times=tau * float(duration),
+        altitudes=climb(angle),
+        downranges=np.asarray(ground),
+        burnout_angle=float(angle),
+        burnout_speed=float(burnout_speed),
+    )
+
+
+@dataclass(frozen=True)
 class Trajectory:
     """A sampled flight, in the form the coverage model consumes.
 
@@ -193,6 +384,11 @@ class Trajectory:
         Total central angle flown (rad).
     burnout_speed:
         Speed required at the end of boost (m/s) — the energy price.
+    phases:
+        Named stretches of the flight, contiguous and covering it. Empty
+        when the producer does not distinguish any.
+    events:
+        Instants worth marking, in time order.
     """
 
     label: str
@@ -201,6 +397,8 @@ class Trajectory:
     subpoints: list[GeodeticPosition]
     range_angle: float
     burnout_speed: float
+    phases: tuple[Phase, ...] = ()
+    events: tuple[Event, ...] = ()
 
     @property
     def flight_time(self) -> float:
@@ -209,6 +407,13 @@ class Trajectory:
     @property
     def apogee(self) -> float:
         return float(np.max(self.altitudes))
+
+    def phase_at(self, time: float) -> str:
+        """Name of the phase covering ``time``, or ``""`` if none is declared."""
+        for phase in self.phases:
+            if phase.contains(time):
+                return phase.name
+        return ""
 
 
 def ballistic_trajectory(
@@ -293,43 +498,107 @@ def ballistic_trajectory(
         ]
     else:
         subpoints = inertial
+    # Clamped at zero: the conic returns to exactly the launch radius at
+    # both ends, and round-off there shows up as a few microns of negative
+    # altitude that the horizon model rightly refuses.
+    altitudes = np.maximum(np.asarray(radius - body_radius, dtype=np.float64), 0.0)
+
+    # Phases, so a renderer names them rather than inferring them. A lofted
+    # arc's altitude also flattens near apogee, so "the altitude stopped
+    # changing" is not a usable test for anything.
+    apogee_index = int(np.argmax(altitudes))
+    apogee_time = float(times[apogee_index])
+    entry_radius = body_radius + _ENTRY_INTERFACE
+    entry_anomaly = 2.0 * np.pi - float(
+        np.arccos(np.clip((parameter / entry_radius - 1.0) / eccentricity, -1.0, 1.0))
+    )
+    entry_angle = float(
+        np.arctan2(
+            (_MU / momentum) * eccentricity * np.sin(entry_anomaly),
+            momentum / entry_radius,
+        )
+    )
+    entry_mask = np.zeros(times.size, dtype=bool)
+    entry_mask[apogee_index:] = altitudes[apogee_index:] <= _ENTRY_INTERFACE
+    entry_hits = np.nonzero(entry_mask)[0]
+    entry_time = float(times[entry_hits[0]]) if entry_hits.size else float(times[-1])
+    impact_time = float(times[-1])
+    phases = (
+        Phase("ascent", 0.0, apogee_time, "burnout to apogee"),
+        Phase("descent", apogee_time, entry_time, "apogee to the entry interface"),
+        Phase("entry", entry_time, impact_time,
+              f"below the {_ENTRY_INTERFACE / 1e3:.0f} km interface"),
+    )
+    events = (
+        Event("burnout", 0.0,
+              f"{speed:,.0f} m/s, gamma {np.rad2deg(gamma):.1f} deg"),
+        Event("apogee", apogee_time, f"{altitudes[apogee_index] / 1e3:,.0f} km"),
+        Event("entry interface", entry_time,
+              f"{_ENTRY_INTERFACE / 1e3:.0f} km, gamma {np.rad2deg(entry_angle):.1f} deg"),
+        Event("impact", impact_time, f"{aimpoint.label or 'aimpoint'}"),
+    )
     return Trajectory(
         label="ballistic",
         times=np.asarray(times, dtype=np.float64),
-        # Clamped at zero: the conic returns to exactly the launch radius
-        # at both ends, and round-off there shows up as a few microns of
-        # negative altitude that the horizon model rightly refuses.
-        altitudes=np.maximum(np.asarray(radius - body_radius, dtype=np.float64), 0.0),
+        altitudes=altitudes,
         subpoints=subpoints,
         range_angle=float(theta),
         burnout_speed=float(speed),
+        phases=phases,
+        events=events,
     )
 
 
 def fobs_trajectory(
     launch: GeodeticPosition,
     target: GeodeticPosition,
-    parking_altitude: float = 150.0e3,
+    parking_altitude: float = 170.0e3,
+    parking_apogee: float | None = None,
     entry_altitude: float = 100.0e3,
     samples: int = 400,
     body_radius: float = WGS84_MEAN_RADIUS,
     earth_rotation: bool = True,
     perigee_radius: float | None = None,
-    boost_duration: float = 300.0,
-    boost_range: float = 400.0e3,
+    boost_duration: float = 180.0,
     direction: Literal["long", "short"] = "long",
 ) -> Trajectory:
     """A fractional orbital profile taking the long way round.
 
-    The vehicle inserts into a low parking arc on the great circle through
-    launch and target, flies the **major** arc :math:`2\\pi-\\theta` — which
-    is what produces the reversed approach bearing — and then descends onto
-    the target over the final portion.
+    The vehicle boosts on a gravity turn into a low elliptical parking
+    orbit on the great circle through launch and target, coasts the
+    **major** arc :math:`2\\pi-\\theta` — which is what produces the
+    reversed approach bearing — and then fires retrograde onto a descent
+    conic that reaches the target.
+
+    Every leg is a Keplerian coast or an integrated ascent, and the times
+    come from Kepler's equation throughout. Nothing is prescribed except
+    the shape of the boost.
 
     Parameters
     ----------
     parking_altitude:
-        Constant altitude of the parking arc (m).
+        **Insertion (perigee) altitude** of the parking orbit (m).
+
+        The default of 170 km sits in the 150-180 km band open sources
+        quote for the R-36O, and it is a *modelling choice* rather than a
+        measurement — which is why `notebooks/fobs-warning-analysis.ipynb`
+        sweeps it from 120 to 500 km against four mask assumptions instead
+        of resting on one number. Lower is better for horizon denial and
+        worse for drag; the sweep is the honest form of the answer.
+    parking_apogee:
+        Apogee altitude of the parking orbit (m). Defaults to
+        ``parking_altitude + 80 km``.
+
+        A real insertion is never exactly circular, and the previous
+        version of this function pretended otherwise: it flew a *constant*
+        altitude, which is not an orbit but a prescription, and it made the
+        vehicle's altitude the one quantity in the profile that no dynamics
+        produced. On an ellipse the altitude varies over the arc — 170 km
+        at insertion, 250 km half a revolution later — and the ground rate
+        varies with it, which is the behaviour that makes a parking coast
+        read as a coast.
+
+        Pass ``parking_altitude`` here to recover a circular orbit.
     direction:
         Which way round the great circle to fly.
 
@@ -380,8 +649,27 @@ def fobs_trajectory(
             f"{parking_altitude} and {entry_altitude}"
         )
         raise ValueError(msg)
-    radius = body_radius + parking_altitude
-    speed = float(np.sqrt(_MU / radius))
+    apogee_altitude = (
+        parking_altitude + 80.0e3 if parking_apogee is None else float(parking_apogee)
+    )
+    if apogee_altitude < parking_altitude - 1e-9:
+        msg = (
+            f"parking_apogee must be at or above the insertion altitude, got "
+            f"{apogee_altitude} below {parking_altitude}; insertion is at perigee"
+        )
+        raise ValueError(msg)
+
+    # --- the parking conic. Insertion is at perigee (nu = 0), so the true
+    # anomaly along the arc equals the central angle swept since insertion.
+    park_perigee = body_radius + parking_altitude
+    park_apogee = body_radius + apogee_altitude
+    park_sma = 0.5 * (park_perigee + park_apogee)
+    park_ecc = (park_apogee - park_perigee) / (park_apogee + park_perigee)
+    park_parameter = park_sma * (1.0 - park_ecc**2)
+    park_momentum = float(np.sqrt(_MU * park_parameter))
+    speed = float(np.sqrt(_MU * (2.0 / park_perigee - 1.0 / park_sma)))
+    park_period = 2.0 * np.pi * float(np.sqrt(park_sma**3 / _MU))
+
     perigee = body_radius - 400.0e3 if perigee_radius is None else float(perigee_radius)
     if not perigee < body_radius:
         msg = (
@@ -390,10 +678,11 @@ def fobs_trajectory(
         )
         raise ValueError(msg)
 
-    boost_arc = float(boost_range) / body_radius
-    if not (np.isfinite(boost_duration) and boost_duration >= 0.0):
-        msg = f"boost_duration must be finite and >= 0, got {boost_duration}"
+    if not (np.isfinite(boost_duration) and boost_duration > 0.0):
+        msg = f"boost_duration must be finite and > 0, got {boost_duration}"
         raise ValueError(msg)
+    ascent = ascent_profile(parking_altitude, speed, float(boost_duration))
+    boost_arc = ascent.ground_range / body_radius
 
     if direction not in ("long", "short"):
         msg = f"direction must be 'long' or 'short', got {direction!r}"
@@ -404,8 +693,72 @@ def fobs_trajectory(
         minor = great_circle_range(launch, aim) / body_radius
         return float(2.0 * np.pi - minor if long_way else minor)
 
+    def _park_time(anomaly: _FloatArray | float) -> _FloatArray:
+        """Seconds from insertion (perigee) to a parking true anomaly."""
+        nu = np.asarray(anomaly, dtype=np.float64)
+        eccentric = 2.0 * np.arctan2(
+            np.sqrt(1.0 - park_ecc) * np.sin(0.5 * nu),
+            np.sqrt(1.0 + park_ecc) * np.cos(0.5 * nu),
+        )
+        mean = np.unwrap(np.atleast_1d(eccentric - park_ecc * np.sin(eccentric)))
+        # Unwrapping keeps the clock monotone past nu = pi, where the
+        # eccentric anomaly's principal branch folds back.
+        return np.asarray(np.where(nu < 0.0, 0.0, mean * park_period / (2.0 * np.pi)))
+
+    def _descent_geometry(burn_radius: float) -> tuple[float, float, float, float, float]:
+        """Descent conic from a burn at ``burn_radius``: e, a, p, arc, time."""
+        ecc = (burn_radius - perigee) / (burn_radius + perigee)
+        sma = 0.5 * (burn_radius + perigee)
+        param = sma * (1.0 - ecc**2)
+        cos_impact = np.clip((param / body_radius - 1.0) / ecc, -1.0, 1.0)
+        impact_nu = 2.0 * np.pi - float(np.arccos(cos_impact))
+        arc = impact_nu - np.pi  # the burn point is the conic's apogee
+        eccentric = 2.0 * np.arctan2(
+            np.sqrt(1.0 - ecc) * np.sin(0.5 * impact_nu),
+            np.sqrt(1.0 + ecc) * np.cos(0.5 * impact_nu),
+        )
+        mean = float(eccentric - ecc * np.sin(eccentric))
+        # Apogee sits at M = pi; the impact branch is past it, and the
+        # half-angle form returns the folded branch, so unfold by 2*pi.
+        if mean < np.pi:
+            mean += 2.0 * np.pi
+        span = (mean - np.pi) / float(np.sqrt(_MU / sma**3))
+        return ecc, sma, param, arc, span
+
+    def _deorbit(arc: float) -> tuple[float, float, float, float, float, float]:
+        """Burn true anomaly and descent conic for a total arc.
+
+        A fixed point, because the burn radius depends on where on the
+        parking ellipse the burn falls and that depends on how much arc the
+        descent needs. The coupling is weak — the ellipse's radius varies by
+        the apogee-perigee difference over an arc the descent spans in tens
+        of degrees — so this converges to machine precision in a few steps.
+        """
+        anomaly = arc - boost_arc
+        ecc = sma = param = descent = span = 0.0
+        for _ in range(60):
+            radius = float(park_parameter / (1.0 + park_ecc * np.cos(anomaly)))
+            ecc, sma, param, descent, span = _descent_geometry(radius)
+            updated = arc - descent - boost_arc
+            if abs(updated - anomaly) < 1e-13:
+                anomaly = updated
+                break
+            anomaly = updated
+        return anomaly, ecc, sma, param, descent, span
+
     def elapsed_for(aim: GeodeticPosition) -> float:
-        return float(boost_duration + (_arc(aim) - boost_arc) * radius / speed)
+        """Total flight time to a candidate aim point: all three legs.
+
+        Pricing only the parking ellipse — as if the vehicle coasted the
+        whole arc at orbital altitude — leaves the lead angle wrong by the
+        difference between the parking and descent clocks over the descent
+        arc. That is small, and it is not nothing: 1.3 km of miss on the
+        direct profile, from a routine that claims to converge to 1e-9 rad.
+        """
+        arc = _arc(aim)
+        anomaly, _, _, _, _, descent_span = _deorbit(arc)
+        coast = float(_park_time(np.array([anomaly]))[0])
+        return float(boost_duration + coast + descent_span)
 
     if earth_rotation:
         aimpoint, _ = leading_aimpoint(launch, target, elapsed_for)
@@ -422,19 +775,95 @@ def fobs_trajectory(
     swept = np.linspace(0.0, theta, samples)
     inertial = [great_circle_point(launch, bearing, float(s)) for s in swept]
 
-    # Times first, because the rotation correction needs them. Piecewise:
-    # a stated powered ascent, then the parking arc at the circular ground
-    # rate. The descent leg is re-timed by Kepler further down.
-    elapsed = boost_duration + (swept - boost_arc) * radius / speed
+    # --- the deorbit conic, and where the burn has to happen.
+    #
+    # Coupled: the burn radius comes from where on the parking ellipse the
+    # burn falls, and where it falls depends on how much arc the descent
+    # conic needs, which depends on the burn radius. The coupling is weak
+    # (the parking ellipse's radius varies by 80 km over an arc the descent
+    # spans in tens of degrees), so a few fixed-point steps converge to
+    # microradians. Iterating is still better than assuming, because the
+    # assumption would silently mis-place the impact point.
+    burn_anomaly, eccentricity, semi_major, parameter, descent_arc, _ = _deorbit(theta)
+    burn_radius = float(park_parameter / (1.0 + park_ecc * np.cos(burn_anomaly)))
+
+    # On the long way there are 4-5 radians to spend and this never binds.
+    # On the minor arc it can: the deorbit conic needs some 60 degrees, the
+    # boost a few more, and a short-range shot simply has nowhere to put a
+    # parking phase. Refusing is right — the alternative is a profile that
+    # is descending before it has finished ascending.
+    if theta <= boost_arc + descent_arc:
+        msg = (
+            f"a {direction}-way fractional profile over {np.rad2deg(theta):.1f} deg "
+            f"of arc cannot contain a {np.rad2deg(boost_arc):.1f} deg boost and a "
+            f"{np.rad2deg(descent_arc):.1f} deg deorbit conic; raise perigee_radius, "
+            "shorten the boost, or use a ballistic profile at this range"
+        )
+        raise ValueError(msg)
+
+    # Three timing rules spliced: the integrated ascent, Kepler on the
+    # parking ellipse, Kepler on the descent ellipse.
     ascending = swept < boost_arc
+    descending = swept > (theta - descent_arc)
+    coasting = ~ascending & ~descending
+
+    elapsed = np.zeros(samples, dtype=np.float64)
     if np.any(ascending):
-        # Ground range accelerating through the burn, which is what a
-        # gravity turn does; a linear ramp would put the vehicle at half
-        # its downrange distance at half the burn, which it is not.
-        elapsed[ascending] = boost_duration * np.sqrt(
-            np.clip(swept[ascending] / boost_arc, 0.0, 1.0)
+        # Invert the ascent's monotone downrange to get time at each sampled
+        # arc, so the boost leg is sampled on the same grid as everything
+        # else without re-solving it.
+        elapsed[ascending] = np.interp(
+            swept[ascending] * body_radius, ascent.downranges, ascent.times
+        )
+    elapsed[coasting] = boost_duration + _park_time(swept[coasting] - boost_arc)
+    burn_time = float(boost_duration + _park_time(np.array([burn_anomaly]))[0])
+
+    # --- altitudes, one rule per leg
+    altitudes = np.empty(samples, dtype=np.float64)
+    if np.any(ascending):
+        altitudes[ascending] = np.interp(
+            swept[ascending] * body_radius, ascent.downranges, ascent.altitudes
+        )
+    # The parking leg is a conic, not a prescription: altitude follows
+    # r(nu) = p / (1 + e cos nu) from insertion at perigee, so it climbs to
+    # apogee half a revolution later and comes back down. Holding it exactly
+    # constant made the vehicle's altitude the one quantity in the profile
+    # that no dynamics produced.
+    altitudes[coasting] = (
+        park_parameter / (1.0 + park_ecc * np.cos(swept[coasting] - boost_arc))
+        - body_radius
+    )
+    if np.any(descending):
+        anomaly = np.pi + (swept[descending] - (theta - descent_arc))
+        altitudes[descending] = np.maximum(
+            parameter / (1.0 + eccentricity * np.cos(anomaly)) - body_radius, 0.0
         )
 
+        # Re-time the descent leg by Kepler: the vehicle speeds up as it
+        # falls, so carrying the parking rate would stretch the descent.
+        def _mean_anomaly(nu: _FloatArray) -> _FloatArray:
+            eccentric = 2.0 * np.arctan2(
+                np.sqrt(1.0 - eccentricity) * np.sin(0.5 * nu),
+                np.sqrt(1.0 + eccentricity) * np.cos(0.5 * nu),
+            )
+            return np.asarray(np.unwrap(eccentric - eccentricity * np.sin(eccentric)))
+
+        # Anchored at the burn itself (nu = pi), not at the first sample
+        # after it. Re-zeroing on `offsets[0]` discards up to one sample
+        # interval of descent, and because the ground track is then rotated
+        # by that clock the whole profile lands short: 1.9 km of miss at 200
+        # samples, 0.9 km at 900, 0.3 km at 4000 — a discretisation error
+        # masquerading as a modelling one, visible only because it scaled
+        # with the sample count.
+        mean_motion = np.sqrt(_MU / semi_major**3)
+        offsets = _mean_anomaly(anomaly) - float(_mean_anomaly(np.array([np.pi]))[0])
+        elapsed[descending] = burn_time + offsets / mean_motion
+
+    # The rotation correction comes *after* every leg has been timed. Doing
+    # it earlier is not a style point: the descent samples then carry a
+    # clock of zero, get no westward walk at all, and the profile lands
+    # 1,550 km east of its aimpoint while every non-rotating test still
+    # passes. Found exactly that way.
     if earth_rotation:
         # The plane is inertial; the ground turns eastward beneath it, so
         # the sub-vehicle longitude walks west by omega * t.
@@ -454,77 +883,67 @@ def fobs_trajectory(
     else:
         subpoints = inertial
 
-    # Altitude: constant on the parking arc, then the *actual* deorbit conic.
+    # --- the deorbit burn, as an actual delta-v rather than a discontinuity
     #
-    # This used to be a linear ramp over an arc taken from the horizon
-    # formula, and it was badly wrong in a way the animation HUD exposed:
-    # the vehicle held exactly 150 km for 95 % of the flight and then fell
-    # to the ground in under three minutes, a mean vertical rate of
-    # 850 m/s. The real transfer from a 150 km parking orbit to a -400 km
-    # virtual perigee reaches the entry interface at a flight-path angle of
-    # about -1.5 degrees, which is a vertical rate near 200 m/s. Faking the
-    # descent understated its duration roughly threefold and its ground
-    # arc by a factor of five.
-    #
-    # It is now the conic itself: a retrograde burn at the parking radius
-    # makes that point apogee, and the vehicle coasts down the resulting
-    # ellipse. Altitude follows r(nu) = p/(1 + e cos nu) and the timing
-    # comes from Kepler's equation, so the descent takes as long and covers
-    # as much ground as the two-body problem says it does.
-    apogee = radius
-    eccentricity = (apogee - perigee) / (apogee + perigee)
-    semi_major = 0.5 * (apogee + perigee)
-    parameter = semi_major * (1.0 - eccentricity**2)
+    # At the burn point the parking ellipse has both a radial and a
+    # transverse velocity component; the descent conic has apogee there, so
+    # its radial component is zero. The burn is therefore not purely
+    # retrograde, and taking only the transverse difference would understate
+    # it. Both components are differenced.
+    park_radial = (_MU / park_momentum) * park_ecc * float(np.sin(burn_anomaly))
+    park_transverse = park_momentum / burn_radius
+    descent_transverse = float(np.sqrt(_MU * parameter)) / burn_radius
+    delta_v = float(np.hypot(park_radial, park_transverse - descent_transverse))
 
-    # True anomaly at which the conic reaches the surface, on the way down.
-    cos_impact = np.clip((parameter / body_radius - 1.0) / eccentricity, -1.0, 1.0)
-    impact_anomaly = 2.0 * np.pi - float(np.arccos(cos_impact))
-    descent_arc = impact_anomaly - np.pi  # apogee sits at nu = pi
+    entry_index = np.nonzero(descending & (altitudes <= entry_altitude))[0]
+    entry_time = float(elapsed[entry_index[0]]) if entry_index.size else float(elapsed[-1])
 
-    # On the long way there are 4-5 radians to spend and this never binds.
-    # On the minor arc it can: the deorbit conic needs some 60 degrees, the
-    # boost a few more, and a short-range shot simply has nowhere to put a
-    # parking phase. Refusing is right — the alternative is a profile that
-    # is descending before it has finished ascending.
-    if theta <= boost_arc + descent_arc:
-        msg = (
-            f"a {direction}-way fractional profile over {np.rad2deg(theta):.1f} deg "
-            f"of arc cannot contain a {np.rad2deg(boost_arc):.1f} deg boost and a "
-            f"{np.rad2deg(descent_arc):.1f} deg deorbit conic; raise perigee_radius, "
-            "shorten the boost, or use a ballistic profile at this range"
+    # Entry flight-path angle, which is where the concept pays a price it is
+    # rarely charged for. Deorbiting from orbital speed cannot produce a
+    # steep entry without removing kilometres per second, so a fractional
+    # profile arrives an order of magnitude shallower than a ballistic RV —
+    # and the descent conic therefore spans thousands of kilometres of
+    # ground track, committing the vehicle long before impact.
+    entry_radius = body_radius + entry_altitude
+    entry_anomaly = 2.0 * np.pi - float(
+        np.arccos(np.clip((parameter / entry_radius - 1.0) / eccentricity, -1.0, 1.0))
+    )
+    entry_momentum = float(np.sqrt(_MU * parameter))
+    entry_angle = float(
+        np.arctan2(
+            (_MU / entry_momentum) * eccentricity * np.sin(entry_anomaly),
+            entry_momentum / entry_radius,
         )
-        raise ValueError(msg)
+    )
+    entry_speed = float(np.sqrt(_MU * (2.0 / entry_radius - 1.0 / semi_major)))
+    insertion_time = float(boost_duration)
+    impact_time = float(elapsed[-1])
 
-    altitudes = np.full(samples, parking_altitude, dtype=np.float64)
-    if np.any(ascending):
-        # Rises quickly and flattens toward insertion, which is the shape a
-        # gravity turn traces. Stated, not integrated -- see the parameter
-        # documentation.
-        fraction = np.clip(swept[ascending] / boost_arc, 0.0, 1.0)
-        altitudes[ascending] = parking_altitude * (1.0 - (1.0 - fraction) ** 2)
-    descending = swept > (theta - descent_arc)
-    if np.any(descending):
-        anomaly = np.pi + (swept[descending] - (theta - descent_arc))
-        altitudes[descending] = np.maximum(
-            parameter / (1.0 + eccentricity * np.cos(anomaly)) - body_radius, 0.0
-        )
-
-        # Re-time the descent leg by Kepler rather than at the parking rate:
-        # the vehicle speeds up as it falls, so holding the circular ground
-        # rate would stretch the descent.
-        def _mean_anomaly(nu: _FloatArray) -> _FloatArray:
-            eccentric = 2.0 * np.arctan2(
-                np.sqrt(1.0 - eccentricity) * np.sin(0.5 * nu),
-                np.sqrt(1.0 + eccentricity) * np.cos(0.5 * nu),
-            )
-            return np.asarray(np.unwrap(eccentric - eccentricity * np.sin(eccentric)))
-
-        mean_motion = np.sqrt(_MU / semi_major**3)
-        reference = float(_mean_anomaly(np.array([np.pi]))[0])
-        offsets = (_mean_anomaly(anomaly) - reference) / mean_motion
-        start = float(elapsed[descending][0])
-        elapsed = np.asarray(elapsed, dtype=np.float64).copy()
-        elapsed[descending] = start + offsets - offsets[0]
+    descent_ground = descent_arc * body_radius
+    phases = (
+        Phase("boost", 0.0, insertion_time,
+              f"gravity turn to {parking_altitude / 1e3:.0f} km, "
+              f"burnout gamma {np.rad2deg(ascent.burnout_angle):.1f} deg"),
+        Phase("parking coast", insertion_time, burn_time,
+              f"{parking_altitude / 1e3:.0f} x {apogee_altitude / 1e3:.0f} km, "
+              f"e = {park_ecc:.4f}"),
+        Phase("deorbit coast", burn_time, entry_time,
+              f"{descent_ground / 1e3:,.0f} km of ground track to the interface"),
+        Phase("entry", entry_time, impact_time,
+              f"below the {entry_altitude / 1e3:.0f} km interface"),
+    )
+    events = (
+        Event("lift-off", 0.0, f"{launch.label or 'launch site'}"),
+        Event("insertion", insertion_time,
+              f"{parking_altitude / 1e3:.0f} km, {speed:,.0f} m/s, "
+              f"gamma {np.rad2deg(ascent.burnout_angle):.1f} deg"),
+        Event("deorbit burn", burn_time,
+              f"retrograde dv {delta_v:,.0f} m/s at {(burn_radius - body_radius) / 1e3:.0f} km"),
+        Event("entry interface", entry_time,
+              f"{entry_altitude / 1e3:.0f} km, {entry_speed / 1e3:.2f} km/s, "
+              f"gamma {np.rad2deg(entry_angle):.1f} deg"),
+        Event("impact", impact_time, f"{aimpoint.label or 'aimpoint'}"),
+    )
 
     return Trajectory(
         label="fractional-orbital" if long_way else "fractional-orbital (direct)",
@@ -533,6 +952,8 @@ def fobs_trajectory(
         subpoints=subpoints,
         range_angle=float(theta),
         burnout_speed=speed,
+        phases=phases,
+        events=events,
     )
 
 
@@ -578,22 +999,20 @@ def warning_comparison(
     Parameters
     ----------
     sites:
-        Sensor network. Defaults to
-        ``network("western", "non-aligned")`` rather than the whole of
+        Sensor network. Defaults to ``network("western")`` — the US/NATO
+        and allied sensors — rather than the whole of
         :data:`~passes.orbital.radar.EARLY_WARNING_SITES`, and the
-        distinction is not cosmetic: the catalogue contains sensors on
-        **both** sides, and :func:`~passes.orbital.radar.coverage` reduces a
-        network to its *earliest* detection. Passing the full catalogue for
-        a Russian launch therefore reports a Russian radar seeing its own
-        missile a minute after lift-off, which is not warning to anybody.
+        distinction is not cosmetic. The catalogue also holds Russian
+        early-warning radars and one non-aligned site, and
+        :func:`~passes.orbital.radar.coverage` reduces a network to its
+        *earliest* detection: passing the full catalogue for a Eurasian
+        launch reports a Russian radar seeing its own missile a minute
+        after lift-off, which is warning to nobody. A non-aligned sensor's
+        returns are not on the western picture either.
 
-        Pass an explicit tuple to model a different defender — including
-        the full catalogue, if a bilateral picture is genuinely what is
-        wanted.
+        Pass an explicit tuple to model a different defender.
     """
-    network_sites = (
-        network("western", "non-aligned") if sites is None else tuple(sites)
-    )
+    network_sites = network("western") if sites is None else tuple(sites)
     ballistic = ballistic_trajectory(
         launch, target, flight_path_angle, samples, body_radius, earth_rotation
     )

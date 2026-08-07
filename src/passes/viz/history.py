@@ -43,6 +43,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from passes.dynamics.attitude import dcm_from_quaternion
+from passes.orbital.scenario import Event, Phase
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters for typing
     from passes.flight.simulator import FlightResult
@@ -77,6 +78,13 @@ class SimulationHistory:
         Any additional per-sample series the producer computed — heat flux,
         recession, dynamic pressure. Carried through untouched so an
         overlay can colour by them without a second physics call.
+    phases, events:
+        Structure the producer declared: named legs and the instants
+        between them. Carried rather than inferred, because inferring them
+        from the shape of the altitude curve is a guess that breaks every
+        time the shape changes — "the altitude stopped varying" identified
+        a parking arc only while the parking arc was a fiction, and a
+        lofted ballistic apogee looks the same.
     """
 
     label: str
@@ -85,6 +93,8 @@ class SimulationHistory:
     velocities: _FloatArray | None = None
     quaternions: _FloatArray | None = None
     extras: dict[str, _FloatArray] | None = None
+    phases: tuple[Phase, ...] = ()
+    events: tuple[Event, ...] = ()
 
     def __post_init__(self) -> None:
         times = np.asarray(self.times, dtype=np.float64)
@@ -130,6 +140,20 @@ class SimulationHistory:
     @property
     def duration(self) -> float:
         return float(self.times[-1] - self.times[0])
+
+    def phase_at(self, time: float) -> str:
+        """Name of the declared phase covering ``time``; ``""`` if none."""
+        for phase in self.phases:
+            if phase.contains(time):
+                return phase.name
+        return ""
+
+    def next_event(self, time: float) -> Event | None:
+        """The first declared event strictly after ``time``."""
+        for event in self.events:
+            if event.time > time + 1e-9:
+                return event
+        return None
 
     def radii(self) -> _FloatArray:
         return np.asarray(np.linalg.norm(self.positions, axis=1))
@@ -184,6 +208,8 @@ class SimulationHistory:
                 state[name] = float(
                     (1.0 - blend) * series[index] + blend * series[index + 1]
                 )
+        if self.phases:
+            state["phase"] = self.phase_at(t)
         return state
 
     def between(self, start: float, stop: float) -> SimulationHistory:
@@ -212,7 +238,14 @@ class SimulationHistory:
             if self.extras
             else None
         )
+        phases = tuple(
+            Phase(p.name, max(p.start_time, lo), min(p.end_time, hi), p.note)
+            for p in self.phases
+            if p.end_time > lo and p.start_time < hi
+        )
         return SimulationHistory(
+            phases=phases,
+            events=tuple(e for e in self.events if lo <= e.time <= hi),
             label=self.label,
             times=np.array([s["time"] for s in states]),
             positions=np.stack([s["position"] for s in states]),
@@ -277,6 +310,8 @@ class SimulationHistory:
             times=np.asarray(trajectory.times, dtype=np.float64),
             positions=positions,
             extras={"altitude": np.asarray(trajectory.altitudes, dtype=np.float64)},
+            phases=trajectory.phases,
+            events=trajectory.events,
         )
 
 

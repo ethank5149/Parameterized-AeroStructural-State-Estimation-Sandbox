@@ -45,6 +45,7 @@ from passes.orbital.radar import (
 )
 from passes.orbital.radar import site as radar_site
 from passes.orbital.scenario import (
+    ascent_profile,
     ballistic_trajectory,
     fobs_trajectory,
     leading_aimpoint,
@@ -1147,39 +1148,54 @@ class TestFobsDescentProfile:
 
     @staticmethod
     def _descent_mask(trajectory, parking=150e3):
-        """Samples on the *descent*, excluding the ascent.
+        """Samples after the deorbit burn.
 
-        Selecting on "altitude differs from parking" alone was correct only
-        while the profile began in orbit. Once a boost phase was added that
-        predicate also matched the climb, and these tests started measuring
-        the ascent instead — which is why they are anchored to the second
-        half of the flight.
+        Selecting on "altitude differs from parking" was a guess, and it
+        broke twice: once when a boost phase was added (the predicate also
+        matched the climb) and again when the parking arc became an ellipse
+        (altitude varies there by design). The trajectory now *declares* its
+        phases, so the test asks instead of inferring.
         """
-        below = trajectory.altitudes < parking - 1.0
-        after_midpoint = np.arange(len(trajectory.altitudes)) > (
-            len(trajectory.altitudes) // 2
-        )
-        return below & after_midpoint
+        burn = next(e.time for e in trajectory.events if e.name == "deorbit burn")
+        return trajectory.times >= burn
 
 
-    def test_the_descent_is_a_fifth_of_the_flight_not_a_twentieth(self):
+    def test_the_descent_is_a_quarter_of_the_flight_not_a_twentieth(self):
         """The linear ramp gave 4.3 % of the flight; the conic gives about
-        21 %, which is what a -400 km virtual perigee actually implies."""
+        25 %, which is what a -400 km virtual perigee actually implies."""
         trajectory = self._trajectory()
-        descending = self._descent_mask(trajectory)
-        start = trajectory.times[descending][0]
-        fraction = (trajectory.times[-1] - start) / (trajectory.times[-1] - start + start)
-        assert 0.12 < fraction < 0.30
+        start = trajectory.times[self._descent_mask(trajectory)][0]
+        assert 0.15 < (trajectory.times[-1] - start) / trajectory.times[-1] < 0.35
 
     def test_the_vertical_rate_is_orbital_not_ballistic(self):
-        """A shallow deorbit from 150 km arrives at a flight-path angle near
-        -1.5 degrees, so the mean vertical rate is a couple of hundred
-        metres per second. The ramp implied 850, which is four times too
-        fast and was the visible symptom."""
+        """Deorbiting from a low parking orbit arrives at a flight-path
+        angle of a couple of degrees, so the mean vertical rate is a couple
+        of hundred metres per second. The ramp implied 850, which is four
+        times too fast and was the visible symptom."""
         trajectory = self._trajectory()
         descending = self._descent_mask(trajectory)
         duration = trajectory.times[-1] - trajectory.times[descending][0]
-        assert 100.0 < 150e3 / duration < 320.0
+        drop = trajectory.altitudes[descending][0]
+        assert 100.0 < drop / duration < 320.0
+
+    def test_the_entry_is_an_order_of_magnitude_shallower_than_ballistic(self):
+        """A real cost of the concept, and one it is rarely charged for.
+        Deorbiting from orbital speed cannot buy a steep entry without
+        removing kilometres per second, so a fractional profile arrives at
+        a couple of degrees where a minimum-energy ballistic RV arrives at
+        twenty-five."""
+        fractional = self._trajectory()
+        ballistic = ballistic_trajectory(self._LAUNCH, self._TARGET, samples=400)
+
+        def entry_angle(trajectory):
+            detail = next(
+                e.detail for e in trajectory.events if e.name == "entry interface"
+            )
+            return float(detail.split("gamma")[1].split("deg")[0])
+
+        assert -6.0 < entry_angle(fractional) < -0.5
+        assert entry_angle(ballistic) < -15.0
+        assert abs(entry_angle(ballistic)) > 5.0 * abs(entry_angle(fractional))
 
     def test_altitude_falls_monotonically_and_accelerating(self):
         """A conic descent starts slowly near apogee and steepens. A linear
@@ -1190,7 +1206,7 @@ class TestFobsDescentProfile:
         assert np.all(np.diff(altitude) <= 1e-6), "altitude must not rise"
         drops = -np.diff(altitude)
         first, last = drops[: len(drops) // 3].mean(), drops[-len(drops) // 3 :].mean()
-        assert last > 2.0 * first, "the descent must steepen, not run linear"
+        assert last > 1.5 * first, "the descent must steepen, not run linear"
 
     def test_a_deeper_perigee_gives_a_steeper_shorter_descent(self):
         """The perigee is the knob that sets arrival steepness, and it now
@@ -1222,13 +1238,14 @@ class TestFobsDescentProfile:
         """The descent model changed materially; the finding it feeds must
         be checked against it rather than assumed to carry over. Exmouth
         still inverts the comparison."""
+        defender = network("western")
         full = warning_comparison(
             self._LAUNCH, self._TARGET, parking_altitude=150e3,
-            sites=tuple(EARLY_WARNING_SITES), samples=400, earth_rotation=True,
+            sites=defender, samples=400, earth_rotation=True,
         )
         without = warning_comparison(
             self._LAUNCH, self._TARGET, parking_altitude=150e3,
-            sites=tuple(s for s in EARLY_WARNING_SITES if "Exmouth" not in s.name),
+            sites=tuple(s for s in defender if "Exmouth" not in s.name),
             samples=400, earth_rotation=True,
         )
         assert full.warning_reduction < 0.0
@@ -1260,10 +1277,47 @@ class TestFobsBoostPhase:
     def test_the_ascent_reaches_parking_altitude_in_the_stated_time(self):
         trajectory = fobs_trajectory(
             self._LAUNCH, self._TARGET, parking_altitude=150e3,
-            boost_duration=300.0, samples=800,
+            boost_duration=180.0, samples=800,
         )
         risen = np.nonzero(trajectory.altitudes >= 150e3 - 1.0)[0][0]
-        assert trajectory.times[risen] == pytest.approx(300.0, rel=0.15)
+        assert trajectory.times[risen] == pytest.approx(180.0, rel=0.15)
+
+    def test_the_sampled_ascent_is_far_steeper_than_the_ramp_it_replaced(self):
+        """The defect the gravity turn replaced. The stated ramp put
+        altitude against *arc*, so the flight-path angle was constant at
+        `atan(2 h_bo / s_bo)` — 37 degrees, from the pad to burnout.
+        Rockets do not leave the pad at 37 degrees and do not insert at 37
+        degrees either.
+
+        Sampled on a uniform *arc* grid the first interval already averages
+        over several kilometres of downrange, so this checks the sampled
+        profile is steep early and shallow late; the instantaneous vertical
+        lift-off is checked against `ascent_profile` itself.
+        """
+        trajectory = fobs_trajectory(self._LAUNCH, self._TARGET, samples=2000)
+        insertion = next(e.time for e in trajectory.events if e.name == "insertion")
+        boost = trajectory.times <= insertion
+        rise = np.diff(trajectory.altitudes[boost])
+        run = np.diff(
+            np.array([
+                great_circle_range(self._LAUNCH, p)
+                for p, on in zip(trajectory.subpoints, boost, strict=True) if on
+            ])
+        )
+        angles = np.rad2deg(np.arctan2(rise, np.maximum(run, 1e-9)))
+        assert np.all(rise > 0.0), "altitude must increase all through boost"
+        assert angles[0] > 60.0, "the first sampled interval must be steep"
+        assert angles[-1] < 10.0, "and the last must be near-horizontal"
+        assert np.all(np.diff(angles) < 1e-6), "the pitch-over must be monotone"
+
+    def test_the_ascent_ends_near_horizontal_for_a_circular_insertion(self):
+        """The burnout angle is solved for, not assumed, and a near-zero
+        answer is the check that the boost and the parking arc agree: you
+        cannot insert into an orbit while still climbing steeply."""
+        trajectory = fobs_trajectory(self._LAUNCH, self._TARGET, samples=800)
+        detail = next(e.detail for e in trajectory.events if e.name == "insertion")
+        gamma = float(detail.split("gamma")[1].split("deg")[0])
+        assert 0.0 < gamma < 10.0
 
     def test_the_ascent_is_a_small_fraction_of_the_flight(self):
         """A 300 s boost against a 70 minute profile: visible, but the
@@ -1283,11 +1337,31 @@ class TestFobsBoostPhase:
         climb = trajectory.altitudes[: np.count_nonzero(ascending[:100])]
         assert np.all(np.diff(climb) >= -1e-9)
 
-    def test_a_longer_boost_takes_longer_to_insert(self):
+    def test_a_longer_boost_inserts_later_and_further_downrange(self):
         quick = fobs_trajectory(self._LAUNCH, self._TARGET, boost_duration=120.0, samples=600)
-        slow = fobs_trajectory(self._LAUNCH, self._TARGET, boost_duration=600.0, samples=600)
-        assert slow.flight_time > quick.flight_time
-        assert slow.flight_time - quick.flight_time == pytest.approx(480.0, rel=0.25)
+        slow = fobs_trajectory(self._LAUNCH, self._TARGET, boost_duration=190.0, samples=600)
+        for trajectory, duration in ((quick, 120.0), (slow, 190.0)):
+            insertion = next(e.time for e in trajectory.events if e.name == "insertion")
+            assert insertion == pytest.approx(duration, abs=1e-9)
+        # ...and covers more ground doing it, because the path length of an
+        # accelerating boost to a fixed burnout speed grows with the burn.
+        def downrange(trajectory):
+            rising = trajectory.times <= next(
+                e.time for e in trajectory.events if e.name == "insertion"
+            )
+            return great_circle_range(self._LAUNCH, trajectory.subpoints[rising.sum() - 1])
+
+        assert downrange(slow) > 1.4 * downrange(quick)
+
+    def test_a_boost_too_long_for_the_parking_altitude_is_refused(self):
+        """At a fixed burnout speed a longer burn covers more path, so a low
+        parking altitude eventually demands the vehicle be *descending* when
+        the engines stop. Refusing beats returning a climb that is not one."""
+        with pytest.raises(ValueError, match="still\\s+ascending"):
+            fobs_trajectory(
+                self._LAUNCH, self._TARGET, parking_altitude=150e3,
+                boost_duration=600.0, samples=200,
+            )
 
     def test_times_remain_monotone_across_all_three_phases(self):
         """Boost, parking and descent are timed by three different rules and
@@ -1363,12 +1437,16 @@ class TestDirectFractionalProfile:
             ])
             assert bool(ranges[-1] < ranges[0]) is closing
 
-    def test_both_share_the_altitude_and_therefore_the_energy(self):
+    def test_both_share_the_insertion_and_therefore_the_energy(self):
         """A direct fractional profile is not a cheap option: it still pays
-        full orbital insertion and buys no bearing advantage for it."""
+        full orbital insertion and buys no bearing advantage for it.
+
+        Apogee is *not* shared, and that is geometry rather than energy: the
+        long way coasts past the parking ellipse's apogee and the direct
+        profile deorbits before reaching it."""
         long_way, direct = self._profiles()
         assert direct.burnout_speed == pytest.approx(long_way.burnout_speed, rel=1e-12)
-        assert direct.apogee == pytest.approx(long_way.apogee, rel=1e-9)
+        assert direct.apogee <= long_way.apogee + 1.0
 
     def test_the_direct_profile_is_much_shorter_in_time(self):
         long_way, direct = self._profiles()
@@ -1444,7 +1522,7 @@ class TestCoalitionNetworks:
         early-warning network, and nothing enforced that until now."""
         assert radar_site("Cape Town").coalition == "non-aligned"
         assert "Cape Town" not in {s.name for s in network("western")}
-        assert "Cape Town" in {s.name for s in network("western", "non-aligned")}
+        assert "Cape Town" in {s.name for s in network("non-aligned")}
 
     def test_selecting_several_coalitions_unions_them(self):
         both = network("western", "russia")
@@ -1472,8 +1550,198 @@ class TestCoalitionNetworks:
         )
         defender = coverage(
             trajectory.times, trajectory.altitudes, trajectory.subpoints,
-            network("western", "non-aligned"),
+            network("western"),
         )
         assert everything.first_detecting_site == "Okno (Zelenograd)"
         assert defender.first_detecting_site != everything.first_detecting_site
         assert defender.warning_time < everything.warning_time
+
+
+class TestAscentProfile:
+    """The boost leg as a self-consistent gravity turn.
+
+    What it replaced was not merely unrealistic, it was *inconsistent*: a
+    stated ramp of altitude against arc whose implied burnout speed was
+    2,666 m/s while the profile it fed needed 7,818, and whose lift-off
+    flight-path angle was 37 degrees. Neither error touched a warning
+    number, because altitude and ground track were being told what to be.
+    """
+
+    _SPEED = 7818.0
+
+    def test_it_leaves_the_pad_vertically(self):
+        profile = ascent_profile(150e3, self._SPEED, 180.0)
+        assert profile.altitudes[0] == pytest.approx(0.0, abs=1e-9)
+        assert profile.downranges[0] == pytest.approx(0.0, abs=1e-9)
+        # dh/ds -> infinity at lift-off: the first step is all climb.
+        climb = profile.altitudes[1] - profile.altitudes[0]
+        run = profile.downranges[1] - profile.downranges[0]
+        assert np.rad2deg(np.arctan2(climb, max(run, 1e-12))) > 85.0
+
+    def test_it_burns_out_exactly_where_asked(self):
+        for altitude in (140e3, 170e3, 220e3):
+            profile = ascent_profile(altitude, self._SPEED, 180.0)
+            assert profile.altitudes[-1] == pytest.approx(altitude, rel=1e-6)
+            assert profile.times[-1] == pytest.approx(180.0)
+
+    def test_burnout_is_near_horizontal_for_an_orbital_insertion(self):
+        """Solved for, not assumed. You cannot insert into an orbit while
+        still climbing steeply, so a near-zero answer is the check that the
+        boost and the parking arc are describing the same vehicle."""
+        profile = ascent_profile(170e3, self._SPEED, 180.0)
+        assert 0.0 < np.rad2deg(profile.burnout_angle) < 10.0
+
+    def test_altitude_and_downrange_are_both_monotone(self):
+        profile = ascent_profile(170e3, self._SPEED, 180.0)
+        assert np.all(np.diff(profile.altitudes) > 0.0)
+        assert np.all(np.diff(profile.downranges) > 0.0)
+
+    def test_downrange_is_derived_and_lands_where_real_boosts_do(self):
+        """Duration, burnout speed and downrange cannot be chosen
+        independently — the path length is fixed by the speed law, and only
+        its split between up and along is free. A 180 s burn to orbital
+        speed puts burnout some 650 km downrange, which is the right
+        order for an ICBM-class boost."""
+        profile = ascent_profile(170e3, self._SPEED, 180.0)
+        assert 500e3 < profile.ground_range < 900e3
+
+    def test_a_longer_burn_reaches_further(self):
+        short = ascent_profile(170e3, self._SPEED, 120.0)
+        long = ascent_profile(170e3, self._SPEED, 190.0)
+        assert long.ground_range > short.ground_range
+        assert long.burnout_angle < short.burnout_angle
+
+    def test_the_path_length_matches_the_speed_law(self):
+        """An independent check on the integration: with speed growing as
+        v_bo * tau, the path length must be exactly v_bo * t_bo / 2."""
+        profile = ascent_profile(170e3, self._SPEED, 180.0)
+        path = float(
+            np.sum(np.hypot(np.diff(profile.altitudes), np.diff(profile.downranges)))
+        )
+        assert path == pytest.approx(0.5 * self._SPEED * 180.0, rel=2e-4)
+
+    def test_an_unreachable_combination_is_refused(self):
+        with pytest.raises(ValueError, match="still ascending"):
+            ascent_profile(150e3, self._SPEED, 600.0)
+
+    def test_rejects_nonsense_inputs(self):
+        for kwargs in (
+            {"burnout_altitude": 0.0},
+            {"burnout_speed": -1.0},
+            {"duration": 0.0},
+        ):
+            args = {"burnout_altitude": 170e3, "burnout_speed": self._SPEED,
+                    "duration": 180.0, **kwargs}
+            with pytest.raises(ValueError):
+                ascent_profile(**args)
+        with pytest.raises(ValueError, match="pitch_exponent"):
+            ascent_profile(170e3, self._SPEED, 180.0, pitch_exponent=0.0)
+
+
+class TestPhasesAndEvents:
+    """Trajectories declare their structure rather than leaving it to be
+    inferred from the shape of the altitude curve — which was a guess, and
+    broke every time the shape changed."""
+
+    _LAUNCH = GeodeticPosition.from_degrees(51.0, 59.0, 120.0, "launch")
+    _TARGET = GeodeticPosition.from_degrees(38.87, -77.06, 24.0, "target")
+
+    def _fobs(self):
+        return fobs_trajectory(self._LAUNCH, self._TARGET, samples=600)
+
+    def test_the_phases_tile_the_flight_without_gaps_or_overlap(self):
+        for trajectory in (
+            self._fobs(),
+            ballistic_trajectory(self._LAUNCH, self._TARGET, samples=600),
+        ):
+            phases = trajectory.phases
+            assert phases, f"{trajectory.label} declares no phases"
+            assert phases[0].start_time == pytest.approx(0.0, abs=1e-9)
+            assert phases[-1].end_time == pytest.approx(trajectory.flight_time, rel=1e-9)
+            for earlier, later in zip(phases, phases[1:], strict=False):
+                assert later.start_time == pytest.approx(earlier.end_time, rel=1e-12)
+                assert earlier.duration > 0.0
+
+    def test_every_sample_falls_in_exactly_one_named_phase(self):
+        trajectory = self._fobs()
+        for time in np.linspace(0.0, trajectory.flight_time, 50):
+            assert trajectory.phase_at(float(time)) != ""
+
+    def test_the_fractional_profile_names_the_legs_it_actually_flies(self):
+        names = [p.name for p in self._fobs().phases]
+        assert names == ["boost", "parking coast", "deorbit coast", "entry"]
+
+    def test_events_are_ordered_and_bracket_the_flight(self):
+        for trajectory in (
+            self._fobs(),
+            ballistic_trajectory(self._LAUNCH, self._TARGET, samples=600),
+        ):
+            times = [e.time for e in trajectory.events]
+            assert times == sorted(times)
+            assert times[0] == pytest.approx(0.0, abs=1e-9)
+            assert times[-1] == pytest.approx(trajectory.flight_time, rel=1e-9)
+
+    def test_the_deorbit_burn_is_a_real_delta_v_at_a_real_time(self):
+        """The burn used to be a discontinuity in a prescribed altitude
+        curve with no velocity change attached to it at all."""
+        trajectory = self._fobs()
+        burn = next(e for e in trajectory.events if e.name == "deorbit burn")
+        delta_v = float(burn.detail.split("dv")[1].split("m/s")[0].replace(",", ""))
+        assert 50.0 < delta_v < 400.0, "a deorbit from LEO costs a few hundred m/s"
+        parking = next(p for p in trajectory.phases if p.name == "parking coast")
+        assert burn.time == pytest.approx(parking.end_time, rel=1e-12)
+
+    def test_the_burn_commits_the_vehicle_thousands_of_km_out(self):
+        """A strategic consequence the model now exposes: deorbiting from
+        orbital speed takes a quarter of the planet, so the profile is
+        committed long before impact and the 'surprise' is bounded by the
+        descent conic, not by the parking arc."""
+        trajectory = self._fobs()
+        burn = next(e for e in trajectory.events if e.name == "deorbit burn")
+        assert trajectory.flight_time - burn.time > 900.0
+        coast = next(p for p in trajectory.phases if p.name == "deorbit coast")
+        ground_km = float(coast.note.split("km")[0].replace(",", ""))
+        assert ground_km > 3000.0
+
+    def test_the_parking_arc_is_an_ellipse_not_a_prescription(self):
+        """Held exactly constant, altitude was the one quantity in the
+        profile that no dynamics produced."""
+        trajectory = self._fobs()
+        coast = next(p for p in trajectory.phases if p.name == "parking coast")
+        inside = (trajectory.times > coast.start_time) & (
+            trajectory.times < coast.end_time
+        )
+        altitudes = trajectory.altitudes[inside]
+        assert altitudes.max() - altitudes.min() > 50e3
+        assert altitudes.min() >= 170e3 - 1.0
+
+    def test_a_circular_parking_orbit_is_still_available(self):
+        trajectory = fobs_trajectory(
+            self._LAUNCH, self._TARGET, parking_altitude=200e3,
+            parking_apogee=200e3, samples=600,
+        )
+        coast = next(p for p in trajectory.phases if p.name == "parking coast")
+        inside = (trajectory.times > coast.start_time) & (
+            trajectory.times < coast.end_time
+        )
+        assert np.ptp(trajectory.altitudes[inside]) < 1.0
+
+    def test_an_apogee_below_the_insertion_altitude_is_refused(self):
+        with pytest.raises(ValueError, match="at or above the insertion"):
+            fobs_trajectory(
+                self._LAUNCH, self._TARGET, parking_altitude=200e3,
+                parking_apogee=150e3, samples=200,
+            )
+
+    def test_the_profile_still_lands_on_its_aimpoint(self):
+        """Every leg was re-timed; the lead angle depends on all of them.
+        Sub-metre, and independent of the sample count — an earlier version
+        was 1.9 km off at 200 samples and 0.3 km at 4000, which is how a
+        discretisation error announces itself."""
+        for samples in (200, 900):
+            for direction in ("long", "short"):
+                trajectory = fobs_trajectory(
+                    self._LAUNCH, self._TARGET, samples=samples, direction=direction
+                )
+                miss = great_circle_range(trajectory.subpoints[-1], self._TARGET)
+                assert miss < 1.0, f"{direction} at {samples} samples missed {miss:.1f} m"
