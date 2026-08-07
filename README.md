@@ -281,11 +281,17 @@ A package records only what was *chosen*. Nothing derivable from those choices i
 
 [`notebooks/fobs-warning-analysis.ipynb`](notebooks/fobs-warning-analysis.ipynb) is driven entirely by a launch package and composes the orbital, guidance and sensor-geometry modules into a runnable warning-time comparison: a fractional-orbital profile against a ballistic arc between the same two points, past a network of publicly documented early-warning sites. Launch site and aimpoint are configurable at the top; the notebook sweeps burnout flight-path angle across four objectives, parking altitude against four radar-mask assumptions, and reports the fractional-insertion condition.
 
-The headline trade for a mid-latitude Eurasian launch against a US east-coast aimpoint: **24 minutes of warning removed, paid for with 37 minutes of flight time and 780 m/s of burnout speed** — and seven detecting sites reduced to one, because the profile arrives from the reversed bearing.
+The trade for a mid-latitude Eurasian launch against a US east-coast aimpoint, **against the original 13-site network**: 24 minutes of warning removed, paid for with 37 minutes of flight time and 780 m/s of burnout speed, with seven detecting sites reduced to one.
+
+**That advantage does not survive a larger network, and one station is responsible.** The site list has since grown to 22 including Exmouth and Cape Town, and the same scenario now gives the fractional profile *more* warning than the ballistic arc — 47.6 min against 29.0. Dropping Exmouth alone restores the original answer exactly. The reason separates two things worth keeping apart: warning runs from *first* detection to impact, and the fractional profile flies 69 minutes against 30, so being seen by **few** sensors and being seen **late** are different properties and only the second buys warning. Azimuth denial survives intact (2 detecting sites against 10); the warning advantage does not. Any warning figure from this framework should be quoted with the network it was computed against.
 
 This is a **strategic-stability analysis** of the kind published openly in the arms-control literature: line-of-sight geometry only, with no power-aperture, cross-section, track-initiation or decision-latency model, so every warning figure is an upper bound. Radar mask elevations are assumed rather than published, which is why the notebook sweeps them. Boost-phase infrared detection — the largest omission, and one that cuts against the fractional profile — is not modelled at all.
 
 Run it with `jupyter lab notebooks/`, after `pip install -e .`.
+
+[`notebooks/animation.ipynb`](notebooks/animation.ipynb) renders the same comparison in three dimensions. The Earth is **ray-traced** by [`passes.viz.globe`](src/passes/viz/globe.py) rather than drawn with `plot_surface`: a camera ray is intersected with the sphere per output pixel and the texture sampled bilinearly, so sharpness is limited by the texture and the frame size and never by a mesh. It also returns a depth buffer, which makes occlusion a per-point test — the reason trajectories no longer appear in front of the planet they are behind. A 1600×900 frame takes about 0.2 s.
+
+The camera is a pinhole with a position, a look-at target and a field of view, driven by a chase rig that rides behind and above the vehicle along its own velocity. The shading model (Lambertian terrain, soft terminator, atmospheric limb, ocean glint) exists so the geometry reads clearly and is calibrated against nothing.
 
 ---
 

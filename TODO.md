@@ -820,6 +820,38 @@ enough to say what they are worth and what the catch is.
 
 ### 9.7c FOBS, rigorously
 
+- [!] **The warning-time advantage inverted when the sensor network grew,
+      and one station is responsible.** Recorded at the top of this section
+      because it supersedes a headline result reported earlier in this
+      backlog.
+
+      Against the original **13-site** network the fractional profile
+      removed ~24 minutes of warning. That network had **no
+      southern-hemisphere coverage**. With the network now at **22 sites**
+      including Exmouth and Cape Town, the same scenario gives the
+      fractional profile **47.6 min of warning against the ballistic arc's
+      29.0** — an 18.6-minute *penalty*, not an advantage.
+
+      Isolated by ablation: dropping **Exmouth alone** restores 4.6 min and
+      the full +24.4-minute advantage exactly. Dropping Cape Town changes
+      nothing. Nothing else in the model differs.
+
+      The mechanism separates two properties this analysis had been
+      conflating. Warning is measured from *first* detection to impact, and
+      the fractional profile flies 69 min against 30:
+
+      * **Azimuth denial holds decisively** — 2 detecting sites against 10.
+      * **Warning advantage does not** — one early detection means being
+        tracked through three quarters of a much longer flight.
+
+      So the advantage was never robust; it was contingent on a coverage
+      gap that a single station closes. **Any warning figure this framework
+      produces must be quoted with the network it was computed against.**
+      The earlier "24 minutes removed" figure in §9.7c below and in the
+      README is true only of the 13-site network and is now labelled as
+      such.
+
+
 - [x] ~~**The fractional-orbit condition itself.**~~ **Done.**
       `fractional_insertion` in [`fobs.py`](src/passes/orbital/fobs.py)
       classifies an insertion by whether its conic perigee falls at or below
@@ -882,7 +914,9 @@ enough to say what they are worth and what the catch is.
       | **sites detecting** | **7** | **1** |
       | **warning** | **27.9 min** | **4.3 min** |
 
-      The trade priced rather than asserted: **24 minutes of warning removed,
+      The trade priced rather than asserted, **against the 13-site network
+      of the time** (see the superseding note at the head of this section):
+      **24 minutes of warning removed,
       paid for with 37 minutes of flight time and 780 m/s of burnout speed.**
       And the azimuth-denial half falls straight out of the same run — the
       ballistic arc is seen by seven widely separated sites, the fractional
