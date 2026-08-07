@@ -25,3 +25,21 @@ __all__ = [
     "smoothstep",
     "vacuum_pressure_coefficient",
 ]
+
+from passes.aerodynamics.tables import (
+    AeroTable,
+    Coefficients,
+    PanelSolver,
+    SweepGrid,
+    SweepRun,
+    console_progress,
+)
+
+__all__ += [
+    "AeroTable",
+    "Coefficients",
+    "PanelSolver",
+    "SweepGrid",
+    "SweepRun",
+    "console_progress",
+]

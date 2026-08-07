@@ -6,6 +6,6 @@ aerodynamics a surface it was already built to consume.
 
 from __future__ import annotations
 
-from passes.geometry.mesh import VehicleMesh, load_stl
+from passes.geometry.mesh import VehicleMesh, load_stl, write_stl
 
-__all__ = ["VehicleMesh", "load_stl"]
+__all__ = ["VehicleMesh", "load_stl", "write_stl"]

@@ -51,7 +51,7 @@ from numpy.typing import NDArray
 
 from passes.aerodynamics.panels import PanelModel
 
-__all__ = ["VehicleMesh", "load_stl"]
+__all__ = ["VehicleMesh", "load_stl", "write_stl"]
 
 _FloatArray = NDArray[np.float64]
 _IntArray = NDArray[np.int64]
@@ -812,6 +812,29 @@ class VehicleMesh:
             faces=remapped.reshape(faces.shape).astype(np.int64),
             name=f"{self.name}[{low:g}:{high:g}]",
         )
+
+
+def write_stl(mesh: VehicleMesh, path: str | Path, name: str | None = None) -> Path:
+    """Write a binary STL.
+
+    Normals are written from the winding, so a file produced here is
+    self-consistent — unlike the one that started this, whose stored normals
+    faithfully recorded a broken winding.
+    """
+    location = Path(path)
+    location.parent.mkdir(parents=True, exist_ok=True)
+    triangles = mesh.triangles
+    normals = mesh.normals
+    header = (name or mesh.name or location.stem).encode("ascii", "replace")[:79]
+    with location.open("wb") as handle:
+        handle.write(header.ljust(80, b"\0"))
+        handle.write(struct.pack("<I", mesh.n_faces))
+        for normal, triangle in zip(normals, triangles, strict=True):
+            handle.write(struct.pack("<3f", *normal))
+            for vertex in triangle:
+                handle.write(struct.pack("<3f", *vertex))
+            handle.write(b"\0\0")
+    return location
 
 
 def _shortest_arc(source: _FloatArray, target: _FloatArray) -> _FloatArray:

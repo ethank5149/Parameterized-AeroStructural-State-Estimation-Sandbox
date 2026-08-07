@@ -1345,6 +1345,72 @@ no drag, no J2, no attitude, no mass depletion and no gravity loss.
       mass in each stage — and mass is what a staged ascent needs, not
       shape.
 
+### 9.11d Coefficient tables
+
+- [x] ~~**Vehicle artefacts saved for posterity.**~~ **Done** —
+      `data/vehicles/rs28/`. Ten meshes plus `manifest.json`: the repaired
+      and scaled full body, its exterior-only surface, four stages and four
+      flight configurations. The manifest records the source SHA-256, every
+      defect repaired, the anisotropic scale factors and what they preserve
+      and change, every measurement, the published figures with their
+      provenance, both readings of the separation rings *with their audits*,
+      and the mass model with per-number provenance.
+
+      The **flight configurations** are the aerodynamically meaningful cut,
+      not the stages: a spent stage never flies alone nose-first, so stage 1
+      is a debris object while "after-stage1" is a thing in the airstream.
+      Both are saved because both get asked for.
+
+      Cuts are taken from the **exterior** mesh. A panel method integrates
+      whatever it is handed, and with the nozzle interior and internal
+      bulkheads left in the full stack returns an axial coefficient of
+      **4.21** against **0.87** for the same body without them.
+
+- [x] ~~**Resumable sweep framework.**~~ **Done** —
+      [`tables.py`](src/passes/aerodynamics/tables.py). Every completed point
+      is appended to newline-delimited JSON and flushed immediately;
+      restarting skips what is present. `max_points` and `time_budget` cut a
+      sweep into slices and `KeyboardInterrupt` is caught, checkpointed and
+      returned as a partial table. A truncated final line — what a `kill -9`
+      mid-write leaves — is skipped rather than fatal, and a checkpoint from
+      a different configuration is ignored rather than inherited.
+
+      Two bugs found by its own tests: the progress bar reached **200 %**
+      because `done` is mutated in place and reading its length inside the
+      loop counted every new point twice; and the default Mach grid started
+      at 0.3, which the panel method rightly refuses.
+
+- [x] ~~**Panel-method tables for every configuration.**~~ **Done** —
+      `notebooks/aero-tables.ipynb`, 1,664 points in 183 s, checkpointed to
+      `results/aero/`. All four configurations, Mach 1.2 to 25, incidence 0
+      to 12 degrees.
+
+      A result worth keeping: the payload's axial coefficient **rises** with
+      Mach (0.278 to 0.307) while the full stack's **falls** (1.62 to 0.87),
+      and both are right. A nose-dominated body follows the Newtonian
+      :math:`C_{p,\max}`, which climbs toward 1.84; the stack is dominated at
+      low supersonic by expansion over its long afterbody. The invariant is
+      that both *settle*, not that either falls — a test asserting a
+      direction encoded the wrong physics and was replaced with one
+      asserting convergence.
+
+- [ ] **The transonic gap.** Everything stops at Mach 1.2, and that is where
+      a launch vehicle sees its highest dynamic pressure — the part of the
+      curve that sizes the structure is the part not covered. SU2 8.5.0 and
+      gmsh 4.15.2 are installed and verified; the plan is axisymmetric Euler,
+      which is cheap because a body of revolution at zero incidence is a 2-D
+      problem. Remaining: gmsh domain with a shock-resolving boundary layer,
+      SU2 boundary conditions, a grid-convergence study, and validation
+      against a sharp cone with a Taylor-Maccoll solution. Skin friction is
+      not in an Euler solution and needs a Van Driest II correlation over the
+      wetted area.
+
+- [ ] **Wire the tables into the trajectory.** `FlightConfiguration.drag_area`
+      is still a hand-set constant; `AeroTable.drag_area(mach)` is the curve
+      it should read. Building every configuration on one reference area was
+      so that a trajectory can switch tables at staging without
+      renormalising.
+
 ### 9.12 Visualization as a first-class consumer
 
 The animation layer is a *presentation* layer and is held to a lower bar
