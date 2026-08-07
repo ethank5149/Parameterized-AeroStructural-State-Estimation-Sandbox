@@ -1111,3 +1111,177 @@ class TestEarthRotationAndLeadTargeting:
         turning = fobs_trajectory(self._LAUNCH, self._TARGET, earth_rotation=True)
         assert fixed.subpoints[-1].longitude != turning.subpoints[-1].longitude
         assert fixed.flight_time != turning.flight_time
+
+
+class TestFobsDescentProfile:
+    """The deorbit leg follows the transfer conic, not a linear ramp.
+
+    This was found by looking at an animation HUD: the altitude readout sat
+    at exactly the parking altitude for 95 % of the flight and then fell to
+    the ground in under three minutes. That is not a display bug — it was
+    the model.
+    """
+
+    _LAUNCH = GeodeticPosition.from_degrees(51.0, 59.0, 120.0, "launch")
+    _TARGET = GeodeticPosition.from_degrees(38.87, -77.06, 24.0, "target")
+
+    def _trajectory(self, **kwargs):
+        return fobs_trajectory(
+            self._LAUNCH, self._TARGET, parking_altitude=150e3,
+            samples=400, earth_rotation=True, **kwargs,
+        )
+
+    @staticmethod
+    def _descent_mask(trajectory, parking=150e3):
+        """Samples on the *descent*, excluding the ascent.
+
+        Selecting on "altitude differs from parking" alone was correct only
+        while the profile began in orbit. Once a boost phase was added that
+        predicate also matched the climb, and these tests started measuring
+        the ascent instead — which is why they are anchored to the second
+        half of the flight.
+        """
+        below = trajectory.altitudes < parking - 1.0
+        after_midpoint = np.arange(len(trajectory.altitudes)) > (
+            len(trajectory.altitudes) // 2
+        )
+        return below & after_midpoint
+
+
+    def test_the_descent_is_a_fifth_of_the_flight_not_a_twentieth(self):
+        """The linear ramp gave 4.3 % of the flight; the conic gives about
+        21 %, which is what a -400 km virtual perigee actually implies."""
+        trajectory = self._trajectory()
+        descending = self._descent_mask(trajectory)
+        start = trajectory.times[descending][0]
+        fraction = (trajectory.times[-1] - start) / (trajectory.times[-1] - start + start)
+        assert 0.12 < fraction < 0.30
+
+    def test_the_vertical_rate_is_orbital_not_ballistic(self):
+        """A shallow deorbit from 150 km arrives at a flight-path angle near
+        -1.5 degrees, so the mean vertical rate is a couple of hundred
+        metres per second. The ramp implied 850, which is four times too
+        fast and was the visible symptom."""
+        trajectory = self._trajectory()
+        descending = self._descent_mask(trajectory)
+        duration = trajectory.times[-1] - trajectory.times[descending][0]
+        assert 100.0 < 150e3 / duration < 320.0
+
+    def test_altitude_falls_monotonically_and_accelerating(self):
+        """A conic descent starts slowly near apogee and steepens. A linear
+        ramp has constant slope, which is how the old model was
+        distinguishable from this one without any reference data."""
+        trajectory = self._trajectory()
+        altitude = trajectory.altitudes[self._descent_mask(trajectory)]
+        assert np.all(np.diff(altitude) <= 1e-6), "altitude must not rise"
+        drops = -np.diff(altitude)
+        first, last = drops[: len(drops) // 3].mean(), drops[-len(drops) // 3 :].mean()
+        assert last > 2.0 * first, "the descent must steepen, not run linear"
+
+    def test_a_deeper_perigee_gives_a_steeper_shorter_descent(self):
+        """The perigee is the knob that sets arrival steepness, and it now
+        does something: a bigger burn buys a faster, more compact descent."""
+        shallow = self._trajectory(perigee_radius=WGS84_MEAN_RADIUS - 200e3)
+        deep = self._trajectory(perigee_radius=WGS84_MEAN_RADIUS - 2000e3)
+
+        def descent_seconds(trajectory):
+            descending = self._descent_mask(trajectory)
+            return trajectory.times[-1] - trajectory.times[descending][0]
+
+        assert descent_seconds(deep) < descent_seconds(shallow)
+
+    def test_times_stay_strictly_increasing_through_the_handover(self):
+        """The descent leg is re-timed by Kepler while the parking arc runs
+        at the circular rate. Splicing two clocks is exactly where a
+        non-monotone time vector would appear, and `coverage` requires
+        strictly increasing times."""
+        trajectory = self._trajectory()
+        assert np.all(np.diff(trajectory.times) > 0.0)
+
+    def test_a_perigee_above_the_surface_is_refused(self):
+        """A transfer whose perigee clears the surface never reaches the
+        ground, so the descent conic would not close."""
+        with pytest.raises(ValueError, match="below the surface"):
+            self._trajectory(perigee_radius=WGS84_MEAN_RADIUS + 50e3)
+
+    def test_the_warning_conclusion_survives_the_fix(self):
+        """The descent model changed materially; the finding it feeds must
+        be checked against it rather than assumed to carry over. Exmouth
+        still inverts the comparison."""
+        full = warning_comparison(
+            self._LAUNCH, self._TARGET, parking_altitude=150e3,
+            sites=tuple(EARLY_WARNING_SITES), samples=400, earth_rotation=True,
+        )
+        without = warning_comparison(
+            self._LAUNCH, self._TARGET, parking_altitude=150e3,
+            sites=tuple(s for s in EARLY_WARNING_SITES if "Exmouth" not in s.name),
+            samples=400, earth_rotation=True,
+        )
+        assert full.warning_reduction < 0.0
+        assert without.warning_reduction > 20.0 * 60.0
+
+
+class TestFobsBoostPhase:
+    """The profile begins on the pad, not in the parking orbit.
+
+    Found the same way as the descent defect — by watching an animation.
+    It opened with the vehicle already at 150 km, because the trajectory
+    genuinely started there.
+    """
+
+    _LAUNCH = GeodeticPosition.from_degrees(51.0, 59.0, 120.0, "launch")
+    _TARGET = GeodeticPosition.from_degrees(38.87, -77.06, 24.0, "target")
+
+    def test_the_trajectory_starts_at_the_ground(self):
+        trajectory = fobs_trajectory(self._LAUNCH, self._TARGET, samples=500)
+        assert trajectory.altitudes[0] == pytest.approx(0.0, abs=1.0)
+        assert trajectory.times[0] == pytest.approx(0.0, abs=1e-9)
+
+    def test_and_ends_at_the_ground(self):
+        """Both ends matter: an animation that stops at altitude is missing
+        the part the whole analysis is about."""
+        trajectory = fobs_trajectory(self._LAUNCH, self._TARGET, samples=500)
+        assert trajectory.altitudes[-1] == pytest.approx(0.0, abs=1.0)
+
+    def test_the_ascent_reaches_parking_altitude_in_the_stated_time(self):
+        trajectory = fobs_trajectory(
+            self._LAUNCH, self._TARGET, parking_altitude=150e3,
+            boost_duration=300.0, samples=800,
+        )
+        risen = np.nonzero(trajectory.altitudes >= 150e3 - 1.0)[0][0]
+        assert trajectory.times[risen] == pytest.approx(300.0, rel=0.15)
+
+    def test_the_ascent_is_a_small_fraction_of_the_flight(self):
+        """A 300 s boost against a 70 minute profile: visible, but the
+        profile is still overwhelmingly its parking arc."""
+        trajectory = fobs_trajectory(self._LAUNCH, self._TARGET, samples=800)
+        ascending = trajectory.altitudes < 150e3 - 1.0
+        first_descent = np.nonzero(
+            (trajectory.altitudes < 150e3 - 1.0)
+            & (np.arange(len(trajectory.altitudes)) > len(trajectory.altitudes) // 2)
+        )[0][0]
+        boost_samples = np.count_nonzero(ascending[:first_descent])
+        assert 0.0 < boost_samples / len(trajectory.altitudes) < 0.10
+
+    def test_altitude_rises_monotonically_through_the_boost(self):
+        trajectory = fobs_trajectory(self._LAUNCH, self._TARGET, samples=800)
+        ascending = trajectory.altitudes < 150e3 - 1.0
+        climb = trajectory.altitudes[: np.count_nonzero(ascending[:100])]
+        assert np.all(np.diff(climb) >= -1e-9)
+
+    def test_a_longer_boost_takes_longer_to_insert(self):
+        quick = fobs_trajectory(self._LAUNCH, self._TARGET, boost_duration=120.0, samples=600)
+        slow = fobs_trajectory(self._LAUNCH, self._TARGET, boost_duration=600.0, samples=600)
+        assert slow.flight_time > quick.flight_time
+        assert slow.flight_time - quick.flight_time == pytest.approx(480.0, rel=0.25)
+
+    def test_times_remain_monotone_across_all_three_phases(self):
+        """Boost, parking and descent are timed by three different rules and
+        spliced. That is exactly where a non-monotone clock appears, and
+        `coverage` requires strictly increasing times."""
+        trajectory = fobs_trajectory(self._LAUNCH, self._TARGET, samples=900)
+        assert np.all(np.diff(trajectory.times) > 0.0)
+
+    def test_rejects_a_negative_boost_duration(self):
+        with pytest.raises(ValueError, match="boost_duration"):
+            fobs_trajectory(self._LAUNCH, self._TARGET, boost_duration=-1.0)

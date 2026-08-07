@@ -313,6 +313,9 @@ def fobs_trajectory(
     samples: int = 400,
     body_radius: float = WGS84_MEAN_RADIUS,
     earth_rotation: bool = True,
+    perigee_radius: float | None = None,
+    boost_duration: float = 300.0,
+    boost_range: float = 400.0e3,
 ) -> Trajectory:
     """A fractional orbital profile taking the long way round.
 
@@ -355,10 +358,22 @@ def fobs_trajectory(
         raise ValueError(msg)
     radius = body_radius + parking_altitude
     speed = float(np.sqrt(_MU / radius))
+    perigee = body_radius - 400.0e3 if perigee_radius is None else float(perigee_radius)
+    if not perigee < body_radius:
+        msg = (
+            f"perigee_radius must lie below the surface for the conic to reach "
+            f"it, got {perigee} against a body radius of {body_radius}"
+        )
+        raise ValueError(msg)
+
+    boost_arc = float(boost_range) / body_radius
+    if not (np.isfinite(boost_duration) and boost_duration >= 0.0):
+        msg = f"boost_duration must be finite and >= 0, got {boost_duration}"
+        raise ValueError(msg)
 
     def elapsed_for(aim: GeodeticPosition) -> float:
         arc = 2.0 * np.pi - great_circle_range(launch, aim) / body_radius
-        return float(arc * radius / speed)
+        return float(boost_duration + (arc - boost_arc) * radius / speed)
 
     if earth_rotation:
         aimpoint, _ = leading_aimpoint(launch, target, elapsed_for)
@@ -372,8 +387,18 @@ def fobs_trajectory(
     swept = np.linspace(0.0, theta, samples)
     inertial = [great_circle_point(launch, bearing, float(s)) for s in swept]
 
-    # Times first, because the rotation correction needs them.
-    elapsed = swept * radius / speed
+    # Times first, because the rotation correction needs them. Piecewise:
+    # a stated powered ascent, then the parking arc at the circular ground
+    # rate. The descent leg is re-timed by Kepler further down.
+    elapsed = boost_duration + (swept - boost_arc) * radius / speed
+    ascending = swept < boost_arc
+    if np.any(ascending):
+        # Ground range accelerating through the burn, which is what a
+        # gravity turn does; a linear ramp would put the vehicle at half
+        # its downrange distance at half the burn, which it is not.
+        elapsed[ascending] = boost_duration * np.sqrt(
+            np.clip(swept[ascending] / boost_arc, 0.0, 1.0)
+        )
 
     if earth_rotation:
         # The plane is inertial; the ground turns eastward beneath it, so
@@ -394,16 +419,63 @@ def fobs_trajectory(
     else:
         subpoints = inertial
 
-    # Altitude: constant on the parking arc, then a descent over the final
-    # stretch. The descent arc is taken from the deorbit transfer geometry
-    # of a Hohmann-like drop to the entry interface, which for these
-    # altitudes is a few degrees of arc.
-    descent_arc = float(np.arccos(np.clip(body_radius / radius, -1.0, 1.0)))
+    # Altitude: constant on the parking arc, then the *actual* deorbit conic.
+    #
+    # This used to be a linear ramp over an arc taken from the horizon
+    # formula, and it was badly wrong in a way the animation HUD exposed:
+    # the vehicle held exactly 150 km for 95 % of the flight and then fell
+    # to the ground in under three minutes, a mean vertical rate of
+    # 850 m/s. The real transfer from a 150 km parking orbit to a -400 km
+    # virtual perigee reaches the entry interface at a flight-path angle of
+    # about -1.5 degrees, which is a vertical rate near 200 m/s. Faking the
+    # descent understated its duration roughly threefold and its ground
+    # arc by a factor of five.
+    #
+    # It is now the conic itself: a retrograde burn at the parking radius
+    # makes that point apogee, and the vehicle coasts down the resulting
+    # ellipse. Altitude follows r(nu) = p/(1 + e cos nu) and the timing
+    # comes from Kepler's equation, so the descent takes as long and covers
+    # as much ground as the two-body problem says it does.
+    apogee = radius
+    eccentricity = (apogee - perigee) / (apogee + perigee)
+    semi_major = 0.5 * (apogee + perigee)
+    parameter = semi_major * (1.0 - eccentricity**2)
+
+    # True anomaly at which the conic reaches the surface, on the way down.
+    cos_impact = np.clip((parameter / body_radius - 1.0) / eccentricity, -1.0, 1.0)
+    impact_anomaly = 2.0 * np.pi - float(np.arccos(cos_impact))
+    descent_arc = impact_anomaly - np.pi  # apogee sits at nu = pi
+
     altitudes = np.full(samples, parking_altitude, dtype=np.float64)
+    if np.any(ascending):
+        # Rises quickly and flattens toward insertion, which is the shape a
+        # gravity turn traces. Stated, not integrated -- see the parameter
+        # documentation.
+        fraction = np.clip(swept[ascending] / boost_arc, 0.0, 1.0)
+        altitudes[ascending] = parking_altitude * (1.0 - (1.0 - fraction) ** 2)
     descending = swept > (theta - descent_arc)
     if np.any(descending):
-        fraction = (swept[descending] - (theta - descent_arc)) / descent_arc
-        altitudes[descending] = np.maximum(parking_altitude * (1.0 - fraction), 0.0)
+        anomaly = np.pi + (swept[descending] - (theta - descent_arc))
+        altitudes[descending] = np.maximum(
+            parameter / (1.0 + eccentricity * np.cos(anomaly)) - body_radius, 0.0
+        )
+
+        # Re-time the descent leg by Kepler rather than at the parking rate:
+        # the vehicle speeds up as it falls, so holding the circular ground
+        # rate would stretch the descent.
+        def _mean_anomaly(nu: _FloatArray) -> _FloatArray:
+            eccentric = 2.0 * np.arctan2(
+                np.sqrt(1.0 - eccentricity) * np.sin(0.5 * nu),
+                np.sqrt(1.0 + eccentricity) * np.cos(0.5 * nu),
+            )
+            return np.asarray(np.unwrap(eccentric - eccentricity * np.sin(eccentric)))
+
+        mean_motion = np.sqrt(_MU / semi_major**3)
+        reference = float(_mean_anomaly(np.array([np.pi]))[0])
+        offsets = (_mean_anomaly(anomaly) - reference) / mean_motion
+        start = float(elapsed[descending][0])
+        elapsed = np.asarray(elapsed, dtype=np.float64).copy()
+        elapsed[descending] = start + offsets - offsets[0]
 
     return Trajectory(
         label="fractional-orbital",
