@@ -1201,6 +1201,83 @@ Recorded so the survey does not have to be repeated.
       budget evaluator, and `[launches]` entries reject top-level single-launch
       keys to prevent mixed-mode ambiguity.
 
+### 9.11b The animations must be the simulation, not a model of it
+
+The fractional-orbital and ballistic animations were drawn from
+:mod:`passes.orbital.scenario` — a **geometry** model of stitched Keplerian
+conics with a prescribed pitch program. That is the same defect
+`SimulationHistory` was built to remove, one level up: a picture faithful to
+the planner is not a picture of the physics engine, and the planner carries
+no drag, no J2, no attitude, no mass depletion and no gravity loss.
+
+- [x] ~~**Powered flight in the coupled right-hand side.**~~ **Done** —
+      [`propulsion.py`](src/passes/flight/propulsion.py). The engine was
+      structurally unable to fly a boost or a burn: `out[layout.mass] = 0.0`,
+      no thrust term. It now carries constant-thrust arcs with mass
+      depletion and three steering laws.
+
+      The steering law had to be got right, and the first attempt was
+      instructive. A *commanded pitch* program parameterised on burn
+      fraction puts the thrust 17 degrees above horizontal at half the burn,
+      by which point the vehicle is still at 10 km; it then accelerates
+      horizontally through dense air, dynamic pressure reaches **400 kPa**
+      against a real max-Q near 30, drag exceeds thrust, and the vehicle
+      reaches 13 km and 1,050 m/s in 245 s. A **gravity turn** — vertical,
+      one kick, then prograde — cannot fail that way, because after the kick
+      the thrust follows the velocity and the trajectory turns only as fast
+      as gravity turns it. Measured max-Q is then 23-28 kPa, and at an
+      excessive kick the vehicle turns into the atmosphere, which is the
+      correct failure mode.
+
+- [x] ~~**Mass-consistent drag.**~~ **Done.** A fixed ballistic coefficient
+      is exact for an unpowered vehicle and wrong for one that burns fifteen
+      times its burnout mass. `FlightConfiguration.drag_area` switches drag
+      to `q C_D A / m` with the mass the integrator is carrying; the default
+      is `None`, so every existing result is unchanged.
+
+- [x] ~~**A ground event.**~~ **Done.** The simulator integrated a fixed
+      duration and kept going, reaching 45 km *below* the surface in 300 s.
+      Impact is now a terminal `solve_ivp` event.
+
+- [x] ~~**Multi-segment missions.**~~ **Done** —
+      [`mission.py`](src/passes/flight/mission.py). Legs are integrated in
+      sequence and concatenated into one `FlightResult`, with one `Phase`
+      per leg. Thrust switching is a real discontinuity; splitting at it is
+      faster than gating inside one solve and makes the boundaries exact.
+
+- [ ] **Closed-loop targeting that converges.** Started, and not finished —
+      [`profiles.py`](src/passes/flight/profiles.py). The structure is
+      right (every residual is evaluated by integrating the real system) and
+      the individual solves work, but the assembled ascent does not reach a
+      *low* parking orbit. The obstruction is understood and is vehicle
+      sizing, not code: with the current lumped stage the boost burns out at
+      113 km and 3,463 m/s, so at apogee the vehicle has 3,075 m/s against
+      the 7,755 a 250 km circular orbit needs. The "circularisation" is then
+      a 4.7 km/s burn, which over its 200 s runs thousands of kilometres of
+      arc and raises apogee instead of perigee — measured 121 x 906 km for a
+      170 x 250 km request.
+
+      What it needs is a vehicle that reaches near-orbital speed *under
+      thrust* rather than coasting to apogee at a third of it: a larger mass
+      ratio, and probably explicit staging so the upper stage is not
+      dragging the first stage's dry mass. Until that converges, the
+      notebooks still animate the planner, and that is stated in them rather
+      than glossed.
+
+- [!] **Two Earth radii are in use and they differ by 7,128 m.**
+      `EARTH.radius` is the **equatorial** radius, 6,378,137 m; the geodesy
+      layer's `WGS84_MEAN_RADIUS` is the mean, 6,371,009 m. The flight
+      simulator's altitudes are therefore above the equatorial radius while
+      every orbital and coverage calculation uses the mean. Found by writing
+      a ground-event test against the wrong one — it failed by exactly
+      7,128 m.
+
+      For a visualisation the consequence is direct: a `FlightResult` drawn
+      on a globe of mean radius sits 7 km too high. The animator takes
+      `body_radius` explicitly and the notebook passes `sim.gravity.radius`,
+      so the current pictures are right, but the framework should not offer
+      two answers to "how big is the Earth".
+
 ### 9.12 Visualization as a first-class consumer
 
 The animation layer is a *presentation* layer and is held to a lower bar

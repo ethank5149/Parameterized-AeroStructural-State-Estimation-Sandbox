@@ -597,22 +597,51 @@ class TrajectoryAnimator:
     def render_sequence(
         self,
         filename: str | Path,
-        n_frames: int = 130,
-        fps: int = 20,
+        seconds: float = 45.0,
+        fps: int = 30,
+        n_frames: int | None = None,
         dpi: int = 100,
         progress: bool = False,
     ) -> Path:
         """Write the whole history to ``filename``.
 
-        The container is chosen from the extension: ``.gif`` through Pillow,
-        ``.mp4``/``.mov``/``.mkv`` through ffmpeg as H.264. See
-        :func:`video_writer` on why the latter is preferred.
+        Parameters
+        ----------
+        seconds:
+            **Length of the output video.** The frame count follows from it
+            and ``fps``, rather than the other way round, because the frame
+            count is not what anyone wants to specify: 130 frames at 20 fps
+            is 6.5 seconds, and a 72-minute flight compressed into 6.5
+            seconds is unwatchable no matter how the frames are paced. At
+            the default 45 s and 30 fps the same flight gets 1,350 frames,
+            and phase pacing then gives the powered ascent about six
+            seconds of screen time instead of under one.
+        fps:
+            Frames per second of the output.
+        n_frames:
+            Explicit frame count, overriding ``seconds``. For tests and for
+            quick previews.
+        dpi:
+            Output resolution multiplier.
+        progress:
+            Print a line every twenty frames.
 
         Returns
         -------
         pathlib.Path
             The file written.
+
+        Notes
+        -----
+        The container is chosen from the extension: ``.gif`` through Pillow,
+        ``.mp4``/``.mov``/``.mkv`` through ffmpeg as H.264. See
+        :func:`video_writer` on why the latter is preferred.
         """
+        if n_frames is None:
+            if not (np.isfinite(seconds) and seconds > 0.0):
+                msg = f"seconds must be finite and > 0, got {seconds}"
+                raise ValueError(msg)
+            n_frames = max(round(float(seconds) * int(fps)), 2)
         import matplotlib.pyplot as plt
         from matplotlib.animation import FuncAnimation
 

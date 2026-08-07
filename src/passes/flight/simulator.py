@@ -39,6 +39,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from passes.aerothermal import sutton_graves
 from passes.dynamics import quaternion_derivative
+from passes.flight.propulsion import Burn, thrust_direction
 from passes.flight.state import GlobalState, StateLayout
 from passes.orbital import EARTH, GravityModel, gravitational_acceleration
 from passes.spectral import ChebyshevGrid
@@ -93,6 +94,18 @@ class FlightConfiguration:
     """Initial effective nose radius (m)."""
     reference_area: float = 1.2
     """Aerodynamic reference area (m²)."""
+    drag_area: float | None = None
+    """Effective :math:`C_D A` (m²), or ``None`` to use a fixed ballistic
+    coefficient.
+
+    The two are alternatives, not duplicates. An unpowered vehicle has a
+    constant mass, so a constant :math:`\beta = m/(C_D A)` is exact and is
+    what every entry text tabulates. A *powered* one does not: a launcher
+    burns fifteen times its burnout mass, and holding :math:`\beta` fixed
+    through that understates the drag deceleration on the light, fast end
+    of the ascent by the same factor. Set ``drag_area`` for any mission
+    that varies mass, and drag becomes :math:`qC_DA/m` with the mass the
+    integrator is actually carrying."""
     baumgarte_gain: float = 1.0
     """:math:`k_q` of the quaternion stabilization."""
     structural_damping: float = 0.02
@@ -119,6 +132,10 @@ class FlightConfiguration:
             raise ValueError(f"n_modes must be >= 1, got {self.n_modes}")
         if not 0.0 <= self.structural_damping < 1.0:
             raise ValueError("structural_damping must be in [0, 1)")
+        if self.drag_area is not None and not (
+            np.isfinite(self.drag_area) and self.drag_area > 0.0
+        ):
+            raise ValueError(f"drag_area must be finite and > 0, got {self.drag_area}")
         if not 0.0 < self.heat_load_fraction <= 1.0:
             raise ValueError("heat_load_fraction must be in (0, 1]")
         if not (np.isfinite(self.thermal_baumgarte_gain)
@@ -239,6 +256,37 @@ class FlightSimulator:
         return self._elastic_omega
 
     # ------------------------------------------------------------ initial state
+    def state_at(
+        self,
+        position: ArrayLike,
+        velocity: ArrayLike,
+        mass: float = 1500.0,
+        wall_temperature: float = 300.0,
+    ) -> _FloatArray:
+        """Pack a state at an arbitrary inertial position and velocity.
+
+        :meth:`initial_state` places the vehicle on the ``+x`` axis, which
+        is fine for a single entry study and useless for a mission that
+        launches from a named site on a named bearing. This takes the
+        vectors directly.
+        """
+        virgin = np.array(
+            [c.virgin_density for c in self._material.components]
+        )[:, np.newaxis] * np.ones((1, self._layout.n_thermal))
+        state = GlobalState(
+            position=np.asarray(position, dtype=np.float64),
+            velocity=np.asarray(velocity, dtype=np.float64),
+            quaternion=np.array([1.0, 0.0, 0.0, 0.0]),
+            angular_rate=np.zeros(3),
+            mass=float(mass),
+            modal_displacement=np.zeros(self._layout.n_modes),
+            modal_velocity=np.zeros(self._layout.n_modes),
+            temperature=np.full(self._layout.n_thermal, float(wall_temperature)),
+            densities=virgin,
+            recession=0.0,
+        )
+        return state.pack(self._layout)
+
     def initial_state(
         self,
         altitude: float,
@@ -331,12 +379,22 @@ class FlightSimulator:
         rate[-1] = boundary_rates[1]
         return rate
 
-    def rhs(self, t: float, y: _FloatArray) -> _FloatArray:
+    def rhs(self, t: float, y: _FloatArray, burn: Burn | None = None) -> _FloatArray:
         """Right-hand side of the complete coupled system.
 
         Contains **no branch on flight regime**. The atmospheric density
         decays smoothly, so every aerodynamic and aerothermal term
         vanishes numerically above the sensible atmosphere on its own.
+
+        Parameters
+        ----------
+        burn:
+            Optional thrust arc active over this whole call. Thrust is not
+            gated on ``t`` inside the right-hand side: switching it on or
+            off is a genuine discontinuity, and an implicit integrator
+            asked to step across one either crawls or smears it. Segments
+            are integrated separately instead, so within any one solve the
+            thrust state is constant and ``t`` is measured from ignition.
         """
         cfg = self._cfg
         layout = self._layout
@@ -353,9 +411,26 @@ class FlightSimulator:
         # --- translation: J2 gravity plus drag along the relative velocity
         accel = gravitational_acceleration(state.position, self._gravity)
         if speed > 0.0:
-            accel = accel - (q_dyn / cfg.ballistic_coefficient) * (
-                state.velocity / speed
-            )
+            if cfg.drag_area is None:
+                deceleration = q_dyn / cfg.ballistic_coefficient
+            else:
+                deceleration = q_dyn * cfg.drag_area / max(float(state.mass), 1e-6)
+            accel = accel - deceleration * (state.velocity / speed)
+        # --- thrust, when an arc is active
+        #
+        # Mass depletion is carried, so the acceleration grows through the
+        # burn as it does on a real stage: a 6 t vehicle at 300 kN starts
+        # at 5 g and finishes heavier in acceleration than it started.
+        # Treating the deorbit as an impulse would move the vehicle 70 km
+        # less than the integration says it does.
+        if burn is not None:
+            mass = max(float(state.mass), 1e-6)
+            direction = thrust_direction(burn, t, state.position, state.velocity)
+            accel = accel + (burn.thrust / mass) * direction
+            out[layout.mass] = -burn.mass_flow
+        else:
+            out[layout.mass] = 0.0  # unpowered coast
+
         out[layout.position] = state.velocity
         out[layout.velocity] = accel
 
@@ -364,7 +439,6 @@ class FlightSimulator:
             state.quaternion, state.angular_rate, cfg.baumgarte_gain
         )
         out[layout.angular_rate] = 0.0  # torque-free in this configuration
-        out[layout.mass] = 0.0  # unpowered
 
         # --- structure: elastic modal oscillators driven by the aero load
         omega = self._elastic_omega
@@ -378,7 +452,17 @@ class FlightSimulator:
         )
 
         # --- aerothermal: stagnation heating with the recession feedback
-        r_eff = self.effective_radius(state.recession)
+        #
+        # Clamped at zero at the boundary between the integrator and the
+        # physics. Recession is monotone non-decreasing by construction —
+        # the rate below is clamped at zero because oxidative recession is
+        # irreversible — so a negative value is always round-off, and an
+        # implicit solver produces them: a Newton trial state arrived here
+        # at -4e-16 m and the Landau frame rightly refused it, aborting a
+        # solve that was converging. The validator is correct; applying it
+        # to trial states rather than to real ones was not.
+        recession = max(float(state.recession), 0.0)
+        r_eff = self.effective_radius(recession)
         q_stag = (
             float(sutton_graves(density, r_eff, speed)) if density > 0.0 and speed > 0.0
             else 0.0
@@ -392,7 +476,7 @@ class FlightSimulator:
         thermal_state = ThermalState(
             temperature=state.temperature,
             partial_densities=state.densities,
-            recession=state.recession,
+            recession=recession,
         )
         # recession rate from the net surface flux over the ablation enthalpy,
         # clamped at zero because oxidative recession is irreversible
@@ -405,7 +489,7 @@ class FlightSimulator:
         unpacked = self._thermal.unpack(thermal_rhs)
         temperature_rate = self._close_thermal_boundaries(
             state.temperature, np.asarray(unpacked.temperature), net_flux,
-            self._frame.thickness(state.recession), wall,
+            self._frame.thickness(recession), wall,
         )
 
         out[layout.temperature] = temperature_rate

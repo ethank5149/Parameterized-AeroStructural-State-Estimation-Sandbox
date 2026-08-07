@@ -238,7 +238,11 @@ class ChaseRig:
     ----------
     back_scale, back_offset:
         Stand-off behind the vehicle is ``back_scale * altitude +
-        back_offset`` (m).
+        back_offset`` (m). The offset is deliberately small — 25 km — so
+        that a vehicle on the pad is framed from 25 km rather than from the
+        450 km that an offset sized for orbit implies. Altitude does the
+        rest: the same rig stands off 675 km at a 250 km parking orbit and
+        3,400 km at a 1,300 km apogee.
     lift_scale, lift_offset:
         Height above the vehicle's local vertical, same form (m).
     min_altitude:
@@ -262,14 +266,14 @@ class ChaseRig:
         wastes the half of the frame the vehicle is flying into.
     """
 
-    back_scale: float = 2.2
-    back_offset: float = 0.45e6
-    lift_scale: float = 0.7
-    lift_offset: float = 0.15e6
-    min_altitude: float = 30.0e3
+    back_scale: float = 2.6
+    back_offset: float = 25.0e3
+    lift_scale: float = 0.9
+    lift_offset: float = 10.0e3
+    min_altitude: float = 0.0
     tighten: float = 0.25
     fov: float = float(np.deg2rad(42.0))
-    floor: float = 60.0e3
+    floor: float = 3.0e3
     lead: float = 0.35
 
     def camera(
@@ -309,19 +313,44 @@ class ChaseRig:
         # turn into an empty frame.
         heading = heading / speed if speed > 1e-6 else up
 
+        # Stand off along the *horizontal* part of the heading, not along
+        # the heading itself. On a launch the two are completely different:
+        # the velocity is straight up, so stepping back along it steps
+        # straight down, the eye clamps to its altitude floor, and the
+        # vehicle is left as a dot 500 km away on the horizon. Watching
+        # that, a launch looks like it begins in mid-air. Standing off
+        # horizontally puts the camera beside the pad looking at a rising
+        # vehicle, which is what a launch looks like.
+        horizontal = heading - float(heading @ up) * up
+        extent = float(np.linalg.norm(horizontal))
+        if extent > 1e-6:
+            horizontal = horizontal / extent
+        else:
+            # Purely radial: any horizontal direction will do, so take one
+            # from the world axis least aligned with the local vertical.
+            seed = np.array([0.0, 0.0, 1.0])
+            if abs(float(up @ seed)) > 0.9:
+                seed = np.array([1.0, 0.0, 0.0])
+            horizontal = np.cross(np.cross(up, seed), up)
+            horizontal = horizontal / float(np.linalg.norm(horizontal))
+        # Blend: on orbit the heading *is* horizontal and the two agree, so
+        # this only bites where it has to.
+        back_axis = extent * heading + (1.0 - extent) * horizontal
+        back_axis = back_axis / float(np.linalg.norm(back_axis))
+
         altitude = max(radius - body_radius, self.min_altitude)
         shrink = 1.0 - self.tighten * float(ease(progress))
         back = (self.back_scale * altitude + self.back_offset) * shrink
         lift = (self.lift_scale * altitude + self.lift_offset) * shrink
 
-        eye = centre - back * heading + lift * up
+        eye = centre - back * back_axis + lift * up
         eye_radius = float(np.linalg.norm(eye))
         if eye_radius - body_radius < self.floor:
             eye = eye * (body_radius + self.floor) / eye_radius
 
         return Camera(
             position=eye,
-            target=centre + self.lead * back * heading,
+            target=centre + self.lead * back * back_axis,
             up=up,
             fov=self.fov,
             width=int(width),
