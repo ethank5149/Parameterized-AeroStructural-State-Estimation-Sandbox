@@ -1278,6 +1278,73 @@ no drag, no J2, no attitude, no mass depletion and no gravity loss.
       so the current pictures are right, but the framework should not offer
       two answers to "how big is the Earth".
 
+### 9.11c Vehicle geometry from a mesh
+
+- [x] ~~**Load the outer mould line and measure it.**~~ **Done** —
+      [`geometry/mesh.py`](src/passes/geometry/mesh.py). `reference/model.stl`
+      is a 6,922-facet binary STL of a **35.00 m x 3.73 m body of
+      revolution** — R-36 class, which is the vehicle the fractional-orbital
+      analysis is about. Shape scalars that were *stipulated* are now
+      *measured*: wetted area 411.06 m2, frontal area 10.875 m2, length
+      35.00 m, and the axial station profile.
+
+      Two of the measurements needed a better method than the obvious one,
+      and both failures are recorded in the code:
+
+      * **Frontal area** by the analytic projection — half the sum of
+        `|n.a|A` — gave **26.29 m2** against a true 10.93. The mesh contains
+        two **internal bulkheads**, full-diameter disks at two stations that
+        are not outer surface at all, and the formula counts each in full.
+        Rasterising the silhouette is immune and converges to 10.875 m2,
+        which is 0.48 % under `pi r_max^2` — exactly the 0.41 % deficit of
+        the inscribed 40-gon the mesh actually uses. That agreement is the
+        check.
+      * **Nose radius** is not a property of this vehicle. The spherical-cap
+        fit `r^2 = 2 R d` returns 0.35 m over a 0.05 m window, 0.50 m over
+        0.20 m and 0.58 m over 1.00 m, because the nose is an **ogive**: a
+        power-law fit gives `r ~ d^0.59` against 0.5 for a sphere and 1.0
+        for a cone. An automatic window-sweep "plateau detector" was written
+        and then deleted — it found a stable run at 0.35 m that was stable
+        only because several small windows catch the *same two vertex
+        rings*. `nose_exponent()` reports the shape and `nose_radius()`
+        takes an explicit window and documents that it is a bound. This
+        matters because Sutton-Graves assumes a hemispherical stagnation
+        region and goes as `R_n^{-1/2}`.
+
+- [x] ~~**Feed the panel aerodynamics.**~~ **Done.** A triangle *is* a
+      panel, so `VehicleMesh.panel_model()` hands the mesh to the existing,
+      tested `PanelModel` losslessly. Real coefficients replace a hand-set
+      `drag_area`: **C_D = 1.97 at Mach 2 falling to 0.70 at Mach 20**,
+      asymptoting as Newtonian theory requires.
+
+      The axis convention had to be established empirically and was got
+      backwards first. `PanelModel.velocity_direction` is the direction the
+      flow *travels*, so a windward panel's normal points along **-x** — the
+      opposite of where the nose points. Verified with a flat plate: normal
+      along -x collects 1,831 N of a 1,000 Pa stream at Mach 10, normal
+      along +x collects 14 N. Flying the vehicle nose-along-+x gave an
+      axial force coefficient of **-5.7**, negative and an order of
+      magnitude too large, entirely silently.
+
+- [ ] **Exclude internal faces from the aero integration.** Quantified:
+      the two bulkheads add **+0.89 to C_D at Mach 2** and +0.009 at Mach
+      20 — negligible where Newtonian shading dominates, decisive at low
+      supersonic. The general fix is a visibility test (cast a ray from
+      each face centroid along its normal and drop faces that hit the mesh
+      again), which is 48 M ray-triangle tests here and a one-off cost.
+      Until then the low-Mach coefficients are contaminated.
+
+- [ ] **Sub-stage decomposition.** The mesh is a *single* connected
+      component, so stages cannot be separated topologically. Geometry
+      offers a strong hypothesis: four rings stand 0.131 m proud of the
+      1.734 m body at axial stations **z = 8.23, 1.63, -8.05 and -17.90**,
+      which is where separation hardware sits, and two internal bulkheads
+      lie at z = 9.61 and 8.10. `raised_bands()` finds the rings and
+      `section()` cuts by whole faces. What geometry cannot supply is which
+      rings are separation planes and which are raceways, or the propellant
+      mass in each stage — and mass is what a staged ascent needs, not
+      shape.
+
 ### 9.12 Visualization as a first-class consumer
 
 The animation layer is a *presentation* layer and is held to a lower bar

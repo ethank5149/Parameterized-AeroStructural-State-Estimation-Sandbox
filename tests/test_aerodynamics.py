@@ -178,8 +178,14 @@ class TestBlendedClosure:
 
 
 class TestPanelModel:
+    # A class-scoped fixture defined as an *instance* method is deprecated:
+    # the fixture runs once per class while each test gets a fresh instance,
+    # so anything it set on `self` would be invisible. With
+    # `filterwarnings = ["error"]` that deprecation is an error, which is
+    # why these seven tests had been erroring at setup.
     @pytest.fixture(scope="class")
-    def body(self):
+    @classmethod
+    def body(cls):
         return curved_lifting_body()
 
     def test_geometry_sane(self, body):
