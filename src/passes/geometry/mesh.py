@@ -465,6 +465,56 @@ class VehicleMesh:
             "inertia_about_centroid": tensor - shift,
         }
 
+    def scaled(self, axial: float = 1.0, radial: float = 1.0) -> VehicleMesh:
+        """Scale along the long axis and across it independently.
+
+        Anisotropic on purpose. The bundled mesh's two dimensional errors
+        against the published vehicle are independent — length low by 1.1 %,
+        diameter high by 15.6 % — so a single uniform factor cannot fix
+        both, and applying one would trade a small length error for a large
+        one. Scaling the axis and the radius separately lands both, and
+        lands the fineness ratio with them.
+
+        What this preserves and what it does not: every axial *proportion*
+        survives, so the separation rings stay at the same fraction of the
+        body and the nose keeps its shape in the axial sense. The nose
+        *exponent* survives too. What changes is every angle — a 28-degree
+        cone half-angle becomes 24.6 degrees under a 0.865 radial squeeze —
+        and therefore every Newtonian pressure coefficient. That is correct
+        rather than a side effect: the real vehicle's cone really is
+        shallower than this mesh's.
+        """
+        for label, value in (("axial", axial), ("radial", radial)):
+            if not (np.isfinite(value) and value > 0.0):
+                msg = f"{label} scale must be finite and > 0, got {value}"
+                raise ValueError(msg)
+        factors = np.full(3, float(radial))
+        factors[self.axis] = float(axial)
+        return VehicleMesh(
+            vertices=self.vertices * factors,
+            faces=self.faces,
+            name=self.name,
+            degenerate_dropped=self.degenerate_dropped,
+        )
+
+    def scaled_to(
+        self, length: float | None = None, diameter: float | None = None
+    ) -> VehicleMesh:
+        """Scale so the body matches a stated length and maximum diameter.
+
+        The maximum diameter is taken over the *whole* body, raised bands
+        included, because that is what a published diameter figure refers
+        to on a vehicle whose rings are structural rather than aerodynamic.
+        """
+        current_length = self.length
+        others = [i for i in range(3) if i != self.axis]
+        transverse = self.vertices[:, others]
+        current_diameter = 2.0 * float(np.hypot(transverse[:, 0], transverse[:, 1]).max())
+        return self.scaled(
+            axial=1.0 if length is None else float(length) / current_length,
+            radial=1.0 if diameter is None else float(diameter) / current_diameter,
+        )
+
     # -- frames and consumers --------------------------------------------
 
     def to_body_axes(self, origin: str = "nose") -> VehicleMesh:

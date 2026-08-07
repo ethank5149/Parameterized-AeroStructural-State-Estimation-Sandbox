@@ -89,3 +89,19 @@ __all__ = [
     "probable_error",
     "validate",
 ]
+
+from passes.systems.mass import (
+    STORABLE_BULK_DENSITY,
+    MassState,
+    Stage,
+    VehicleMassModel,
+    sarmat_mass_model,
+)
+
+__all__ += [
+    "STORABLE_BULK_DENSITY",
+    "MassState",
+    "Stage",
+    "VehicleMassModel",
+    "sarmat_mass_model",
+]
