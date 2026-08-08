@@ -27,6 +27,13 @@ classifiers = [
 dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
+    # Thermosphere above 86 km. A compiled reference implementation rather
+    # than a transcription of the 1976 standard's species-diffusion model,
+    # which cannot be independently checked once transcribed.
+    "pymsis>=0.10",
+    # Equilibrium air chemistry for the real-gas normal shock. Ships the
+    # eleven-species ionising air mechanism and its NASA-9 polynomials.
+    "cantera>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +45,19 @@ dev = [
 # GPU batch backend; pick the wheel matching the local CUDA major version.
 cuda = [
     "cupy-cuda13x>=13.0",
+]
+# Axisymmetric Euler CFD. gmsh is pip-installable; **SU2 is not** — it is a
+# compiled solver and lives in its own environment
+# (conda create -n su2 -c conda-forge su2). `find_su2` looks for it on PATH
+# and says so plainly when it is absent.
+cfd = [
+    "gmsh>=4.12",
+]
+# ERA5 reanalysis: measured wind and temperature profiles, and the
+# wind-dispersion ensemble a launch load Monte Carlo needs.
+reanalysis = [
+    "cfgrib>=0.9",
+    "xarray>=2024.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -83,3 +103,10 @@ ignore_missing_imports = true
 module = "cupy.*"
 ignore_missing_imports = true
 follow_imports = "skip"
+
+# Compiled models and meshers that ship no py.typed marker. Each is wrapped
+# behind a typed façade in this package -- MSISAtmosphere, axisymmetric_domain,
+# EquilibriumAir -- so the untyped surface is one call wide in each case.
+[[tool.mypy.overrides]]
+module = ["gmsh", "pymsis.*", "cantera.*", "xarray.*"]
+ignore_missing_imports = true

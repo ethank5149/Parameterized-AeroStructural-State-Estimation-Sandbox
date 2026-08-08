@@ -32,7 +32,6 @@ import numpy as np
 import scipy.interpolate
 from numpy.typing import ArrayLike, NDArray
 
-from passes.aerodynamics.closure import smoothstep
 from passes.atmosphere.standard import (
     GAMMA_AIR,
     AtmosphereState,
@@ -40,6 +39,7 @@ from passes.atmosphere.standard import (
     gravity,
 )
 from passes.atmosphere.upper import MODERATE_ACTIVITY, MSISAtmosphere, SolarActivity
+from passes.blending import smoothstep
 
 __all__ = [
     "Atmosphere",
@@ -54,9 +54,15 @@ _FloatArray = NDArray[np.float64]
 
 
 class Atmosphere(Protocol):
-    """Anything that can report the gas state at an altitude."""
+    """Anything that can report the gas state at an altitude.
 
-    name: str
+    ``name`` is a read-only property rather than an attribute so that frozen
+    dataclasses satisfy it; a Protocol declaring ``name: str`` demands a
+    settable one and every model here is immutable.
+    """
+
+    @property
+    def name(self) -> str: ...
 
     def state(self, altitude: ArrayLike) -> AtmosphereState:  # pragma: no cover
         ...

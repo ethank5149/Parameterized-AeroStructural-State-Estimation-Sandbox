@@ -30,8 +30,6 @@ import numpy as np
 import scipy.interpolate
 from numpy.typing import ArrayLike, NDArray
 
-from passes.aerodynamics.closure import smoothstep
-
 __all__ = [
     "NoWind",
     "TabulatedWind",
@@ -46,7 +44,8 @@ _FloatArray = NDArray[np.float64]
 class WindField(Protocol):
     """Anything that reports an ENU wind vector at an altitude."""
 
-    name: str
+    @property
+    def name(self) -> str: ...
 
     def velocity(self, altitude: ArrayLike) -> _FloatArray:  # pragma: no cover
         """Wind velocity (m/s) in east-north-up components, shape ``(..., 3)``."""
@@ -82,12 +81,24 @@ class TabulatedWind:
         horizontal components and is not carried unless supplied.
     ceiling:
         Altitude above which the wind is taken as zero (m). Data ends
-        somewhere — 1 hPa is about 48 km — and the profile is faded to zero
-        with a :math:`C^2` smoothstep between the top sample and this
-        altitude. That fade is **a statement of ignorance, not a model of the
-        mesosphere**; it is placed where it cannot matter, because dynamic
-        pressure at 60 km on an ascent is under 100 Pa and a 50 m/s error
-        there moves nothing.
+        somewhere — 1 hPa is about 48 km — and the profile is carried to zero
+        between the top sample and this altitude. That fade is **a statement
+        of ignorance, not a model of the mesosphere**; it is placed where it
+        cannot matter, because dynamic pressure at 60 km on an ascent is
+        under 100 Pa and a 50 m/s error there moves nothing.
+
+    Notes
+    -----
+    The fade and the constant hold below the lowest sample are both built
+    **into the interpolant**, by padding the knot vector with duplicated end
+    values, rather than applied as a multiplying window afterwards. A window
+    seems simpler and is wrong: clamping the argument freezes the
+    interpolant above the top sample while the window is still varying, so
+    the product has a slope discontinuity exactly at the top sample. Padding
+    with a repeated value instead forces PCHIP's own derivative to zero
+    there — that is what monotone interpolation does across a flat segment —
+    and the profile comes out :math:`C^1` across both ends with no special
+    cases in :meth:`velocity` or :meth:`shear`.
     """
 
     altitude: _FloatArray
@@ -99,6 +110,7 @@ class TabulatedWind:
     _interpolants: tuple[scipy.interpolate.PchipInterpolator, ...] = field(
         init=False, repr=False, compare=False
     )
+    _knots: tuple[float, float] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         z = np.asarray(self.altitude, dtype=np.float64)
@@ -126,14 +138,26 @@ class TabulatedWind:
                 f"{float(z[-1]):g} m — there is no room to fade the profile out"
             )
             raise ValueError(msg)
+        # Pad below with a repeat of the lowest sample and above with two
+        # zeros, so the interpolant itself holds and fades. Two zero knots
+        # rather than one: PCHIP forces a zero derivative across a flat
+        # segment, which is what makes the profile C^1 at the ceiling.
+        span = self.ceiling - float(z[-1])
+        knots = np.concatenate(
+            [[float(z[0]) - max(float(z[0]), 1.0)], z, [self.ceiling, self.ceiling + span]]
+        )
+        padded = [
+            np.concatenate([[values[0]], values, [0.0, 0.0]]) for values in components
+        ]
         object.__setattr__(
             self,
             "_interpolants",
             tuple(
-                scipy.interpolate.PchipInterpolator(z, values, extrapolate=False)
-                for values in components
+                scipy.interpolate.PchipInterpolator(knots, values, extrapolate=False)
+                for values in padded
             ),
         )
+        object.__setattr__(self, "_knots", (float(knots[0]), float(knots[-1])))
 
     @property
     def top(self) -> float:
@@ -145,24 +169,18 @@ class TabulatedWind:
         """Lowest altitude with data (m)."""
         return float(np.asarray(self.altitude)[0])
 
-    def _fade(self, altitude: _FloatArray) -> _FloatArray:
-        """Weight that carries the profile from full strength to zero."""
-        span = self.ceiling - self.top
-        return np.asarray(
-            1.0 - smoothstep((altitude - self.top) / span)
-        )
-
     def velocity(self, altitude: ArrayLike) -> _FloatArray:
         """ENU wind (m/s), shape ``(..., 3)``.
 
         Held constant below the lowest sample — the profile's bottom is a
         reanalysis level near 100 m, and the surface layer below it does not
-        change a launch load — and faded to zero above the top.
+        change a launch load — and carried to zero above the top.
         """
         z = np.asarray(altitude, dtype=np.float64)
-        clamped = np.clip(z, self.bottom, self.top)
-        stacked = np.stack([f(clamped) for f in self._interpolants], axis=-1)
-        return np.asarray(stacked * self._fade(z)[..., np.newaxis])
+        clamped = np.clip(z, self._knots[0], self._knots[1])
+        return np.asarray(
+            np.stack([f(clamped) for f in self._interpolants], axis=-1)
+        )
 
     def shear(self, altitude: ArrayLike) -> _FloatArray:
         """:math:`d\\mathbf{V}_w/dz` (1/s), shape ``(..., 3)``.
@@ -172,20 +190,12 @@ class TabulatedWind:
         vehicle flies through in a second or two.
         """
         z = np.asarray(altitude, dtype=np.float64)
-        inside = (z >= self.bottom) & (z <= self.top)
-        clamped = np.clip(z, self.bottom, self.top)
+        inside = (z >= self._knots[0]) & (z <= self._knots[1])
+        clamped = np.clip(z, self._knots[0], self._knots[1])
         derivative = np.stack(
             [f.derivative()(clamped) for f in self._interpolants], axis=-1
         )
-        derivative = derivative * inside[..., np.newaxis]
-        # Product rule through the fade, so the reported shear is the shear of
-        # what `velocity` actually returns rather than of the raw table.
-        span = self.ceiling - self.top
-        fade = self._fade(z)[..., np.newaxis]
-        t = np.clip((z - self.top) / span, 0.0, 1.0)
-        fade_slope = -(30.0 * t**2 * (1.0 - t) ** 2) / span
-        values = np.stack([f(clamped) for f in self._interpolants], axis=-1)
-        return np.asarray(derivative * fade + values * fade_slope[..., np.newaxis])
+        return np.asarray(derivative * inside[..., np.newaxis])
 
     def speed(self, altitude: ArrayLike) -> _FloatArray:
         """Horizontal wind speed (m/s)."""

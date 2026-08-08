@@ -36,8 +36,8 @@ What an Euler solution does not contain
 Two things, and both are supplied elsewhere rather than pretended away:
 
 * **Skin friction.** There is no boundary layer in an Euler solution. On
-  this vehicle friction is of order 15 % of axial force at supersonic speeds
-  — see :mod:`passes.aerodynamics.friction`.
+  this vehicle friction is 5 to 7 % of axial force at supersonic speeds — see
+  :mod:`passes.aerodynamics.friction`.
 * **Base drag.** The Euler base pressure is not the real base pressure,
   because the real one is set by a separated shear layer that the equations
   do not describe. The base contribution is therefore reported
@@ -356,7 +356,7 @@ def run_su2(
     profile: BodyProfile,
     mach: float,
     directory: str | Path,
-    settings: SU2Settings = SU2Settings(),
+    settings: SU2Settings | None = None,
     reference_area: float | None = None,
     reference_length: float | None = None,
     temperature: float = 288.15,
@@ -384,6 +384,7 @@ def run_su2(
     and carry on to Mach 1.0; stopping the run is the one outcome that makes
     a multi-day job unusable.
     """
+    settings = settings if settings is not None else SU2Settings()
     work = Path(directory)
     work.mkdir(parents=True, exist_ok=True)
     binary = Path(executable) if executable is not None else find_su2()

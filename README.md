@@ -178,6 +178,20 @@ Note the trade the papers make explicit: recession increases $R_\mathrm{eff}$, w
 
 Ablation is split by material class rather than forced into one model — charring pyrolysis for phenolic acreage, single-temperature oxidative recession for non-pyrolyzing refractory leading edges (C/C, ZrB₂–SiC). Applying either model to the other material class is wrong in a specific, stated way.
 
+### Aerodynamics across the envelope
+
+Launch to Mach 25 re-entry is five flow regimes and no single method covers them, so the coefficient source is a **patched** one that runs each theory where it is valid and reports which one answered. What makes it worth trusting is that each layer is checked against something that is not another correlation.
+
+**Sub- and transonic** is axisymmetric Euler — gmsh builds the meridian-plane domain, SU2 solves it — and it is validated against the **exact Taylor–Maccoll** conical solution rather than against another code: a finite-volume solver and a shooting method on a second-order ODE share no code, no discretisation and no formulation. A 15° cone at Mach 3 comes back **−0.082 %** on the finest of four meshes, with a Richardson limit 0.058 % from exact. Forces are integrated here rather than read from SU2, using $\hat n_x\,\mathrm{d}S = -\pi\,\mathrm{d}(r^2)$, which removes normals, arc lengths and node ordering from the problem entirely.
+
+**The boundary layer** is Eckert's reference temperature, and the laminar branch is checked against a *solved* compressible boundary layer — a two-point BVP with the full Sutherland viscosity rather than the Chapman–Rubesin $C = 1$ that makes the textbook version tractable by hand. The correlation is **1.2 % low at Mach 5 and 4.3 % low at Mach 25**, low everywhere, so omitting it always underpredicts drag. Friction is 5–7 % of axial force on this vehicle at supersonic speeds.
+
+**Real gas** matters more than it looks. A perfect gas is stuck at a shock density ratio of 6 and a $C_{p,\max}$ of 1.839; equilibrium air over an eleven-species ionising mixture reaches **14.9** and **1.934** at Mach 20, because the energy that would have raised the temperature to 19,000 K dissociated the oxygen and then the nitrogen instead. That is 5.7 % on every windward pressure, in the direction that makes a perfect-gas range estimate optimistic.
+
+**Above 90 km there is no continuum at all.** Schaaf–Chambré free-molecular flow is applied with no ray casting, because there is no shadow — the distribution is Maxwellian and its tail reaches around the body. It reproduces the closed-form free-molecular sphere drag to 5 × 10⁻⁶ across speed ratios 0.5 to 50, which checks *both* branches: pressure integrates to exactly 1 in the hyperthermal limit and shear to exactly 1, for the classical total of 2.
+
+The gaps are stated rather than papered over. The **merged-layer regime** between $\bar\chi \sim 1$ and free-molecular flow is not computed by anything here; the friction model is gated off where there is no boundary layer to correlate, and the Knudsen bridge — an empirical interpolation — carries the answer across. `PatchedSolver.diagnostics` exists to make that visible at every point.
+
 ### Navigation and guidance
 
 Anomaly detection gates on the normalized innovation squared, $d_k^2 = \bm{\nu}_k^\top \mathbf{S}_k^{-1} \bm{\nu}_k \sim \chi^2_m$, against a design false-alarm rate. On detection, IAE inflates process noise by a **bounded** scalar trace ratio $\alpha_k \in [1, \alpha_{\max}]$.
@@ -252,13 +266,20 @@ Relative standard error on each $\sigma_i$ is $\approx 1/\sqrt{2N_\mathrm{MC}}$ 
 │   ├── dynamics/               #   quaternion + Baumgarte, deformed normals,
 │   │                           #   local incidence  [Paper II]
 │   ├── aerodynamics/           #   Rayleigh–Pitot, Prandtl–Meyer, C² blend,
-│   │                           #   panel loads and trim  [Paper II]
+│   │                           #   panel loads and trim  [Paper II]; plus
+│   │                           #   compressible boundary layer, equilibrium
+│   │                           #   real gas, free-molecular flow, exact
+│   │                           #   conical flow, and the patched solver
+│   │   └── cfd/                #     gmsh + SU2 axisymmetric Euler, validated
+│   │                           #     against Taylor–Maccoll
+│   ├── atmosphere/             #   US Standard 1976 + NRLMSIS, ERA5 wind and
+│   │                           #   the wind-dispersion ensemble
 │   ├── orbital/                #   J₂ gravity, coast propagation, regime
 │   │                           #   transition, strategy comparison  [Paper II]
 │   ├── flight/                 #   coupled single-trajectory simulator: fixed
 │   │                           #   global state, one integrator, all regimes
 │   └── verification/           #   executable V1–V8, II-V1…II-V8, integration
-├── tests/                      # 425 pytest cases
+├── tests/                      # 1,439 pytest cases
 ├── results/                    # verification reports and CSV data
 └── passes.tex, passes-hgv.tex  # superseded earlier drafts (see note)
 ```
@@ -294,6 +315,8 @@ The trade for a mid-latitude Eurasian launch against a US east-coast aimpoint, *
 What the previous model had instead was worth recording: a *constant* 150 km parking altitude — a prescription, not an orbit — reached by a stated ramp whose own shape implied a burnout speed of **2,666 m/s** where the profile needed 7,830, leaving the pad at a flight-path angle of **37 degrees**. Neither error touched a warning number, because altitude and ground track were being told what to be.
 
 This is a **strategic-stability analysis** of the kind published openly in the arms-control literature: line-of-sight geometry only, with no power-aperture, cross-section, track-initiation or decision-latency model, so every warning figure is an upper bound. Radar mask elevations are assumed rather than published, which is why the notebook sweeps them. Boost-phase infrared detection — the largest omission, and one that cuts against both fractional profiles — is not modelled in the comparison.
+
+[`notebooks/full-fidelity-aero.ipynb`](notebooks/full-fidelity-aero.ipynb) is the aerodynamic pipeline and, more to the point, the evidence for it: the 1976 standard against its published table, the reference-temperature method against a solved boundary layer, the equilibrium shock against the perfect-gas jump it reduces to, the free-molecular closure against the sphere, and a live four-mesh grid-convergence study of the CFD against Taylor–Maccoll. It ends by assembling all of it into one solver over the RS-28 stack and feeding the resulting table to the trajectory simulator.
 
 Run it with `jupyter lab notebooks/`, after `pip install -e .`.
 

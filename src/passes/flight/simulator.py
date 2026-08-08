@@ -37,7 +37,13 @@ import numpy as np
 import scipy.integrate
 from numpy.typing import ArrayLike, NDArray
 
+from passes.aerodynamics.tables import AeroTable
 from passes.aerothermal import sutton_graves
+from passes.atmosphere.model import (
+    TabulatedAtmosphere,
+    earth_atmosphere,
+    tabulate,
+)
 from passes.dynamics import quaternion_derivative
 from passes.flight.propulsion import Burn, thrust_direction
 from passes.flight.state import GlobalState, StateLayout
@@ -56,12 +62,6 @@ from passes.thermal import (
     LandauFrame,
     ThermalState,
     demo_material,
-)
-from passes.aerodynamics.tables import AeroTable
-from passes.atmosphere.model import (
-    TabulatedAtmosphere,
-    earth_atmosphere,
-    tabulate,
 )
 from passes.thermal.surface import STEFAN_BOLTZMANN
 

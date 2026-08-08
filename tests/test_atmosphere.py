@@ -54,12 +54,12 @@ PUBLISHED = [
 class TestUSStandard1976:
     def test_layer_base_temperatures_match_the_standard(self) -> None:
         expected = [288.15, 216.65, 216.65, 228.65, 270.65, 270.65, 214.65, 186.946]
-        assert _BASE_TEMPERATURE == pytest.approx(expected, abs=1e-3)
+        assert pytest.approx(expected, abs=1e-3) == _BASE_TEMPERATURE
 
     def test_layer_base_pressures_match_the_standard(self) -> None:
         expected = [101325.0, 22632.1, 5474.89, 868.019, 110.906, 66.9389, 3.95642,
                     0.373384]
-        assert _BASE_PRESSURE == pytest.approx(expected, rel=2e-5)
+        assert pytest.approx(expected, rel=2e-5) == _BASE_PRESSURE
 
     @pytest.mark.parametrize(("altitude", "temperature", "pressure", "density"), PUBLISHED)
     def test_published_table(
@@ -116,7 +116,7 @@ class TestUSStandard1976:
         assert float(gravity(100e3)) < float(gravity(0.0))
 
     def test_refuses_above_its_ceiling(self) -> None:
-        with pytest.raises(ValueError, match="86 km|passes.atmosphere.EARTH"):
+        with pytest.raises(ValueError, match=r"86 km|passes\.atmosphere\.EARTH"):
             USStandard1976().state(100e3)
 
     def test_refuses_non_finite(self) -> None:
@@ -236,12 +236,22 @@ class TestFreestream:
         assert float(high.knudsen) > 1e4 * float(low.knudsen)
 
     def test_reynolds_and_knudsen_are_consistent(self) -> None:
-        """Kn = M/Re * sqrt(gamma pi / 2) to within the collision-diameter model."""
-        stream = earth_atmosphere().freestream(40e3, 1200.0, 3.0)
-        implied = (
-            float(stream.mach) / float(stream.reynolds) * np.sqrt(1.4 * np.pi / 2.0)
-        )
-        assert float(stream.knudsen) == pytest.approx(implied, rel=0.05)
+        """Kn should be M/Re * sqrt(gamma pi / 2), to within the two models.
+
+        The identity is exact for a hard-sphere gas. Here the mean free path
+        comes from a fixed collision diameter and the viscosity from
+        Sutherland's law, which are different models of the same molecules,
+        so the ratio lands 4 to 14 % high rather than on the nose. Anything
+        much outside that would mean one of the two is wrong, not that they
+        disagree.
+        """
+        atmosphere = earth_atmosphere()
+        for altitude in (0.0, 20e3, 40e3, 60e3):
+            stream = atmosphere.freestream(altitude, 1200.0, 3.0)
+            implied = (
+                float(stream.mach) / float(stream.reynolds) * np.sqrt(1.4 * np.pi / 2.0)
+            )
+            assert 1.0 < float(stream.knudsen) / implied < 1.2
 
     def test_rejects_negative_speed(self) -> None:
         with pytest.raises(ValueError, match="non-negative"):
@@ -272,10 +282,20 @@ class TestWind:
         assert at_samples[:, 1] == pytest.approx(wind.north, rel=1e-9)
 
     def test_monotone_interpolation_does_not_overshoot(self) -> None:
-        """A spline through a jet core invents a stronger jet just above it."""
+        """A spline through a jet core invents a stronger jet just above it.
+
+        The guarantee is per *component*, and only across the span the data
+        covers. PCHIP is monotone in each of east and north separately, which
+        does not bound the magnitude of the vector they form; and the fade to
+        zero above the top sample legitimately leaves the sampled range, since
+        an easterly of 5 to 60 m/s has to pass through nothing on its way to
+        the ceiling.
+        """
         wind = self.profile()
-        fine = wind.speed(np.linspace(100.0, 45e3, 5000))
-        assert float(np.max(fine)) <= float(np.max(wind.speed(wind.altitude))) + 1e-9
+        sampled = wind.velocity(np.linspace(wind.bottom, wind.top, 20_000))
+        for axis, values in enumerate((wind.east, wind.north)):
+            assert float(np.max(sampled[:, axis])) <= float(np.max(values)) + 1e-9
+            assert float(np.min(sampled[:, axis])) >= float(np.min(values)) - 1e-9
 
     def test_fades_to_zero_above_the_data(self) -> None:
         wind = self.profile()
@@ -293,9 +313,17 @@ class TestWind:
         assert wind.shear(z) == pytest.approx(numerical, abs=1e-6)
 
     def test_shear_is_continuous_through_the_fade(self) -> None:
+        """The velocity must be C^1 at the top sample, not merely continuous.
+
+        Applying the fade as a window on a clamped interpolant leaves a slope
+        discontinuity of 0.0038 s^-1 exactly at the top sample, because the
+        interpolant freezes there while the window is still varying. Building
+        the fade into the knot vector removes it.
+        """
         wind = self.profile()
-        z = np.linspace(44.9e3, 60.1e3, 4000)
-        assert float(np.max(np.abs(np.diff(wind.shear(z)[:, 0])))) < 1e-4
+        z = np.linspace(44.0e3, 61e3, 20_000)
+        jump = float(np.max(np.abs(np.diff(wind.shear(z)[:, 0]))))
+        assert jump < 1e-5, f"slope discontinuity of {jump:.3e} at the fade"
 
     def test_bearing_is_the_direction_the_wind_comes_from(self) -> None:
         """A pure easterly vector (+x) is a wind *from* the west, 270 degrees."""

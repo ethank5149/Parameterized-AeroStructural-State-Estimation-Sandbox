@@ -52,12 +52,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import numpy as np
 from numpy.typing import NDArray
 
-from passes.aerodynamics.closure import smoothstep
 from passes.aerodynamics.friction import BoundaryLayer
 from passes.aerodynamics.rarefied import (
     CONTINUUM_KNUDSEN,
@@ -68,6 +67,7 @@ from passes.aerodynamics.rarefied import (
 from passes.aerodynamics.realgas import EquilibriumAir
 from passes.aerodynamics.tables import Coefficients
 from passes.atmosphere.model import Atmosphere, earth_atmosphere
+from passes.blending import smoothstep
 
 __all__ = [
     "AltitudeSchedule",
@@ -86,7 +86,8 @@ AltitudeSchedule = float | Callable[[float], float]
 class SolverAtCondition(Protocol):
     """A solver that only needs Mach and incidence."""
 
-    name: str
+    @property
+    def name(self) -> str: ...
 
     def solve(self, mach: float, alpha: float) -> Coefficients:  # pragma: no cover
         ...
@@ -158,7 +159,7 @@ class SkinFrictionModel:
     mesh: Any
     reference_area: float
     reference_length: float
-    boundary_layer: BoundaryLayer = BoundaryLayer()
+    boundary_layer: BoundaryLayer = field(default_factory=BoundaryLayer)
     reference_point: _FloatArray | None = None
     gamma: float = 1.4
     name: str = "skin friction"
@@ -411,14 +412,12 @@ class PatchedSolver:
         upper = self.splice + self.splice_width
         cp_max = self.cp_max(m)
 
-        if m >= lower:
-            inviscid = self._panel(m, alpha, cp_max)
-        else:
-            inviscid = None
-        if m <= upper and self.euler is not None:
-            euler = self.euler.solve(m, alpha)
-        else:
-            euler = None
+        inviscid = self._panel(m, alpha, cp_max) if m >= lower else None
+        euler = (
+            self.euler.solve(m, alpha)
+            if m <= upper and self.euler is not None
+            else None
+        )
 
         if inviscid is None and euler is None:
             msg = (
@@ -529,8 +528,8 @@ class PatchedSolver:
         self, mach: float, alpha: float, cp_max: float | None
     ) -> Coefficients:
         if cp_max is None:
-            return self.panel.solve(mach, alpha)
-        return self.panel.solve(mach, alpha, cp_max=cp_max)
+            return cast(Coefficients, self.panel.solve(mach, alpha))
+        return cast(Coefficients, self.panel.solve(mach, alpha, cp_max=cp_max))
 
     def _panel_pressures(
         self, mach: float, alpha: float, cp_max: float | None
@@ -546,7 +545,7 @@ class PatchedSolver:
         """
         from passes.aerodynamics.closure import blended_pressure_coefficient
 
-        model = self.panel._model  # noqa: SLF001 - same package, documented shape
+        model = self.panel._model
         delta = model.incidences(float(alpha))
         floor = getattr(self.panel, "absolute_floor", 1.05)
         effective = max(float(mach), floor + 0.05)

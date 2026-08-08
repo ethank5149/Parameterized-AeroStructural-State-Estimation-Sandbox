@@ -138,8 +138,12 @@ def free_molecular_coefficients(
             msg = f"{label} accommodation must be in [0, 1], got {value}"
             raise ValueError(msg)
     ratio = float(wall_temperature_ratio)
-    if not (np.isfinite(ratio) and ratio > 0.0):
-        msg = f"wall temperature ratio must be finite and > 0, got {ratio}"
+    # Zero is admitted, not excluded: T_w/T_inf = 0 is the standard cold-wall
+    # idealisation in which re-emitted molecules carry away no momentum, and
+    # it is the limit the hyperthermal results 2 sin^2(delta) and
+    # 2 sin(delta) cos(delta) are stated in.
+    if not (np.isfinite(ratio) and ratio >= 0.0):
+        msg = f"wall temperature ratio must be finite and >= 0, got {ratio}"
         raise ValueError(msg)
 
     delta = np.asarray(incidence, dtype=np.float64)

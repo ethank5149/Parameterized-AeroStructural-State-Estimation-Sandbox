@@ -261,7 +261,7 @@ def axisymmetric_domain(
     profile: BodyProfile,
     path: str | Path,
     mach: float = 3.0,
-    sizing: DomainSizing = DomainSizing(),
+    sizing: DomainSizing | None = None,
     verbose: bool = False,
 ) -> MeshResult:
     """Build and write the meridian-plane domain around ``profile``.
@@ -287,6 +287,7 @@ def axisymmetric_domain(
         msg = "axisymmetric meshing needs gmsh (pip install gmsh)"
         raise ImportError(msg) from error
 
+    sizing = sizing if sizing is not None else DomainSizing()
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
@@ -294,7 +295,6 @@ def axisymmetric_domain(
     length = profile.length
     nose_x = float(profile.station[0])
     base_x = float(profile.station[-1])
-    base_r = profile.base_radius
 
     x_min = nose_x - sizing.upstream * length
     x_max = base_x + sizing.downstream * length
@@ -350,11 +350,11 @@ def axisymmetric_domain(
         gmsh.write(str(destination))
 
         node_tags, _, _ = gmsh.model.mesh.getNodes()
-        element_types, element_tags, _ = gmsh.model.mesh.getElements(2)
+        _, element_tags, _ = gmsh.model.mesh.getElements(2)
         n_elements = int(sum(len(tags) for tags in element_tags))
         return MeshResult(
             path=destination,
-            n_nodes=int(len(node_tags)),
+            n_nodes=len(node_tags),
             n_elements=n_elements,
             sizing=sizing,
             mach=float(mach),
@@ -412,10 +412,7 @@ def _apply_sizing(
     # freestreams have no Mach cone, so the box degenerates to a shallow
     # region around the body, which is the right place for the extra cells
     # transonically anyway.
-    if mach > 1.05:
-        spread = 1.0 / np.sqrt(mach * mach - 1.0)
-    else:
-        spread = 2.0
+    spread = 1.0 / np.sqrt(mach * mach - 1.0) if mach > 1.05 else 2.0
     reach = profile.length + sizing.downstream * profile.length
     envelope = gmsh.model.mesh.field.add("Box")
     gmsh.model.mesh.field.setNumber(envelope, "XMin", float(profile.station[0]) - 0.5 * diameter)

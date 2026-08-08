@@ -36,8 +36,11 @@ leave a second-derivative kink and defeat the purpose.
 from __future__ import annotations
 
 import numpy as np
-import scipy.optimize
 from numpy.typing import ArrayLike, NDArray
+
+# Re-exported: the seam blend is shared with the atmosphere and the boundary
+# layer, so it lives at the package root. See passes.blending.
+from passes.blending import smoothstep
 
 __all__ = [
     "blended_pressure_coefficient",
@@ -119,23 +122,83 @@ def prandtl_meyer_angle(mach: ArrayLike, gamma: float = 1.4) -> _FloatArray:
     return np.asarray(factor * np.arctan(root / factor) - np.arctan(root))
 
 
-def _mach_from_prandtl_meyer(nu: float, gamma: float) -> float:
-    """Invert :math:`\\nu(M)` by Brent on the monotone branch."""
-    nu_max = 0.5 * np.pi * (np.sqrt((gamma + 1.0) / (gamma - 1.0)) - 1.0)
-    if nu <= 0.0:
-        return 1.0
-    if nu >= nu_max:
-        return np.inf
-    hi = 2.0
-    while float(prandtl_meyer_angle(hi, gamma)) < nu:
-        hi *= 2.0
-        if hi > 1.0e6:  # pragma: no cover - nu < nu_max guarantees a bracket
-            break
-    return float(
-        scipy.optimize.brentq(
-            lambda m: float(prandtl_meyer_angle(m, gamma)) - nu, 1.0, hi, xtol=1e-13
-        )
-    )
+def prandtl_meyer_limit(gamma: float = 1.4) -> float:
+    """:math:`\\nu_{\\max} = \\tfrac{\\pi}{2}(\\sqrt{(\\gamma+1)/(\\gamma-1)} - 1)`.
+
+    The total turning the flow can achieve before reaching vacuum — 130.45
+    degrees for :math:`\\gamma = 1.4`. A surface asked to turn further is at
+    vacuum pressure, not at an error.
+    """
+    g = _check_gamma(gamma)
+    return float(0.5 * np.pi * (np.sqrt((g + 1.0) / (g - 1.0)) - 1.0))
+
+
+def _mach_from_prandtl_meyer(
+    nu: ArrayLike, gamma: float, newton_steps: int = 3, bisections: int = 26
+) -> _FloatArray:
+    """Invert :math:`\\nu(M)`, vectorised over the whole array at once.
+
+    **Why this is not a root-finder call per element.** It was: a
+    ``scipy.optimize.brentq`` per panel, inside a Python loop over
+    ``np.ndenumerate``. On the RS-28 stack that is 28,435 scalar solves for a
+    single (Mach, incidence) point, each evaluating :math:`\\nu(M)` about nine
+    times through a function that validates its input on every call — 240 ms
+    a point, of which 99.9 % was here, and **290 times slower than the
+    free-molecular solver doing a comparable amount of arithmetic over the
+    same mesh**. A coefficient sweep is thousands of points, so this one loop
+    set the cost of the whole table.
+
+    The replacement inverts on :math:`t = 1/M \\in (0, 1]`, on which
+    :math:`\\nu` is monotonically decreasing with finite endpoints —
+    :math:`\\nu_{\\max}` at :math:`t \\to 0` and zero at :math:`t = 1` — so the
+    bracket is the unit interval for every input and no bracket search is
+    needed. Bisection localises it, then Newton in :math:`M` polishes with
+
+    .. math::
+
+        \\frac{\\mathrm{d}\\nu}{\\mathrm{d}M}
+        = \\frac{\\sqrt{M^2-1}}{M\\left(1 + \\frac{\\gamma-1}{2}M^2\\right)}
+
+    Both loops are fixed-length and branch-free, so the whole thing is a few
+    dozen elementwise passes — which is also what makes it portable to an
+    array backend that is not NumPy.
+
+    Returns ``1.0`` where the turn has driven the flow back to sonic and
+    ``inf`` where it has exceeded :math:`\\nu_{\\max}`.
+    """
+    g = _check_gamma(gamma)
+    target = np.asarray(nu, dtype=np.float64)
+    limit = prandtl_meyer_limit(g)
+    factor = np.sqrt((g + 1.0) / (g - 1.0))
+
+    def angle_of(t: _FloatArray) -> _FloatArray:
+        """:math:`\\nu(1/t)`, guarded at the singular endpoint."""
+        mach = 1.0 / np.maximum(t, 1.0e-300)
+        root = np.sqrt(np.maximum(mach * mach - 1.0, 0.0))
+        return np.asarray(factor * np.arctan(root / factor) - np.arctan(root))
+
+    low = np.zeros_like(target)
+    high = np.ones_like(target)
+    clamped = np.clip(target, 0.0, limit)
+    for _ in range(int(bisections)):
+        middle = 0.5 * (low + high)
+        above = angle_of(middle) > clamped
+        low = np.where(above, middle, low)
+        high = np.where(above, high, middle)
+
+    mach = 1.0 / np.maximum(0.5 * (low + high), 1.0e-300)
+    for _ in range(int(newton_steps)):
+        root = np.sqrt(np.maximum(mach * mach - 1.0, 0.0))
+        residual = factor * np.arctan(root / factor) - np.arctan(root) - clamped
+        slope = root / (mach * (1.0 + 0.5 * (g - 1.0) * mach * mach))
+        # The derivative vanishes at M = 1, where the bisection is already
+        # exact; the floor keeps the step finite rather than correcting a
+        # value that needs no correction.
+        mach = mach - residual / np.where(slope > 1.0e-30, slope, 1.0e-30)
+        mach = np.maximum(mach, 1.0)
+
+    mach = np.where(target <= 0.0, 1.0, mach)
+    return np.asarray(np.where(target >= limit, np.inf, mach))
 
 
 def prandtl_meyer_pressure_coefficient(
@@ -148,6 +211,9 @@ def prandtl_meyer_pressure_coefficient(
     compression, which is the smooth extension the blend evaluates
     inside the seam band. The result is floored at the vacuum limit,
     beyond which the surface is treated as being at vacuum pressure.
+
+    Fully vectorised: the inversion of :math:`\\nu` happens once for the whole
+    array. See :func:`_mach_from_prandtl_meyer` for why that matters.
     """
     m1 = _check_mach(mach)
     g = _check_gamma(gamma)
@@ -156,32 +222,19 @@ def prandtl_meyer_pressure_coefficient(
     cp_vac = vacuum_pressure_coefficient(m1, g)
     stagnation_factor = 1.0 + 0.5 * (g - 1.0) * m1 * m1
 
-    out = np.empty_like(delta)
-    for idx, d in np.ndenumerate(delta):
-        nu2 = nu1 - float(d)
-        # nu2 <= 0 means the turn has driven the flow back to sonic; the
-        # isentropic branch ends there
-        m2 = 1.0 if nu2 <= 0.0 else _mach_from_prandtl_meyer(nu2, g)
-        if not np.isfinite(m2):
-            out[idx] = cp_vac
-            continue
-        ratio = (stagnation_factor / (1.0 + 0.5 * (g - 1.0) * m2 * m2)) ** (
-            g / (g - 1.0)
-        )
-        out[idx] = 2.0 / (g * m1 * m1) * (ratio - 1.0)
-    out = np.maximum(out, cp_vac)
+    # nu2 <= 0 means the turn has driven the flow back to sonic and the
+    # isentropic branch ends there; nu2 >= nu_max means it has reached vacuum.
+    # Both are handled inside the inversion, which returns 1 and inf.
+    m2 = _mach_from_prandtl_meyer(nu1 - delta, g)
+    # Beyond the turning limit the ratio would be 0/inf; capping the Mach
+    # number sends the pressure ratio to zero, which *is* the vacuum limit,
+    # and the explicit floor below makes that exact rather than asymptotic.
+    capped = np.where(np.isfinite(m2), m2, 1.0e8)
+    ratio = (stagnation_factor / (1.0 + 0.5 * (g - 1.0) * capped * capped)) ** (
+        g / (g - 1.0)
+    )
+    out = np.maximum(2.0 / (g * m1 * m1) * (ratio - 1.0), cp_vac)
     return np.asarray(out.reshape(np.shape(incidence)))
-
-
-def smoothstep(t: ArrayLike) -> _FloatArray:
-    """:math:`C^2` smoothstep :math:`6t^5 - 15t^4 + 10t^3` on :math:`[0,1]`.
-
-    Its first *and* second derivatives vanish at both ends, which is
-    what makes the blended closure :math:`C^2` at the band edges — a
-    cubic smoothstep would only give :math:`C^1`.
-    """
-    x = np.clip(np.asarray(t, dtype=np.float64), 0.0, 1.0)
-    return np.asarray(x * x * x * (x * (6.0 * x - 15.0) + 10.0))
 
 
 def blended_pressure_coefficient(

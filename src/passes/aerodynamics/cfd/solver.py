@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -192,8 +193,8 @@ class EulerSolver:
     workspace: Path
     reference_area: float
     reference_length: float
-    sizing: DomainSizing = DomainSizing()
-    settings: SU2Settings = SU2Settings()
+    sizing: DomainSizing = field(default_factory=DomainSizing)
+    settings: SU2Settings = field(default_factory=SU2Settings)
     temperature: float = 288.15
     pressure: float = 101325.0
     remesh_per_mach: bool = True

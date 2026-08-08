@@ -1394,22 +1394,265 @@ no drag, no J2, no attitude, no mass depletion and no gravity loss.
       direction encoded the wrong physics and was replaced with one
       asserting convergence.
 
-- [ ] **The transonic gap.** Everything stops at Mach 1.2, and that is where
-      a launch vehicle sees its highest dynamic pressure — the part of the
-      curve that sizes the structure is the part not covered. SU2 8.5.0 and
-      gmsh 4.15.2 are installed and verified; the plan is axisymmetric Euler,
-      which is cheap because a body of revolution at zero incidence is a 2-D
-      problem. Remaining: gmsh domain with a shock-resolving boundary layer,
-      SU2 boundary conditions, a grid-convergence study, and validation
-      against a sharp cone with a Taylor-Maccoll solution. Skin friction is
-      not in an Euler solution and needs a Van Driest II correlation over the
-      wetted area.
+- [x] ~~**The transonic gap.**~~ **Closed** —
+      [`aerodynamics/cfd/`](src/passes/aerodynamics/cfd/). gmsh builds the
+      meridian-plane domain, SU2 solves it as axisymmetric Euler, and the
+      wall pressure is integrated *here* rather than read from SU2's force
+      output, whose axisymmetric reference-area convention has changed
+      between releases. The integration uses an identity that removes
+      normals, arc lengths and node ordering from the problem —
+      :math:`\hat n_x\,\mathrm{d}S = -\pi\,\mathrm{d}(r^2)`, so the axial
+      force is a trapezoid rule on :math:`p` against :math:`r^2`.
 
-- [ ] **Wire the tables into the trajectory.** `FlightConfiguration.drag_area`
-      is still a hand-set constant; `AeroTable.drag_area(mach)` is the curve
-      it should read. Building every configuration on one reference area was
-      so that a trajectory can switch tables at staging without
-      renormalising.
+      **Validated against Taylor–Maccoll**, not against another code. A 15°
+      cone at Mach 3: **−0.082 %** on the finest of four meshes, with a
+      Richardson limit **0.058 %** from exact and a GCI of 0.03 %. The two
+      methods share no code, no discretisation and no formulation.
+
+      One defect found by that validation was worth the whole exercise. The
+      base corner is a single node shared by two faces and its pressure
+      belongs to neither — it came back at :math:`C_p = +0.45` where the
+      body is at :math:`+0.17`. Sitting at the largest radius, where the
+      area weight is greatest, it poisoned the base integral *and* dropped
+      the closing 1.5 % of the lateral one. It presented as mesh
+      resolution — apparent convergence order 0.57 — right up until it was
+      found.
+
+- [x] ~~**Wire the tables into the trajectory.**~~ **Done** —
+      `FlightConfiguration.aero_table` takes an
+      [`AeroTable`](src/passes/aerodynamics/tables.py) and reads
+      :math:`C_DA` from it at the local Mach number. Since that needs a
+      speed of sound, setting it also selects the layered atmosphere over
+      the exponential one. On this vehicle :math:`C_A` runs from 1.62 at
+      Mach 1.2 to 0.87 at Mach 25, so the constant it replaces was wrong by
+      a factor of two somewhere on every ascent.
+
+### 9.11e The rest of the envelope
+
+The transonic gap was one hole. Closing it made the others visible: an Euler
+solution has no boundary layer, a perfect gas has no dissociation, and above
+90 km there is no continuum at all. What follows is the pipeline that covers
+launch through Mach 25 free-molecular re-entry, and what each layer is
+checked against.
+
+- [x] ~~**Ambient gas.**~~ **Done** —
+      [`passes/atmosphere/`](src/passes/atmosphere/). The 1976 standard's
+      seven geopotential layers below 86 km with their base temperatures and
+      pressures **computed by the defining recursion** rather than
+      transcribed, so the published table becomes a test rather than an
+      input; it is reproduced to 1 part in :math:`10^5`. Above 86 km, NRLMSIS
+      through `pymsis` — a compiled reference implementation rather than a
+      transcription of the standard's species-diffusion model, which cannot
+      be checked once transcribed. Solar and geomagnetic indices are
+      **explicit arguments with stated defaults**, never a download, so a
+      result does not depend on the day it was computed.
+
+      The seam is blended on :math:`\ln\rho`, :math:`T` and :math:`M` with
+      :math:`p` *derived*, so :math:`p = \rho RT` holds identically rather
+      than at the samples only; the residual over 0–300 km is exactly zero
+      and the second difference of :math:`\ln\rho` across the seam is
+      4 × 10⁻⁶. Log-density because a linear blend of two exponentials
+      across 6 km of a 6 km scale height is close to neither.
+
+      `tabulate` samples the whole thing for use inside a right-hand side,
+      exact to 2 × 10⁻⁶ off-grid, and continues exponentially above the
+      ceiling rather than clamping — clamping would fly a satellite at
+      1200 km through 1000 km air.
+
+- [x] ~~**Wind, and the load case it creates.**~~ **Done** —
+      [`atmosphere/wind.py`](src/passes/atmosphere/wind.py),
+      [`atmosphere/era5.py`](src/passes/atmosphere/era5.py). In still air a
+      gravity-turn ascent flies at :math:`\alpha \approx 0` by construction,
+      so :math:`q\alpha` — the product that sizes the airframe — is
+      identically zero and the load case *does not exist*. `reference/ERA5`
+      is a year of ECMWF reanalysis on 21 pressure levels to 1 hPa; one
+      column is one atmosphere, and a month at a site is the empirical
+      wind-profile distribution a launch load Monte Carlo needs. Real
+      profiles carry the correlation between shear layers that an
+      independently sampled envelope does not.
+
+      On the worst January 2015 day at Dombarovsky: peak :math:`q` of
+      39.8 kPa at 15.5 km, peak :math:`q\alpha` of 274 kPa·deg at **8.3 km**.
+      The two do not coincide, which is the entire reason :math:`q\alpha` is
+      tracked separately.
+
+      Extraction is bulk and cached — a monthly GRIB is 20 GB and stores one
+      message per (time, level), so pulling one grid point still reads the
+      global field. Altitudes are reconstructed hydrostatically with virtual
+      temperature, since geopotential was not in the download; the ±150 m
+      anchor uncertainty is recorded on the column and does not matter to a
+      profile whose shear scales are kilometres.
+
+      One defect found by its own test: applying the upper fade as a window
+      on a clamped interpolant leaves a **slope discontinuity of
+      0.0038 s⁻¹** exactly at the top sample, because the interpolant
+      freezes while the window is still varying. Building the fade into the
+      knot vector with duplicated end values makes PCHIP's own derivative
+      vanish there and the profile comes out :math:`C^1` with no special
+      cases.
+
+- [x] ~~**Skin friction.**~~ **Done** —
+      [`aerodynamics/friction.py`](src/passes/aerodynamics/friction.py).
+      Eckert's reference temperature, transcribed from Anderson §6.9 rather
+      than reconstructed. The laminar branch is checked against a
+      *solution*: `compressible_blasius` integrates the transformed
+      boundary-layer equations as a two-point BVP with
+      :math:`C = \rho\mu/\rho_e\mu_e` from Sutherland's law, not the
+      Chapman–Rubesin :math:`C = 1` that makes the textbook version
+      tractable by hand. It reproduces Blasius to 0.664115 against 0.664112
+      and converges to Mach 25 by continuation.
+
+      **The measured error budget:** the correlation is 1.2 % low at Mach 5
+      and 4.3 % low at Mach 25 — low *everywhere*, so leaving it uncorrected
+      always underpredicts drag. The turbulent branch has no equivalent
+      check; its incompressible limit is pinned and its compressible
+      behaviour is trusted, not verified, which is why the two branches are
+      separate functions with separate docstrings.
+
+      Friction is **5 % of axial force at Mach 3 and 7 % at Mach 5** on this
+      vehicle. An earlier draft of this file claimed 15 %; that reached for
+      a wind-tunnel :math:`c_f` near 0.003 where an ascending launch vehicle
+      sits at :math:`Re_L \sim 10^8` and the compressible turbulent value is
+      nearer 0.0012.
+
+- [x] ~~**Real gas.**~~ **Done** —
+      [`aerodynamics/realgas.py`](src/passes/aerodynamics/realgas.py). The
+      Rankine–Hugoniot jump solved simultaneously with chemical equilibrium
+      over Cantera's eleven-species ionising air. Not a curve fit: a curve
+      fit to somebody's equilibrium tables cannot be checked, and a
+      thermochemistry library with published polynomial data can.
+
+      At Mach 20 and 60 km the density ratio is **14.9** where a calorically
+      perfect gas is stuck at 6, the temperature behind the shock is 5,889 K
+      where perfect gas says 19,000 K, and :math:`C_{p,\max}` is **1.934**
+      against the perfect-gas asymptote of 1.839 — which the Rayleigh–Pitot
+      relation cannot exceed at any Mach number, by construction. That is
+      5.7 % on every windward panel pressure, in the direction that makes a
+      perfect-gas range estimate optimistic.
+
+- [x] ~~**Rarefied and transitional flow.**~~ **Done** —
+      [`aerodynamics/rarefied.py`](src/passes/aerodynamics/rarefied.py).
+      Schaaf–Chambré with diffuse accommodation, evaluated on every panel
+      with no ray casting, because in free-molecular flow there is no
+      shadow: the distribution is Maxwellian and its tail reaches around.
+
+      Verified against the closed-form free-molecular sphere drag to
+      **5 × 10⁻⁶** across speed ratios from 0.5 to 50. That is a real check
+      on *both* branches — the pressure branch integrates to exactly 1 in
+      the hyperthermal limit and the shear branch to exactly 1, for the
+      classical total of 2 — so a pressure-only implementation would be
+      short by half and would fail at every point.
+
+- [x] ~~**Taylor–Maccoll conical flow.**~~ **Done** —
+      [`aerodynamics/conical.py`](src/passes/aerodynamics/conical.py). The
+      validation instrument, and exact in the strong sense. Three checks
+      that need no external tables: a cone's shock is weaker than a wedge's
+      at every angle tested; the shock tends to the Mach angle to six
+      decimals as the cone vanishes; and the detachment limit comes out at
+      **57.478°** at Mach 20, the classical :math:`\gamma = 1.4` value.
+
+      Surface angle is **not monotone** in shock angle — it rises to the
+      detachment maximum and falls again — so every attached cone has a weak
+      and a strong solution and a root find over the whole range lands on
+      whichever the bisection happened to bracket. `maximum_cone_angle`
+      exists to bracket them apart.
+
+- [x] ~~**The assembled pipeline.**~~ **Done** —
+      [`aerodynamics/composite.py`](src/passes/aerodynamics/composite.py).
+      `PatchedSolver` runs each theory where it is valid and reports which
+      one answered. Altitude may be a **schedule** :math:`z(M)` rather than a
+      constant, which is how launch-vehicle tables are actually built: along
+      the trajectory the vehicle will fly, not over a rectangle it will not.
+
+      `diagnostics` reports Reynolds, Knudsen, the bridge weight and the
+      viscous-interaction parameter :math:`\bar\chi = M^3/\sqrt{Re_L}`.
+      :math:`\bar\chi` gates the friction model, and the gate is load-bearing:
+      without it the reference-temperature correlation returns a friction
+      contribution of **6.0** to :math:`C_A` at Mach 20 and 120 km against an
+      inviscid 0.93 — not a large correction but a meaningless number, since
+      :math:`Re_L` there is of order :math:`10^3` and there is no boundary
+      layer to correlate.
+
+- [x] ~~**The panel method's real cost.**~~ **Fixed** — it was not where it
+      looked. Profiling the assembled pipeline to answer a question about GPU
+      offload showed **99.9 % of a panel solve inside
+      `prandtl_meyer_pressure_coefficient`**: a `scipy.optimize.brentq` per
+      panel, inside a Python loop over `np.ndenumerate`. On the RS-28 stack
+      that is 28,435 scalar root-finds per flight condition, each evaluating
+      :math:`\nu(M)` about nine times through a function that revalidates its
+      input every call. 240 ms a point — and **290 times slower than the
+      free-molecular solver doing comparable arithmetic over the same mesh**,
+      which is what made it obvious once measured.
+
+      Inverting on :math:`t = 1/M` makes the bracket the unit interval for
+      every input, with no bracket search, because :math:`\nu(1/t)` is
+      monotone with finite endpoints. Fixed-length bisection then Newton, both
+      branch-free and vectorised over the whole array.
+
+      **240 ms → 3.05 ms a point, 79×**, and agreeing with the scalar Brent
+      path to **2.6 × 10⁻¹⁴**. A four-configuration table falls from 6.7 min
+      to 4.6 s.
+
+- [ ] **GPU offload, in the order it is worth doing.** Measured on the
+      RTX 3090 with the kernel above, NumPy against CuPy at 1e-12 agreement:
+
+      | elements | numpy | cupy | speed-up |
+      |---|---|---|---|
+      | 6,311 (one point) | 2.90 ms | 2.05 ms | **1.4×** |
+      | 82,043 (one Mach, all α) | 40.0 ms | 2.07 ms | **19×** |
+      | 2.6 M (a full sweep) | 2.14 s | 45 ms | **47×** |
+      | 26 M (four configurations) | 35.2 s | 433 ms | **81×** |
+
+      So the aerodynamic kernels must be **batched over the sweep before
+      being moved to the device**, not called per point: one point is 6,311
+      elements, which is launch-latency bound on an 82-SM card and buys
+      nothing. The kernels are now all fixed-length branch-free elementwise
+      passes, so the port itself is close to mechanical.
+
+      Ranked by what it would actually buy:
+
+      1. **Batch trajectory propagation** — `passes.batch` already has the
+         backend, and the Monte Carlo this pipeline now enables (1,460 ERA5
+         wind profiles × dispersed vehicle parameters) is thousands of
+         independent trajectories at identical state size. That fixed size is
+         the property Paper I §5.2 rests on and it is what makes the GPU the
+         right device.
+      2. **Panel, free-molecular and friction kernels**, batched over the
+         sweep as above.
+      3. **Mesh ray casting** (`exterior_faces`, `oriented`, `frontal_area`)
+         and the ray-traced globe — both already have CuPy paths.
+
+      Not worth it, and worth saying so: **SU2** (the conda-forge build has no
+      CUDA, and 2-D Euler cases of 22k cells would not benefit — parallelise
+      across sweep *points* on the 20 cores instead), **Cantera** (serial C++,
+      cached, 28 ms), **`compressible_blasius`** (a small sparse BVP), and
+      **ERA5 decoding** (I/O bound over 238 GB, not compute).
+
+- [ ] **The merged-layer regime.** Fading the friction model out where
+      :math:`\bar\chi \gtrsim 1` is a *validity gate, not a model*. What
+      actually happens between there and free-molecular flow is
+      strong-viscous-interaction hypersonics, and nothing here computes it;
+      the Knudsen bridge carries the answer across and the bridge is an
+      empirical interpolation. **Coefficients reported where
+      `friction_validity` is between 0 and 1 while `bridge` is still small
+      are the least trustworthy this pipeline produces.** DSMC is what
+      resolves that band.
+
+- [ ] **Normal force and pitching moment below Mach 1.2.** The axisymmetric
+      formulation is a zero-incidence method — that is precisely why the
+      transonic band is affordable — and no post-processing of an
+      axisymmetric solution recovers a normal force. `EulerSolver.solve`
+      refuses a non-zero incidence rather than returning something
+      plausible. Three-dimensional cases are the route, and they are the
+      week-long runs the checkpointing framework in
+      [`tables.py`](src/passes/aerodynamics/tables.py) was built for.
+
+- [ ] **Base drag.** Reported separately by `SU2Result.base_axial` and never
+      folded into a total, because an Euler base pressure is not a base
+      pressure: the real one is set by a separated shear layer the equations
+      do not describe. The grid study shows it wandering non-monotonically
+      under refinement, which is the correct behaviour for a quantity the
+      method cannot compute.
 
 ### 9.12 Visualization as a first-class consumer
 

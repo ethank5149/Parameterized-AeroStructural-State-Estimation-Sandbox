@@ -15,13 +15,6 @@ from passes.atmosphere.model import (
     earth_atmosphere,
     tabulate,
 )
-from passes.atmosphere.wind import (
-    NoWind,
-    TabulatedWind,
-    WindField,
-    relative_velocity,
-    wind_incidence,
-)
 from passes.atmosphere.standard import (
     AVOGADRO,
     BOLTZMANN,
@@ -45,6 +38,13 @@ from passes.atmosphere.upper import (
     MSISAtmosphere,
     SolarActivity,
 )
+from passes.atmosphere.wind import (
+    NoWind,
+    TabulatedWind,
+    WindField,
+    relative_velocity,
+    wind_incidence,
+)
 
 __all__ = [
     "AVOGADRO",
@@ -54,7 +54,6 @@ __all__ = [
     "GAMMA_AIR",
     "MODERATE_ACTIVITY",
     "MOLAR_MASS_SEA_LEVEL",
-    "MSISAtmosphere",
     "SEA_LEVEL_GRAVITY",
     "SOLAR_MAXIMUM",
     "SOLAR_MINIMUM",
@@ -64,12 +63,13 @@ __all__ = [
     "AtmosphereState",
     "Freestream",
     "LayeredAtmosphere",
+    "MSISAtmosphere",
     "NoWind",
     "SolarActivity",
     "TabulatedAtmosphere",
     "TabulatedWind",
-    "WindField",
     "USStandard1976",
+    "WindField",
     "earth_atmosphere",
     "geometric_altitude",
     "geopotential_altitude",

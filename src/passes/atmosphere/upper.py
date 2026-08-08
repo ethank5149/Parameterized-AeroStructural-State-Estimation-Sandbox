@@ -43,9 +43,9 @@ from passes.atmosphere.standard import AVOGADRO, BOLTZMANN, AtmosphereState
 
 __all__ = [
     "MODERATE_ACTIVITY",
-    "MSISAtmosphere",
     "SOLAR_MAXIMUM",
     "SOLAR_MINIMUM",
+    "MSISAtmosphere",
     "SolarActivity",
 ]
 

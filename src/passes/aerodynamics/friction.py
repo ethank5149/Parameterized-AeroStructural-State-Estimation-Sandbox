@@ -66,7 +66,8 @@ engineering smoothing of a real bifurcation, not a transition model.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -74,22 +75,22 @@ import scipy.integrate
 import scipy.interpolate
 from numpy.typing import ArrayLike, NDArray
 
-from passes.aerodynamics.closure import smoothstep
 from passes.atmosphere.standard import (
     SUTHERLAND_BETA,
     SUTHERLAND_S,
 )
+from passes.blending import smoothstep
 
 __all__ = [
+    "CONE_MANGLER_FACTOR",
+    "PRANDTL_AIR",
+    "SPECIFIC_HEAT_AIR",
+    "STEFAN_BOLTZMANN",
     "AdiabaticWall",
     "BlasiusSolution",
     "BoundaryLayer",
-    "CONE_MANGLER_FACTOR",
     "FixedWall",
-    "PRANDTL_AIR",
     "RadiativeEquilibriumWall",
-    "SPECIFIC_HEAT_AIR",
-    "STEFAN_BOLTZMANN",
     "WallCondition",
     "adiabatic_wall_temperature",
     "compressible_blasius",
@@ -250,7 +251,11 @@ def turbulent_skin_friction(
 class WallCondition(Protocol):
     """How the wall temperature is decided at each point of the surface."""
 
-    name: str
+    @property
+    def name(self) -> str:
+        """A read-only property, not an attribute: every implementation here
+        is a frozen dataclass, and a frozen attribute does not satisfy a
+        Protocol that declares a settable one."""
 
     def temperature(
         self,
@@ -495,7 +500,7 @@ def compressible_blasius(
         raise ValueError(msg)
     pr = float(prandtl)
     adiabatic = wall_enthalpy_ratio is None
-    g_wall = 0.0 if adiabatic else float(wall_enthalpy_ratio)
+    g_wall = 0.0 if wall_enthalpy_ratio is None else float(wall_enthalpy_ratio)
     if not adiabatic and g_wall <= 0.0:
         msg = f"wall_enthalpy_ratio must be > 0, got {wall_enthalpy_ratio}"
         raise ValueError(msg)
@@ -513,7 +518,7 @@ def compressible_blasius(
         return np.asarray(_sutherland(temperature) / (mu_e * (temperature / t_e)))
 
     # State: [f, f', C f'', g, (C/Pr) g']
-    def system(mach: float):  # noqa: ANN202 - closure over the continuation step
+    def system(mach: float) -> Callable[[_FloatArray, _FloatArray], _FloatArray]:
         def rates(eta: _FloatArray, y: _FloatArray) -> _FloatArray:
             f, f_prime, cf_second, g, cg_prime = y
             c = chapman_rubesin(g)
@@ -596,7 +601,7 @@ class BoundaryLayer:
         body of revolution, 1 for a plate.
     """
 
-    wall: WallCondition = FixedWall()
+    wall: WallCondition = field(default_factory=FixedWall)
     transition_reynolds: tuple[float, float] = (1.0e6, 5.0e6)
     mangler: float = CONE_MANGLER_FACTOR
     prandtl: float = PRANDTL_AIR

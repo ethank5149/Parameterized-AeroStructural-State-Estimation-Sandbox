@@ -44,7 +44,6 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 __all__ = [
-    "AtmosphereState",
     "BOLTZMANN",
     "COLLISION_DIAMETER",
     "EARTH_RADIUS_EFFECTIVE",
@@ -52,6 +51,7 @@ __all__ = [
     "MOLAR_MASS_SEA_LEVEL",
     "SEA_LEVEL_GRAVITY",
     "UNIVERSAL_GAS_CONSTANT",
+    "AtmosphereState",
     "USStandard1976",
     "geometric_altitude",
     "geopotential_altitude",
