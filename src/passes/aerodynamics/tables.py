@@ -246,7 +246,17 @@ class PanelSolver:
     #: Below this the pressure closure has no supersonic solution at all.
     absolute_floor: float = 1.05
 
-    def solve(self, mach: float, alpha: float) -> Coefficients:
+    def solve(
+        self, mach: float, alpha: float, cp_max: float | None = None
+    ) -> Coefficients:
+        """Coefficients at one condition.
+
+        ``cp_max`` overrides the perfect-gas stagnation pressure coefficient
+        with an equilibrium-air value; see
+        :class:`passes.aerodynamics.realgas.EquilibriumAir`. It is a keyword
+        with a default rather than a required argument so that this still
+        satisfies the two-argument :class:`Solver` protocol.
+        """
         if float(mach) <= self.absolute_floor:
             msg = (
                 f"the panel method is a supersonic theory and cannot evaluate "
@@ -260,7 +270,9 @@ class PanelSolver:
             raise ValueError(msg)
         # Dynamic pressure cancels out of a coefficient; unity keeps the
         # arithmetic in a sane range.
-        force, moment = self._model.loads(float(alpha), float(mach), 1.0)
+        force, moment = self._model.loads(
+            float(alpha), float(mach), 1.0, cp_max=cp_max
+        )
         scale = self.reference_area
         return Coefficients(
             axial=float(force[0] / scale),

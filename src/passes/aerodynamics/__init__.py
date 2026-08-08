@@ -43,3 +43,75 @@ __all__ += [
     "SweepRun",
     "console_progress",
 ]
+
+from passes.aerodynamics.composite import (
+    PatchedSolver,
+    SkinFrictionModel,
+    meridian_running_length,
+)
+from passes.aerodynamics.conical import (
+    ConeSolution,
+    ObliqueShock,
+    mach_angle,
+    maximum_cone_angle,
+    oblique_shock,
+    solve_cone,
+    wedge_shock_angle,
+)
+from passes.aerodynamics.friction import (
+    AdiabaticWall,
+    BlasiusSolution,
+    BoundaryLayer,
+    FixedWall,
+    RadiativeEquilibriumWall,
+    adiabatic_wall_temperature,
+    compressible_blasius,
+    eckert_reference_temperature,
+    laminar_skin_friction,
+    recovery_factor,
+    reference_temperature,
+    turbulent_skin_friction,
+)
+from passes.aerodynamics.rarefied import (
+    FreeMolecularSolver,
+    free_molecular_coefficients,
+    sine_squared_bridge,
+    sphere_free_molecular_drag,
+)
+from passes.aerodynamics.realgas import (
+    EquilibriumAir,
+    NormalShock,
+    perfect_gas_normal_shock,
+)
+
+__all__ += [
+    "AdiabaticWall",
+    "BlasiusSolution",
+    "BoundaryLayer",
+    "ConeSolution",
+    "EquilibriumAir",
+    "FixedWall",
+    "FreeMolecularSolver",
+    "NormalShock",
+    "ObliqueShock",
+    "PatchedSolver",
+    "RadiativeEquilibriumWall",
+    "SkinFrictionModel",
+    "adiabatic_wall_temperature",
+    "compressible_blasius",
+    "eckert_reference_temperature",
+    "free_molecular_coefficients",
+    "laminar_skin_friction",
+    "mach_angle",
+    "maximum_cone_angle",
+    "meridian_running_length",
+    "oblique_shock",
+    "perfect_gas_normal_shock",
+    "recovery_factor",
+    "reference_temperature",
+    "sine_squared_bridge",
+    "solve_cone",
+    "sphere_free_molecular_drag",
+    "turbulent_skin_friction",
+    "wedge_shock_angle",
+]

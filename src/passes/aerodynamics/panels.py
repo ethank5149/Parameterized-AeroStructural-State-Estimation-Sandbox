@@ -119,8 +119,15 @@ class PanelModel:
         gamma: float = 1.4,
         blend_width: float = 0.02,
         sideslip: float = 0.0,
+        cp_max: float | None = None,
     ) -> tuple[_FloatArray, _FloatArray]:
         """Integrated force and moment in body axes.
+
+        ``cp_max`` overrides the perfect-gas Rayleigh-Pitot stagnation value.
+        Above about Mach 8 that value is wrong — equilibrium air reaches
+        1.93 at Mach 20 where the perfect gas is stuck near its 1.839
+        asymptote — and :class:`~passes.aerodynamics.realgas.EquilibriumAir`
+        supplies the right one.
 
         Pressure acts along :math:`-\\mathbf{n}`, so the panel force is
         :math:`-C_p\\,q_{\\mathrm{dyn}}A\\,\\mathbf{n}`.
@@ -136,7 +143,7 @@ class PanelModel:
             )
         delta = self.incidences(incidence, sideslip)
         cp = blended_pressure_coefficient(
-            delta, mach, gamma=gamma, blend_width=blend_width
+            delta, mach, gamma=gamma, blend_width=blend_width, cp_max=cp_max
         )
         panel_force = -(cp * dynamic_pressure * self.areas)[:, np.newaxis] * self.normals
         force = np.sum(panel_force, axis=0)
@@ -151,10 +158,16 @@ class PanelModel:
         dynamic_pressure: float,
         gamma: float = 1.4,
         blend_width: float = 0.02,
+        cp_max: float | None = None,
     ) -> float:
         """Body-axis pitching moment (about :math:`y`) at a given incidence."""
         _, moment = self.loads(
-            incidence, mach, dynamic_pressure, gamma=gamma, blend_width=blend_width
+            incidence,
+            mach,
+            dynamic_pressure,
+            gamma=gamma,
+            blend_width=blend_width,
+            cp_max=cp_max,
         )
         return float(moment[1])
 

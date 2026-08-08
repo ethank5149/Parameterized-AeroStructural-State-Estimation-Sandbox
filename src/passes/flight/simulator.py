@@ -57,6 +57,12 @@ from passes.thermal import (
     ThermalState,
     demo_material,
 )
+from passes.aerodynamics.tables import AeroTable
+from passes.atmosphere.model import (
+    TabulatedAtmosphere,
+    earth_atmosphere,
+    tabulate,
+)
 from passes.thermal.surface import STEFAN_BOLTZMANN
 
 __all__ = ["FlightConfiguration", "FlightResult", "FlightSimulator"]
@@ -106,6 +112,25 @@ class FlightConfiguration:
     of the ascent by the same factor. Set ``drag_area`` for any mission
     that varies mass, and drag becomes :math:`qC_DA/m` with the mass the
     integrator is actually carrying."""
+    aero_table: AeroTable | None = None
+    """A coefficient table supplying :math:`C_DA` as a function of Mach.
+
+    The third and best of the three. ``ballistic_coefficient`` is one number,
+    ``drag_area`` is one number, and the real thing is a curve: on this
+    vehicle :math:`C_A` runs from 1.62 at Mach 1.2 to 0.87 at Mach 25, so a
+    single constant is wrong by a factor of two somewhere on every ascent.
+    Set this and the drag area is read from the table at the local Mach
+    number, which needs a speed of sound and therefore also selects the
+    layered atmosphere over the exponential one.
+
+    Takes precedence over both of the others when set."""
+    atmosphere: TabulatedAtmosphere | None = None
+    """Ambient gas model. ``None`` keeps the exponential atmosphere.
+
+    Only consulted when :attr:`aero_table` is set, because only then does
+    anything need a temperature. It must be a *tabulated* atmosphere: the
+    right-hand side is evaluated tens of thousands of times per trajectory
+    and the layered model calls into NRLMSIS on every one of them."""
     baumgarte_gain: float = 1.0
     """:math:`k_q` of the quaternion stabilization."""
     structural_damping: float = 0.02
@@ -188,6 +213,16 @@ class FlightSimulator:
         self._cfg = config or FlightConfiguration()
         self._material = material or demo_material()
         self._gravity = gravity
+        # A coefficient table indexed by Mach needs a speed of sound, which
+        # the exponential atmosphere does not have. Selecting one implies the
+        # other, and building the default here rather than in the dataclass
+        # keeps a bare FlightConfiguration free of a 4000-point table nobody
+        # asked for.
+        self._atmosphere: TabulatedAtmosphere | None = None
+        if self._cfg.aero_table is not None:
+            self._atmosphere = self._cfg.atmosphere or tabulate(earth_atmosphere())
+        elif self._cfg.atmosphere is not None:
+            self._atmosphere = self._cfg.atmosphere
 
         # --- structural kernel, assembled once and held fixed
         beam_grid = ChebyshevGrid(self._cfg.beam_order, interval=(0.0, self._cfg.length))
@@ -403,15 +438,24 @@ class FlightSimulator:
 
         radius = float(np.linalg.norm(state.position))
         altitude = radius - self._gravity.radius
-        # smooth, branch-free: exp underflows to zero far above the atmosphere
-        density = _RHO0 * np.exp(-max(altitude, 0.0) / _H_SCALE)
         speed = state.speed
+        if self._atmosphere is None:
+            # smooth, branch-free: exp underflows to zero far above the atmosphere
+            density = _RHO0 * np.exp(-max(altitude, 0.0) / _H_SCALE)
+            mach = 0.0
+        else:
+            ambient = self._atmosphere.state(max(altitude, 0.0))
+            density = float(ambient.density)
+            mach = speed / float(ambient.speed_of_sound)
         q_dyn = 0.5 * density * speed**2
 
         # --- translation: J2 gravity plus drag along the relative velocity
         accel = gravitational_acceleration(state.position, self._gravity)
         if speed > 0.0:
-            if cfg.drag_area is None:
+            if cfg.aero_table is not None:
+                drag_area = cfg.aero_table.drag_area(mach)
+                deceleration = q_dyn * drag_area / max(float(state.mass), 1e-6)
+            elif cfg.drag_area is None:
                 deceleration = q_dyn / cfg.ballistic_coefficient
             else:
                 deceleration = q_dyn * cfg.drag_area / max(float(state.mass), 1e-6)
