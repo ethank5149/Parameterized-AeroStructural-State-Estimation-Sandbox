@@ -57,6 +57,7 @@ from passes.batch.backend import Backend
 from passes.geodesy import WGS84_MEAN_RADIUS
 from passes.viz.globe import Camera, load_texture, project, render, to_device
 from passes.viz.history import SimulationHistory
+from passes.viz.pacing import PacingWeights, attention_density
 from passes.viz.scene import (
     PHASE_COLORS,
     ChaseRig,
@@ -258,8 +259,9 @@ class TrajectoryAnimator:
         specular: float = 0.06,
         horizon_rings: bool = True,
         timeline: bool = True,
-        pacing: str = "phase",
+        pacing: str = "attention",
         pacing_exponent: float = 0.45,
+        pacing_weights: PacingWeights | None = None,
         backend: Backend = "numpy",
     ) -> None:
         if width < 2 or height < 2:
@@ -284,11 +286,22 @@ class TrajectoryAnimator:
         self.ambient, self.atmosphere, self.specular = ambient, atmosphere, specular
         self.horizon_rings = horizon_rings
         self.timeline = timeline
-        if pacing not in ("phase", "uniform"):
-            msg = f"pacing must be 'phase' or 'uniform', got {pacing!r}"
+        if pacing not in ("attention", "phase", "uniform"):
+            msg = (
+                f"pacing must be 'attention', 'phase' or 'uniform', got "
+                f"{pacing!r}"
+            )
             raise ValueError(msg)
         self.pacing = pacing
         self.pacing_exponent = float(pacing_exponent)
+        self.pacing_weights = pacing_weights or PacingWeights()
+        # Built once: it is a handful of finite differences over the history
+        # and every frame time and playback rate is read from it.
+        self._profile = (
+            attention_density(history, self.body_radius, self.pacing_weights)
+            if pacing == "attention"
+            else None
+        )
         self._playback: tuple[int, int] | None = None
         self.backend: Backend = backend
 
@@ -561,6 +574,9 @@ class TrajectoryAnimator:
         if n_frames < 2:
             msg = f"need at least two frames, got {n_frames}"
             raise ValueError(msg)
+        if self._profile is not None:
+            return self._profile.grid(int(n_frames))
+
         start, stop = float(self.history.times[0]), float(self.history.times[-1])
         phases = self.history.phases
         if self.pacing == "uniform" or not phases:
@@ -583,6 +599,8 @@ class TrajectoryAnimator:
         non-constant, and a viewer who cannot see the rate cannot tell a
         long coast from a fast one.
         """
+        if self._profile is not None:
+            return self._profile.rate(float(time), int(n_frames), int(fps))
         phases = self.history.phases
         video = n_frames / max(fps, 1)
         if self.pacing == "uniform" or not phases:
@@ -597,7 +615,7 @@ class TrajectoryAnimator:
     def render_sequence(
         self,
         filename: str | Path,
-        seconds: float = 45.0,
+        seconds: float = 75.0,
         fps: int = 30,
         n_frames: int | None = None,
         dpi: int = 100,

@@ -1654,6 +1654,97 @@ checked against.
       under refinement, which is the correct behaviour for a quantity the
       method cannot compute.
 
+### 9.11f An Earth the animation can be right about
+
+- [x] ~~**WGS84 instead of a sphere.**~~ **Done** —
+      [`viz/ellipsoid.py`](src/passes/viz/ellipsoid.py). Geodetic/Cartesian
+      both ways (Bowring plus Newton, machine precision from the geoid to
+      geostationary), exact ray-ellipsoid intersection by the change of
+      variables that maps the ellipsoid to the unit sphere, and the geodetic
+      local vertical.
+
+      The error being removed is not the 21 km of polar flattening, it is
+      where a latitude *sits*: treating geodetic latitude as geocentric
+      displaces a surface point at 45 degrees by **21,385 m**, measured. An
+      impact marker 21 km from the trajectory that produced it is exactly the
+      picture-disagrees-with-physics failure `SimulationHistory` was built to
+      stop.
+
+- [x] ~~**GMTED2010 elevation.**~~ **Done** —
+      [`viz/terrain.py`](src/passes/viz/terrain.py). 96 tiles at 7.5
+      arc-seconds plus 12 Antarctic at 30, queried by grouping points by tile
+      and issuing **one windowed read per tile** — a ground track is two or
+      three reads of a few megabytes, not one read per sample and not the
+      26 GB the mean-elevation product weighs.
+
+      Validated against published heights: Dead Sea shore -412 m, Denver
+      1605 m, open ocean 0. Everest comes back at 8665 m against a true
+      8848 m summit, and the spread between the ``min``/``mea``/``max``
+      statistics is only 75 m — so **cell size is the limit, not the choice
+      of statistic**, and that is asserted rather than assumed.
+
+- [x] ~~**Blue Marble Next Generation, from the GeoTIFFs.**~~ **Done** —
+      [`viz/imagery.py`](src/passes/viz/imagery.py). All twelve months, eight
+      21600 x 21600 tiles each: 86400 x 43200 at 15 arc-seconds, against the
+      4096 x 2048 JPEG the renderer used before. Two and a half thousand
+      times the pixels — and 11 GB as uint8, so it cannot simply be loaded.
+      Hence a cached decimated mosaic for full-disc views and a
+      native-resolution window for close-ups.
+
+      **The month is resolved from the simulation date**, because that is
+      what BMNG is for: snow line, sea ice and Sahel vegetation all move, and
+      a January launch rendered on the August texture crosses a different
+      planet at the latitudes an ICBM actually flies over.
+
+- [x] ~~**Pacing decided by the flight, not by phase labels.**~~ **Done** —
+      [`viz/pacing.py`](src/passes/viz/pacing.py). An attention density built
+      from the history's own arrays — altitude rate, specific force,
+      proximity to the ground, and a kernel on each declared event — with the
+      frame times taken as its inverse cumulative distribution, so endpoints
+      are exact and the grid is monotone by construction.
+
+      On the fractional profile in a 75-second video, against uniform:
+
+      | phase | % of flight | uniform | attention |
+      |---|---|---|---|
+      | boost | 4.2 % | 3.1 s | **15.7 s** |
+      | parking coast | 70.5 % | 52.9 s | **29.0 s** |
+      | deorbit coast | 19.1 % | 14.3 s | 17.5 s |
+      | entry | 6.2 % | 4.7 s | **12.7 s** |
+
+      The launch plays at **8x real time instead of 57x**, and the terminal
+      minute at 12x. Two findings worth keeping:
+
+      *The specific-force term is declared unavailable rather than
+      approximated.* A scenario trajectory carries no velocity, so measuring
+      acceleration would need two finite differences of sampled positions; on
+      the Keplerian parking orbit that returned **0.85 m/s² of "specific
+      force" where the true value is zero**, which made the coast the second
+      most interesting thing in the flight and gave it 48 % of the frames. It
+      now follows the same rule as `has_attitude`.
+
+      *A fractional compression exponent does the opposite of compressing.*
+      The first version raised each normalised signal to 0.4 on the reasoning
+      that it would stop any one phase dominating. For a signal in [0,1] that
+      *raises* small values — 0.1^0.4 = 0.40 — so it was actively promoting
+      the quiet parts it was meant to suppress.
+
+- [ ] **Wire the renderer to all of it.** The four modules above are built,
+      tested and exported; `globe.render` still intersects a **sphere** and
+      samples the legacy JPEG, and `scene.geodetic_to_cartesian` still places
+      markers on one. Only the pacing is connected so far, through
+      `TrajectoryAnimator(pacing="attention")`, which is now the default.
+      Remaining: `render` taking an `Ellipsoid` and a BMNG mosaic, terrain
+      relief shading from the coarse elevation grid, and the close-up path
+      that swaps in a native-resolution window near the pad and the impact.
+
+- [ ] **Stage separation.** Not started. The vehicle glyph is one body
+      throughout, where the real article sheds two stages and a bus. The
+      inputs exist — `sarmat_mass_model` carries the stage geometry and
+      `fly_mission` emits separation events — so this is a rendering question
+      rather than a physics one, but it is not done and the animation does not
+      show it.
+
 ### 9.12 Visualization as a first-class consumer
 
 The animation layer is a *presentation* layer and is held to a lower bar

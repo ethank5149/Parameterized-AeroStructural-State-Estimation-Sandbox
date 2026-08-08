@@ -71,6 +71,12 @@ filterwarnings = [
     # scipy.linalg.eig on some LAPACK builds emits benign runtime warnings for
     # near-defective pencils; the modal layer checks results explicitly instead.
     "default::scipy.linalg.LinAlgWarning",
+    # rasterio 1.5 sets `array.shape` on a decimated read, which NumPy 2.5
+    # deprecated. It is inside rasterio's Cython I/O path and there is nothing
+    # to fix on this side. Matched on the exact message rather than by module,
+    # because the warning is raised from a .pyx frame that Python attributes to
+    # whichever of our modules called it — so a module filter silently misses.
+    "default:Setting the shape on a NumPy array has been deprecated:DeprecationWarning",
 ]
 
 [tool.ruff]
@@ -108,5 +114,5 @@ follow_imports = "skip"
 # behind a typed façade in this package -- MSISAtmosphere, axisymmetric_domain,
 # EquilibriumAir -- so the untyped surface is one call wide in each case.
 [[tool.mypy.overrides]]
-module = ["gmsh", "pymsis.*", "cantera.*", "xarray.*"]
+module = ["gmsh", "pymsis.*", "cantera.*", "xarray.*", "rasterio.*"]
 ignore_missing_imports = true

@@ -18,6 +18,14 @@ Layered, so each piece can be tested against something:
 from __future__ import annotations
 
 from passes.viz.animator import Frame, TrajectoryAnimator, video_writer
+from passes.viz.ellipsoid import (
+    WGS84,
+    Ellipsoid,
+    ecef_to_geodetic,
+    geodetic_to_ecef,
+    local_vertical,
+    ray_ellipsoid,
+)
 from passes.viz.globe import (
     DEFAULT_TEXTURE,
     Camera,
@@ -29,6 +37,13 @@ from passes.viz.globe import (
     to_device,
 )
 from passes.viz.history import SimulationHistory
+from passes.viz.imagery import BlueMarble, default_blue_marble
+from passes.viz.pacing import (
+    PacingProfile,
+    PacingWeights,
+    attention_density,
+    uniform_pacing,
+)
 from passes.viz.scene import (
     NOSE_AXIS,
     ChaseRig,
@@ -47,34 +62,50 @@ from passes.viz.scene import (
     site_status,
     starfield,
 )
+from passes.viz.terrain import ElevationSample, Terrain, default_terrain
 
 __all__ = [
     "DEFAULT_TEXTURE",
     "NOSE_AXIS",
+    "WGS84",
+    "BlueMarble",
     "Camera",
     "ChaseRig",
+    "ElevationSample",
+    "Ellipsoid",
     "Frame",
+    "PacingProfile",
+    "PacingWeights",
     "SceneStyle",
     "SimulationHistory",
+    "Terrain",
     "TrajectoryAnimator",
+    "attention_density",
+    "default_blue_marble",
+    "default_terrain",
     "draw_horizon_ring",
     "draw_marker",
     "draw_sites",
     "draw_track",
     "draw_vehicle",
     "ease",
+    "ecef_to_geodetic",
     "geodetic_to_cartesian",
+    "geodetic_to_ecef",
     "globe_plate",
     "glyph_polylines",
     "glyph_world",
     "horizon_ring",
     "load_texture",
+    "local_vertical",
     "look_at",
     "project",
+    "ray_ellipsoid",
     "render",
     "site_status",
     "starfield",
     "sun_direction",
     "to_device",
+    "uniform_pacing",
     "video_writer",
 ]
