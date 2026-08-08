@@ -16,8 +16,8 @@ them into pixels.
 The division of labour
 ----------------------
 
-* :mod:`passes.viz.globe` — ray-traced sphere and point projection. Knows
-  about cameras and textures, nothing about vehicles.
+* :mod:`passes.viz.globe` — ray-traced ellipsoid and point projection.
+  Knows about cameras and textures, nothing about vehicles.
 * :mod:`passes.viz.scene` (this module) — geometry and Matplotlib overlays
   built from history samples: tracks, markers, the oriented vehicle glyph,
   sensor overlays, the chase rig.
@@ -53,9 +53,12 @@ from matplotlib.patches import Rectangle
 from numpy.typing import NDArray
 
 from passes.batch.backend import Backend
-from passes.geodesy import WGS84_MEAN_RADIUS, GeodeticPosition
+from passes.geodesy import GeodeticPosition
 from passes.orbital.warning import horizon_central_angle
-from passes.viz.globe import Camera, project, render, to_device
+from passes.viz.ellipsoid import WGS84, Ellipsoid, ecef_to_geodetic, geodetic_to_ecef
+from passes.viz.globe import Camera, as_ellipsoid, project, render, to_device
+from passes.viz.imagery import Texture
+from passes.viz.terrain import ReliefMap
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from matplotlib.axes import Axes
@@ -71,6 +74,7 @@ __all__ = [
     "draw_horizon_ring",
     "draw_marker",
     "draw_sites",
+    "draw_stack",
     "draw_timeline",
     "draw_track",
     "draw_vehicle",
@@ -81,6 +85,7 @@ __all__ = [
     "glyph_world",
     "horizon_ring",
     "site_status",
+    "stack_world",
     "starfield",
 ]
 
@@ -113,6 +118,7 @@ class SceneStyle:
     track_width: float = 1.3
     track_alpha: float = 0.30
     vehicle: str = "#FFFFFF"
+    jettisoned: str = "#8E9AAF"
     aimpoint: str = "#FFD166"
     launch: str = "#FFFFFF"
     site_idle: str = "#7CFFB2"
@@ -136,19 +142,21 @@ def ease(t: float | _FloatArray) -> _FloatArray:
 
 def geodetic_to_cartesian(
     position: GeodeticPosition | Iterable[GeodeticPosition],
-    body_radius: float = WGS84_MEAN_RADIUS,
+    surface: Ellipsoid | float = WGS84,
     lift: float = 0.0,
 ) -> _FloatArray:
-    """Geodetic point(s) to Cartesian vectors on a sphere of ``body_radius``.
+    """Geodetic point(s) to Cartesian vectors on ``surface``.
 
     Parameters
     ----------
     position:
         One :class:`~passes.geodesy.GeodeticPosition` or an iterable of them.
-    body_radius:
-        Sphere radius (m).
+    surface:
+        The body the markers sit on — an
+        :class:`~passes.viz.ellipsoid.Ellipsoid`, or a float radius meaning
+        a sphere.
     lift:
-        Extra radius (m). A marker drawn exactly on the surface is half
+        Extra height (m). A marker drawn exactly on the surface is half
         buried in it and half occluded by the depth test, which reads as a
         rendering glitch rather than as a site; lifting it clear is
         cosmetic and stated.
@@ -160,30 +168,26 @@ def geodetic_to_cartesian(
 
     Notes
     -----
-    Spherical, not ellipsoidal: geodetic latitude is used directly as a
-    geocentric one. That is the same approximation the whole
-    :mod:`passes.orbital.scenario` comparison rests on, and mixing an
-    ellipsoidal marker into a spherical scene would misplace it relative to
-    the very trajectories it is drawn against.
+    **This must agree with whatever produced the trajectories drawn beside
+    it.** On the WGS84 default the conversion is the proper ellipsoidal one
+    and a site lands where a survey puts it. Handed a float radius it
+    degenerates exactly to the old spherical form — geodetic latitude used
+    as geocentric — which is the right answer for a scene whose physics is
+    spherical, because a marker 21 km off the trajectory that hit it is
+    worse than a marker 21 km off the truth.
     """
     points: list[GeodeticPosition]
     if isinstance(position, GeodeticPosition):
         single, points = True, [position]
     else:
         single, points = False, list(position)
-    radii = np.array(
-        [body_radius + max(float(p.altitude), 0.0) + float(lift) for p in points]
+    ellipsoid = as_ellipsoid(surface)
+    heights = np.array(
+        [max(float(p.altitude), 0.0) + float(lift) for p in points]
     )
     latitudes = np.array([float(p.latitude) for p in points])
     longitudes = np.array([float(p.longitude) for p in points])
-    cartesian = np.stack(
-        [
-            radii * np.cos(latitudes) * np.cos(longitudes),
-            radii * np.cos(latitudes) * np.sin(longitudes),
-            radii * np.sin(latitudes),
-        ],
-        axis=1,
-    )
+    cartesian = geodetic_to_ecef(latitudes, longitudes, heights, ellipsoid)
     return np.asarray(cartesian[0] if single else cartesian)
 
 
@@ -283,7 +287,7 @@ class ChaseRig:
         width: int,
         height: int,
         progress: float = 0.0,
-        body_radius: float = WGS84_MEAN_RADIUS,
+        surface: Ellipsoid | float = WGS84,
     ) -> Camera:
         """Place the eye for one state.
 
@@ -296,8 +300,11 @@ class ChaseRig:
             Frame size in pixels.
         progress:
             Fraction of the run completed, used only by ``tighten``.
-        body_radius:
-            Sphere radius (m), for the eye-altitude floor.
+        surface:
+            The body, for the stand-off law and the eye-altitude floor.
+            Altitudes are **geodetic**, so the same rig frames a polar and
+            an equatorial launch identically instead of standing 21 km
+            further back at the pole.
         """
         centre = np.asarray(position, dtype=np.float64)
         radius = float(np.linalg.norm(centre))
@@ -338,15 +345,23 @@ class ChaseRig:
         back_axis = extent * heading + (1.0 - extent) * horizontal
         back_axis = back_axis / float(np.linalg.norm(back_axis))
 
-        altitude = max(radius - body_radius, self.min_altitude)
+        ellipsoid = as_ellipsoid(surface)
+        altitude = max(float(ecef_to_geodetic(centre, ellipsoid)[2]), self.min_altitude)
         shrink = 1.0 - self.tighten * float(ease(progress))
         back = (self.back_scale * altitude + self.back_offset) * shrink
         lift = (self.lift_scale * altitude + self.lift_offset) * shrink
 
         eye = centre - back * back_axis + lift * up
-        eye_radius = float(np.linalg.norm(eye))
-        if eye_radius - body_radius < self.floor:
-            eye = eye * (body_radius + self.floor) / eye_radius
+        # Radial scaling changes geodetic altitude by very nearly the radial
+        # step, but not exactly — the normal is not radial. Two passes take
+        # the residual below a millimetre, which is a cheaper fix than
+        # solving for the offset surface.
+        for _ in range(2):
+            eye_altitude = float(ecef_to_geodetic(eye, ellipsoid)[2])
+            if eye_altitude >= self.floor:
+                break
+            eye_radius = float(np.linalg.norm(eye))
+            eye = eye * (eye_radius + self.floor - eye_altitude) / eye_radius
 
         return Camera(
             position=eye,
@@ -360,14 +375,16 @@ class ChaseRig:
 
 def globe_plate(
     camera: Camera,
-    texture: Any,
-    body_radius: float = WGS84_MEAN_RADIUS,
+    texture: Texture | Sequence[Texture],
+    surface: Ellipsoid | float = WGS84,
     sun: _FloatArray | None = None,
     ambient: float = 0.13,
     atmosphere: float = 0.6,
     night: float = 0.20,
     specular: float = 0.10,
     stars: bool = True,
+    relief: ReliefMap | None = None,
+    displace: bool = False,
     backend: Backend = "numpy",
 ) -> tuple[Figure, Axes]:
     """A rendered globe on a figure whose axes are **pixels**.
@@ -386,13 +403,15 @@ def globe_plate(
     image, _ = render(
         camera,
         to_device(texture, backend),
-        body_radius,
+        surface,
         sun=sun,
         ambient=ambient,
         atmosphere=atmosphere,
         night=night,
         specular=specular,
         background=starfield(camera.width, camera.height) if stars else None,
+        relief=None if relief is None else to_device(relief, backend),
+        displace=displace,
         backend=backend,
     )
     figure, ax = plt.subplots(
@@ -415,7 +434,7 @@ def draw_track(
     width: float = 2.0,
     alpha: float = 1.0,
     zorder: float = 3.0,
-    body_radius: float | None = WGS84_MEAN_RADIUS,
+    surface: Ellipsoid | float | None = WGS84,
     values: _FloatArray | None = None,
     cmap: str = "inferno",
     vmin: float | None = None,
@@ -440,7 +459,7 @@ def draw_track(
     array = np.atleast_2d(np.asarray(points, dtype=np.float64))
     if array.shape[0] < 2:
         return
-    px, py, visible = project(array, camera, radius=body_radius)
+    px, py, visible = project(array, camera, surface=surface)
     xs = np.where(visible, px, np.nan)
     ys = np.where(visible, py, np.nan)
 
@@ -480,7 +499,7 @@ def draw_marker(
     ax: Axes,
     position: _FloatArray,
     camera: Camera,
-    body_radius: float | None = WGS84_MEAN_RADIUS,
+    surface: Ellipsoid | float | None = WGS84,
     **kwargs: Any,
 ) -> bool:
     """Scatter one world point, skipping it when the globe hides it.
@@ -488,7 +507,7 @@ def draw_marker(
     Returns whether it was drawn, so a caller can tell "behind the planet"
     from "drawn".
     """
-    px, py, visible = project(np.atleast_2d(position), camera, radius=body_radius)
+    px, py, visible = project(np.atleast_2d(position), camera, surface=surface)
     if not bool(visible[0]):
         return False
     ax.scatter(px[0], py[0], **kwargs)
@@ -589,7 +608,7 @@ def draw_vehicle(
     color: str = "#FFFFFF",
     width: float = 1.6,
     zorder: float = 8.0,
-    body_radius: float | None = WGS84_MEAN_RADIUS,
+    surface: Ellipsoid | float | None = WGS84,
     n_fins: int = 4,
     screen_fraction: float = 0.08,
 ) -> bool:
@@ -628,7 +647,7 @@ def draw_vehicle(
     """
     centre = np.asarray(position, dtype=np.float64).reshape(3)
 
-    _, _, in_front = project(centre[None, :], camera, radius=body_radius)
+    _, _, in_front = project(centre[None, :], camera, surface=surface)
     if not bool(in_front[0]):
         return False
 
@@ -637,7 +656,90 @@ def draw_vehicle(
         scale = float(screen_fraction * distance * np.tan(0.5 * camera.fov))
 
     for world in glyph_world(centre, dcm, scale, n_fins):
-        px, py, visible = project(world, camera, radius=body_radius)
+        px, py, visible = project(world, camera, surface=surface)
+        ax.plot(
+            np.where(visible, px, np.nan),
+            np.where(visible, py, np.nan),
+            color=color,
+            linewidth=width,
+            zorder=zorder,
+            solid_capstyle="round",
+        )
+    return True
+
+
+def stack_world(
+    position: _FloatArray,
+    dcm: _FloatArray,
+    lines: Sequence[_FloatArray],
+    scale: float,
+) -> list[_FloatArray]:
+    """Place metre-scale body polylines in the inertial frame at ``scale``.
+
+    The counterpart of :func:`glyph_world` for a stack whose shape came from
+    the mass model rather than from :func:`glyph_polylines`. ``scale`` is a
+    pure magnification: the input is already in metres and in the body
+    frame, so ``1.0`` draws the vehicle at true size — which is invisible,
+    for the reason :func:`draw_vehicle` states.
+    """
+    centre = np.asarray(position, dtype=np.float64).reshape(3)
+    rotation = np.asarray(dcm, dtype=np.float64)
+    if rotation.shape != (3, 3):
+        msg = f"dcm must be a single 3x3 matrix, got shape {rotation.shape}"
+        raise ValueError(msg)
+    to_inertial = rotation.T
+    return [
+        centre + float(scale) * (np.asarray(line, dtype=np.float64) @ to_inertial.T)
+        for line in lines
+    ]
+
+
+def draw_stack(
+    ax: Axes,
+    position: _FloatArray,
+    dcm: _FloatArray,
+    camera: Camera,
+    lines: Sequence[_FloatArray],
+    color: str = "#FFFFFF",
+    width: float = 1.4,
+    zorder: float = 8.0,
+    surface: Ellipsoid | float | None = WGS84,
+    screen_fraction: float = 0.10,
+) -> bool:
+    """Draw a multi-stage stack from body-frame polylines in metres.
+
+    Sized so the **whole remaining stack** subtends ``screen_fraction`` of
+    the frame height. That is deliberate and it is the opposite of what a
+    first attempt does: normalising each configuration to a fixed screen
+    length would make the vehicle appear to *grow* at every separation,
+    because a shorter stack drawn to the same size is a bigger one. Fixing
+    the magnification to the stack's own length at first sight would be
+    worse still — by the time the payload is alone it would be four pixels.
+
+    So the scale is set from the current stack's length, and the *step* at
+    separation is real: the picture gets shorter because the vehicle did.
+
+    Returns
+    -------
+    bool
+        Whether anything was drawn; ``False`` when the body occludes it.
+    """
+    if not lines:
+        return False
+    centre = np.asarray(position, dtype=np.float64).reshape(3)
+    _, _, in_front = project(centre[None, :], camera, surface=surface)
+    if not bool(in_front[0]):
+        return False
+
+    stacked = np.concatenate([np.asarray(line, dtype=np.float64) for line in lines])
+    length = float(np.ptp(stacked[:, 0]))
+    if length <= 0.0:  # pragma: no cover - a zero-length stack
+        return False
+    distance = float(np.linalg.norm(centre - np.asarray(camera.position)))
+    scale = screen_fraction * distance * np.tan(0.5 * camera.fov) / length
+
+    for world in stack_world(centre, dcm, lines, scale):
+        px, py, visible = project(world, camera, surface=surface)
         ax.plot(
             np.where(visible, px, np.nan),
             np.where(visible, py, np.nan),
@@ -655,7 +757,7 @@ def draw_vehicle(
 def horizon_ring(
     site: RadarSite,
     altitude: float,
-    body_radius: float = WGS84_MEAN_RADIUS,
+    surface: Ellipsoid | float = WGS84,
     samples: int = 181,
 ) -> _FloatArray:
     """The circle a site can see out to, at one vehicle altitude.
@@ -671,9 +773,22 @@ def horizon_ring(
     -------
     numpy.ndarray
         Shape ``(samples, 3)``, closed (last point equals the first).
+
+    Notes
+    -----
+    The small circle is built about the site's **local** surface radius, not
+    about a global mean one. :func:`~passes.orbital.warning.horizon_central_angle`
+    is a spherical relation and stays one; taking its radius from the
+    ellipsoid at the site's own latitude removes the part of the error that
+    is first order in the flattening, which is the part worth removing. What
+    remains is the circle's departure from a true ellipsoidal locus over its
+    own extent, second order in ``f`` and under a kilometre at any mask
+    angle a warning radar uses.
     """
-    lam = float(horizon_central_angle(altitude, site.mask_elevation, body_radius))
-    normal = geodetic_to_cartesian(site.position, body_radius)
+    ellipsoid = as_ellipsoid(surface)
+    local_radius = float(ellipsoid.surface_radius(site.position.latitude))
+    lam = float(horizon_central_angle(altitude, site.mask_elevation, local_radius))
+    normal = geodetic_to_cartesian(site.position, ellipsoid)
     normal = normal / float(np.linalg.norm(normal))
 
     # Any pair of vectors spanning the plane perpendicular to the site.
@@ -685,7 +800,7 @@ def horizon_ring(
     north = np.cross(normal, east)
 
     phi = np.linspace(0.0, 2.0 * np.pi, samples)
-    radius = body_radius + max(float(altitude), 0.0)
+    radius = local_radius + max(float(altitude), 0.0)
     ring = radius * (
         np.cos(lam) * normal[None, :]
         + np.sin(lam) * (np.cos(phi)[:, None] * east[None, :]
@@ -719,7 +834,7 @@ def draw_sites(
     camera: Camera,
     coverage: CoverageResult | None = None,
     time: float | None = None,
-    body_radius: float = WGS84_MEAN_RADIUS,
+    surface: Ellipsoid | float = WGS84,
     style: SceneStyle | None = None,
     lift: float = 15.0e3,
     size: float = 38.0,
@@ -745,9 +860,9 @@ def draw_sites(
         statuses[radar.name] = status
         draw_marker(
             ax,
-            geodetic_to_cartesian(radar.position, body_radius, lift=lift),
+            geodetic_to_cartesian(radar.position, surface, lift=lift),
             camera,
-            body_radius=body_radius,
+            surface=surface,
             s=size * (1.6 if status == "active" else 1.0),
             marker="^",
             c=colors[status],
@@ -763,7 +878,7 @@ def draw_horizon_ring(
     site: RadarSite,
     altitude: float,
     camera: Camera,
-    body_radius: float = WGS84_MEAN_RADIUS,
+    surface: Ellipsoid | float = WGS84,
     color: str = "#FF3B30",
     width: float = 1.2,
     alpha: float = 0.75,
@@ -772,13 +887,13 @@ def draw_horizon_ring(
     """Project a site's visibility circle at the vehicle's current altitude."""
     draw_track(
         ax,
-        horizon_ring(site, altitude, body_radius),
+        horizon_ring(site, altitude, surface),
         camera,
         color=color,
         width=width,
         alpha=alpha,
         zorder=zorder,
-        body_radius=body_radius,
+        surface=surface,
     )
 
 

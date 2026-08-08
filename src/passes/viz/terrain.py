@@ -52,6 +52,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -59,6 +60,7 @@ from numpy.typing import ArrayLike, NDArray
 __all__ = [
     "PRODUCTS",
     "ElevationSample",
+    "ReliefMap",
     "Terrain",
     "default_terrain",
 ]
@@ -70,6 +72,10 @@ PRODUCTS = ("mea", "med", "min", "max", "std", "dsc")
 
 #: Sentinel for ocean and unmapped cells.
 NODATA = -32768
+
+#: Relief maps already built this process, keyed by archive, product,
+#: resolution and exaggeration. See :meth:`Terrain.relief`.
+_RELIEFS: dict[tuple[str, str, int, float], ReliefMap] = {}
 
 
 @dataclass(frozen=True)
@@ -314,6 +320,190 @@ class Terrain:
         destination.parent.mkdir(parents=True, exist_ok=True)
         np.save(destination, grid)
         return np.asarray(grid)
+
+
+    def relief(
+        self, height: int = 2048, cache: Path | None = None, exaggeration: float = 1.0
+    ) -> ReliefMap:
+        """A :class:`ReliefMap` built from :meth:`coarse`, ready to shade with.
+
+        Memoised for the process. The grids are 33 MB apiece and immutable
+        once built; rebuilding them per animator is the same waste the
+        mosaic cache exists to stop.
+        """
+        key = (str(Path(self.root).resolve()), self.product, int(height),
+               float(exaggeration))
+        held = _RELIEFS.get(key)
+        if held is not None:
+            return held
+        built = ReliefMap.from_grid(
+            self.coarse(height=height, cache=cache), exaggeration=exaggeration
+        )
+        _RELIEFS[key] = built
+        return built
+
+
+@dataclass(frozen=True)
+class ReliefMap:
+    """A global elevation grid and the surface slopes derived from it.
+
+    What this is for
+    ----------------
+
+    The globe renderer intersects an analytic ellipsoid, so its surface
+    normal is the geodetic vertical everywhere and every frame comes out as
+    smoothly shaded as a billiard ball. Real terrain is visible from orbit
+    because it is *lit* differently, not because it is 8 km closer, and the
+    quantity that does that is the slope.
+
+    So the elevation grid is differentiated once, into east and north
+    slopes as **dimensionless rise over run in metres** — which requires the
+    metric, because a degree of longitude is 111 km at the equator and 19 km
+    at 80 degrees north, and dividing by degrees instead would make every
+    high-latitude hill look like a cliff.
+
+    What it is not
+    --------------
+
+    **Shading, not displacement.** The intersected surface is still the
+    ellipsoid: a mountain here changes how a pixel is lit, not where the
+    ground is. Against a 6,378 km radius, Everest is 0.14 % — under a pixel
+    on a full-disc globe — so for orbital views the distinction does not
+    arise. It very much arises on a launch-pad close-up, which is what
+    :func:`~passes.viz.globe.render`'s ``displace`` path is for; that one
+    marches the ray against this same grid and does move the ground.
+
+    **Limited by the grid it came from.** At the 2048-row default a cell is
+    9.8 km, so this resolves mountain *ranges*, not peaks. The Himalayan
+    front and the Andean scarp read correctly; a single ridge does not
+    exist at that scale and no exaggeration factor invents it.
+
+    Attributes
+    ----------
+    elevation:
+        ``(rows, cols)`` metres, row 0 at +90 latitude, column 0 at -180.
+    slope_east, slope_north:
+        Rise over run, dimensionless, positive uphill toward east and north.
+    exaggeration:
+        Vertical scaling applied to the slopes. ``1.0`` is the truth and the
+        default; larger values are a stated cheat, not a correction.
+
+    Notes
+    -----
+    The three grids are typed loosely for the same reason
+    :attr:`~passes.viz.imagery.Texture.data` is: the renderer may hold a
+    device-resident copy, and nothing here indexes them. Their shapes are
+    checked on construction, which is the property that actually matters.
+    """
+
+    elevation: Any
+    slope_east: Any
+    slope_north: Any
+    exaggeration: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.elevation.ndim != 2:
+            msg = f"elevation must be a 2-D grid, got shape {self.elevation.shape}"
+            raise ValueError(msg)
+        for name in ("slope_east", "slope_north"):
+            if getattr(self, name).shape != self.elevation.shape:
+                msg = (
+                    f"{name} must match the elevation grid "
+                    f"{self.elevation.shape}, got {getattr(self, name).shape}"
+                )
+                raise ValueError(msg)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return int(self.elevation.shape[0]), int(self.elevation.shape[1])
+
+    @classmethod
+    def from_grid(
+        cls,
+        grid: NDArray[np.float32] | _FloatArray,
+        exaggeration: float = 1.0,
+        semi_major: float = 6378137.0,
+        flattening: float = 1.0 / 298.257223563,
+    ) -> ReliefMap:
+        """Differentiate an equirectangular elevation grid on the ellipsoid.
+
+        Central differences, wrapping in longitude — the grid is periodic
+        there and a one-sided difference at the antimeridian would draw a
+        meridian-long false scarp straight down the Pacific.
+
+        In latitude the ends are one-sided, which is correct: the grid stops
+        at the poles and there is nothing beyond them to difference against.
+
+        **The east stencil widens toward the poles.** A cell's east-west
+        extent shrinks as :math:`\\cos\\varphi`, so on a 2048-row grid the
+        top row's cells are 7.5 m across where the equator's are 9.8 km.
+        Differencing over one cell there divides a real elevation step by a
+        vanishing baseline: measured, that returned a **slope of 186** — an
+        89.7 degree cliff — on the polar rows.
+
+        Flooring the *step* is the wrong fix, and was the first one tried:
+        the floor is itself the tiny polar width, so it changes nothing, and
+        raising it to the meridional step instead suppresses genuine
+        east-west slope from about 7 degrees of latitude outward.
+
+        So the difference is taken over :math:`1/\\cos\\varphi` columns
+        instead, which holds the *physical* baseline roughly constant from
+        equator to pole. That is the standard treatment of the
+        equirectangular grid's coordinate singularity, and it is a
+        statement about the grid rather than about the ground.
+        """
+        elevation = np.asarray(grid, dtype=np.float32)
+        if elevation.ndim != 2:
+            msg = f"grid must be 2-D, got shape {elevation.shape}"
+            raise ValueError(msg)
+        rows, cols = elevation.shape
+        scale = float(exaggeration)
+
+        d_lat = np.pi / rows
+        d_lon = 2.0 * np.pi / cols
+        # Pixel-centre latitudes: row 0 spans 90 down to 90 - d_lat.
+        latitude = 0.5 * np.pi - (np.arange(rows) + 0.5) * d_lat
+
+        e2 = flattening * (2.0 - flattening)
+        w = np.sqrt(1.0 - e2 * np.sin(latitude) ** 2)
+        # Meridian and prime-vertical radii of curvature at each row.
+        meridian = semi_major * (1.0 - e2) / w**3
+        prime_vertical = semi_major / w
+
+        north_step = meridian * d_lat
+        cos_phi = np.cos(latitude)
+        # Columns to reach either side, so the baseline stays near one
+        # equatorial cell. Capped at a quarter turn, past which "east" has
+        # stopped meaning anything local.
+        reach = np.clip(np.round(1.0 / np.maximum(cos_phi, 1.0e-12)), 1, cols // 4)
+        reach = reach.astype(np.int64)
+        east_step = prime_vertical * cos_phi * d_lon * reach
+
+        # Longitude wraps; latitude does not.
+        columns = np.arange(cols)
+        ahead = (columns[None, :] + reach[:, None]) % cols
+        behind = (columns[None, :] - reach[:, None]) % cols
+        d_east = 0.5 * (
+            np.take_along_axis(elevation, ahead, axis=1)
+            - np.take_along_axis(elevation, behind, axis=1)
+        )
+        d_north = np.zeros_like(elevation)
+        # Row index increases southward, so a positive northward slope is a
+        # *decrease* in row index — hence the sign.
+        d_north[1:-1] = 0.5 * (elevation[:-2] - elevation[2:])
+        d_north[0] = elevation[0] - elevation[1]
+        d_north[-1] = elevation[-2] - elevation[-1]
+
+        return cls(
+            elevation=elevation,
+            slope_east=np.asarray(
+                scale * d_east / east_step[:, None], dtype=np.float32
+            ),
+            slope_north=np.asarray(
+                scale * d_north / north_step[:, None], dtype=np.float32
+            ),
+            exaggeration=scale,
+        )
 
 
 def default_terrain(root: str | Path | None = None, product: str = "mea") -> Terrain:

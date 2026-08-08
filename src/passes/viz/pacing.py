@@ -77,6 +77,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
+from passes.viz.ellipsoid import Ellipsoid
 from passes.viz.history import SimulationHistory
 
 __all__ = ["PacingProfile", "PacingWeights", "attention_density", "uniform_pacing"]
@@ -298,7 +299,7 @@ def _smooth(values: _FloatArray, times: _FloatArray, width: float) -> _FloatArra
 
 def attention_density(
     history: SimulationHistory,
-    body_radius: float,
+    surface: Ellipsoid | float,
     weights: PacingWeights | None = None,
     gravitational_parameter: float = 3.986004418e14,
 ) -> PacingProfile:
@@ -306,8 +307,12 @@ def attention_density(
 
     Parameters
     ----------
-    body_radius:
-        Used only to turn positions into altitudes for the climb term.
+    surface:
+        The body, used only to turn positions into altitudes for the climb
+        and proximity terms. Geodetic on an ellipsoid — the 21 km spread
+        between a geodetic and a geocentric altitude is comparable to the
+        60 km proximity scale, so it changes how much of the terminal
+        descent counts as close to the ground.
     gravitational_parameter:
         :math:`\\mu`, used to subtract gravity from the acceleration so the
         manoeuvre term measures specific force rather than free fall.
@@ -318,7 +323,7 @@ def attention_density(
         return uniform_pacing(history)
 
     positions = np.asarray(history.positions, dtype=np.float64)
-    altitude = history.altitudes(body_radius)
+    altitude = history.altitudes(surface)
     terms: dict[str, _FloatArray] = {}
 
     # --- climb: |dh/dt|

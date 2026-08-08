@@ -44,6 +44,7 @@ from numpy.typing import NDArray
 
 from passes.dynamics.attitude import dcm_from_quaternion
 from passes.orbital.scenario import Event, Phase
+from passes.viz.ellipsoid import Ellipsoid, ecef_to_geodetic
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters for typing
     from passes.flight.simulator import FlightResult
@@ -158,8 +159,18 @@ class SimulationHistory:
     def radii(self) -> _FloatArray:
         return np.asarray(np.linalg.norm(self.positions, axis=1))
 
-    def altitudes(self, body_radius: float) -> _FloatArray:
-        return np.asarray(self.radii() - body_radius)
+    def altitudes(self, surface: Ellipsoid | float) -> _FloatArray:
+        """Height above ``surface`` at every sample (m).
+
+        **Geodetic** on an ellipsoid, which is not the radius minus a
+        constant: at 45 degrees the two differ by 10.7 km, and that is the
+        same order as the altitudes a terminal glide is argued about at.
+        A float radius gives the spherical answer exactly, for a history
+        that was produced on a sphere.
+        """
+        if isinstance(surface, Ellipsoid):
+            return ecef_to_geodetic(self.positions, surface)[2]
+        return np.asarray(self.radii() - float(surface))
 
     # -- sampling --------------------------------------------------------
 

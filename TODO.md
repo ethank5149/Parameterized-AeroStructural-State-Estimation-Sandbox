@@ -1729,21 +1729,109 @@ checked against.
       *raises* small values — 0.1^0.4 = 0.40 — so it was actively promoting
       the quiet parts it was meant to suppress.
 
-- [ ] **Wire the renderer to all of it.** The four modules above are built,
-      tested and exported; `globe.render` still intersects a **sphere** and
-      samples the legacy JPEG, and `scene.geodetic_to_cartesian` still places
-      markers on one. Only the pacing is connected so far, through
-      `TrajectoryAnimator(pacing="attention")`, which is now the default.
-      Remaining: `render` taking an `Ellipsoid` and a BMNG mosaic, terrain
-      relief shading from the coarse elevation grid, and the close-up path
-      that swaps in a native-resolution window near the pad and the impact.
+- [x] ~~**Wire the renderer to all of it.**~~ **Done.** `render` now
+      intersects an `Ellipsoid` (a float radius still means a sphere, exactly,
+      for a history that was built on one), takes geo-referenced
+      `Texture` objects rather than bare arrays, shades from GMTED2010
+      slopes, and optionally marches rays onto the terrain instead of onto
+      the reference surface. `scene` and `animator` thread a `surface`
+      through in place of `body_radius`, and altitudes are geodetic
+      throughout — including in the pacing, where the 21 km spread between a
+      geodetic and a geocentric altitude is comparable to the 60 km
+      proximity scale.
 
-- [ ] **Stage separation.** Not started. The vehicle glyph is one body
-      throughout, where the real article sheds two stages and a bus. The
-      inputs exist — `sarmat_mass_model` carries the stage geometry and
-      `fly_mission` emits separation events — so this is a rendering question
-      rather than a physics one, but it is not done and the animation does not
-      show it.
+      `TrajectoryAnimator` resolves the Blue Marble month for the flight,
+      reads native-resolution crops around the first and last points of the
+      history, and decides per frame — from what the camera can actually
+      resolve, not from a phase label — whether to composite the crop and
+      whether to displace. Measured on the fractional profile: two textures
+      and displacement on at lift-off (eye 3.0 km) and at impact (eye
+      8.4 km), one texture and no displacement on the parking coast (eye
+      455 km).
+
+      **Four things found doing it**, all now tested:
+
+      *A fractional-degree east stencil returns a slope of 186.* On a
+      2048-row grid the top row's cells are 7.5 m across where the equator's
+      are 9.8 km, so differencing over one cell there divides a real
+      elevation step by a vanishing baseline — an 89.7 degree cliff running
+      round the pole. Flooring the *step* is no fix (the floor is itself the
+      tiny polar width) and flooring it at the meridional step suppresses
+      genuine slope from 7 degrees of latitude outward. The difference is
+      now taken over `1/cos(phi)` columns, holding the physical baseline
+      roughly constant; the maximum slope drops from **186 to 0.21**, at
+      -81 degrees, which is the Antarctic scarp.
+
+      *An overhead key light makes terrain shading invisible.* Shading works
+      on the cosine against a slope-perturbed normal, so a light along the
+      local vertical meets slope at second order. Over the Himalaya it
+      changed brightness by **0.5 %** where a light 55 degrees up changes it
+      by **3.7 %**. `lighting="track"` now tilts the key by `key_elevation`,
+      default 55 degrees, trading 18 % of ground brightness for terrain that
+      can be seen at all.
+
+      *`BlueMarble.window` ignored the month it was given* — it indexed the
+      archive by `months[0]` and returned January whatever was asked for, so
+      a close-up could show snow the mosaic behind it had melted. It also
+      took only the first intersecting tile, silently returning a crop
+      narrower than the box: the BMNG grid breaks **at the equator** and
+      every 90 degrees, so "a close-up never straddles an edge" is false for
+      anything launched from or aimed at a low latitude. Crops are now
+      assembled across every tile they touch on a shared integer decimation
+      stride, because independent per-tile rounding leaves a visible seam.
+
+      *The texture sampler was half a pixel out.* It mapped latitude +90 to
+      row 0, placing texel centres on the poles, which is a half-pixel shift
+      against an edge-aligned source: 2.4 km on the old 4096-row texture and
+      230 m on a 15-arc-second crop. `Texture` now carries pixel-**edge**
+      bounds and the sampler works in centres.
+
+      Honest limits, all stated in the code: the displacement march **does
+      not silhouette** — no occlusion test, so a ridge is lit and lifted but
+      casts no hard edge over the valley behind it, and at grazing incidence
+      it falls back to the ellipsoid; and the relief grid resolves ranges,
+      not peaks, at a 9.8 km cell. Relief shading is worth about **5 % of
+      peak brightness**, which is deliberately not oversold: BMNG is surface
+      reflectance and already carries the mountains through their snow and
+      vegetation.
+
+      Cost at 1280x720: 0.39 s a frame smooth, 0.45 s with relief, 0.94 s
+      with displacement — and displacement only runs below 400 km of eye
+      altitude.
+
+- [x] ~~**Stage separation.**~~ **Done** —
+      [`viz/staging.py`](src/passes/viz/staging.py). `StagingPlan` reads the
+      `VehicleMassModel` and answers what is attached at any instant;
+      `stack_polylines` builds the glyph from the stages' **own stations**
+      against the mould line, so a stack that has dropped its first stage is
+      drawn shorter by exactly the length the mass model says it lost.
+      `draw_stack` sizes the whole remaining stack to a fixed fraction of
+      the frame, so the step at separation is real — normalising each
+      configuration instead would make the vehicle appear to *grow* when it
+      staged.
+
+      **The spent stages are integrated, not drawn.** Each leaves with the
+      stack's state at separation and is propagated under the same J2
+      gravity the flight used and its own drag, with its dry mass and
+      frontal area from the mass model and the mould line, terminating at
+      the surface. On a flown two-stage launch the first stage separates at
+      T+110 s and **impacts at T+774 s, 4,284 km from where the vehicle then
+      is**; the second separates above the atmosphere at T+250 s and stays
+      within 1.5 km fifteen minutes later. Both are what those two bodies
+      should do, and neither was drawn.
+
+      The one invented number is declared: `Separation.relative_speed`, the
+      push-off the separation hardware imparts, defaults to 1.5 m/s and has
+      no source in this framework — the mass model carries no separation
+      hardware. It is also measured to be nearly irrelevant, and that is a
+      test: zeroing it changes the ten-minute divergence by under a quarter,
+      because the divergence is drag and gravity.
+
+      Still open: `StagingPlan.from_events` requires an explicit
+      `{stage: event}` mapping rather than inferring one. `fly_mission`
+      names boundaries from *burn* labels, and a burn label is not a stage
+      name — a substring match would be right for the bundled profile and
+      silently wrong for a two-stage vehicle that calls both burns "boost".
 
 ### 9.12 Visualization as a first-class consumer
 

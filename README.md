@@ -331,22 +331,55 @@ That structure is the point. The earlier version rebuilt the vehicle's position 
 | module | responsibility |
 | --- | --- |
 | [`history.py`](src/passes/viz/history.py) | `SimulationHistory`, the one authoritative run record. `from_flight_result` carries the full coupled state; `from_trajectory` the lighter orbital scenarios. |
-| [`globe.py`](src/passes/viz/globe.py) | Ray-traced sphere, projection, depth test. |
-| [`scene.py`](src/passes/viz/scene.py) | Pure drawing primitives over history samples: tracks, markers, the oriented vehicle glyph, sensor overlays, the chase rig. |
+| [`ellipsoid.py`](src/passes/viz/ellipsoid.py) | WGS84: geodetic conversions both ways, exact ray-ellipsoid intersection, the local vertical. |
+| [`imagery.py`](src/passes/viz/imagery.py) | Blue Marble Next Generation, by month, as geo-referenced `Texture` objects — a cached global mosaic and native-resolution crops. |
+| [`terrain.py`](src/passes/viz/terrain.py) | GMTED2010 elevation, and the `ReliefMap` the renderer shades and displaces with. |
+| [`pacing.py`](src/passes/viz/pacing.py) | Attention density from the run's own arrays, and the frame grid that is its inverse CDF. |
+| [`globe.py`](src/passes/viz/globe.py) | Ray-traced ellipsoid, projection, depth test. |
+| [`scene.py`](src/passes/viz/scene.py) | Pure drawing primitives over history samples: tracks, markers, the oriented vehicle glyph and staged stack, sensor overlays, the chase rig. |
+| [`staging.py`](src/passes/viz/staging.py) | What is still attached, and the integrated trajectory of everything that is not. |
 | [`animator.py`](src/passes/viz/animator.py) | `TrajectoryAnimator.frame_at(t)` and `render_sequence(...)`. |
 
-The Earth is **ray-traced** rather than drawn with `plot_surface`: a camera ray is intersected with the sphere per output pixel and the texture sampled bilinearly, so sharpness is limited by the texture and the frame size, never by a mesh. A depth buffer makes occlusion a per-point test — the reason trajectories no longer appear in front of the planet they are behind.
+The Earth is **ray-traced** rather than drawn with `plot_surface`: a camera ray is intersected with the body per output pixel and the imagery sampled bilinearly, so sharpness is limited by the texture and the frame size, never by a mesh. A depth buffer makes occlusion a per-point test — the reason trajectories no longer appear in front of the planet they are behind.
+
+#### The body is an ellipsoid, and the data behind it is measured
+
+[`notebooks/earth-and-staging.ipynb`](notebooks/earth-and-staging.ipynb) runs every claim in this section.
+
+**WGS84, not a sphere.** The point is not the 21 km of polar flattening — under two pixels on a full-disc globe. It is that treating geodetic latitude as geocentric displaces a surface point at 45° by **21,385 m**, and an impact marker 21 km from the trajectory that produced it is precisely the picture-disagrees-with-physics failure this layer exists to stop. A float radius still means a sphere, exactly, because a history built on one must be drawn on one.
+
+**Blue Marble Next Generation, at the month being flown.** 86400 × 43200 at 15 arc-seconds against the 4096 × 2048 JPEG the renderer used before — 2,500× the pixels, and 11 GB as `uint8`, so it cannot simply be loaded. A cached decimated mosaic serves full-disc views and native-resolution crops serve close-ups, composited over the mosaic with a feathered join. The animator decides per frame from what the camera can **resolve**, not from a phase label: on the fractional profile it uses two textures at lift-off (eye 3.0 km) and at impact (eye 8.4 km), and one on the parking coast (eye 455 km).
+
+**GMTED2010 elevation, two ways.** Slopes perturb the surface normal, so terrain is *lit* rather than painted — and where the ray is close enough to care, the march moves the ground onto the terrain instead of onto the reference surface. Validated against published heights: Dead Sea shore −412 m, Denver 1605 m, ocean 0; Everest returns 8665 m against a true 8848 m, and the spread between the `min`/`mea`/`max` statistics is only 75 m, so **cell size is the limit, not the choice of statistic**.
+
+Three limits, stated rather than implied: the displacement march does **not silhouette** (no occlusion test, so a ridge is lit and lifted but casts no hard edge over the valley behind it); the relief grid resolves ranges, not peaks, at a 9.8 km cell; and relief shading is worth about **5 % of peak brightness**, because BMNG is surface reflectance and already carries the mountains through their snow and vegetation.
+
+#### The vehicle comes apart
+
+`StagingPlan` reads the `VehicleMassModel` and `stack_polylines` builds the glyph from the stages' **own stations** against the mould line, so a stack that has dropped its first stage is drawn shorter by exactly the length the mass model says it lost. Sizing the whole remaining stack to a fixed fraction of the frame is deliberate: normalising each configuration instead would make the vehicle appear to *grow* when it staged.
+
+**The spent stages are integrated, not drawn.** Each leaves with the stack's state at separation and is propagated under the same J2 gravity the flight used and its own drag, with its dry mass and frontal area from the mass model, terminating at the surface. On a flown two-stage launch the first stage separates at T+110 s and impacts at T+774 s, **4,284 km** from where the vehicle then is; the second separates above the atmosphere and stays within 1.5 km fifteen minutes later. The one invented number — the 1.5 m/s separation push-off — is declared, and measured to contribute under a quarter of the ten-minute divergence.
 
 Properties that used to depend on care now hold by construction:
 
-- **Frames lie on a grid in *time*,** whose endpoints are the history's endpoints. The 86 % truncation cannot recur. Pacing is per-*phase* by default: a fractional profile is 4 % boost, 71 % parking coast and 25 % descent, so uniform pacing gave the entire powered ascent 6 frames of 130. Weighting by `duration ** 0.45` gives it 17, and the HUD states the resulting playback rate (×215 through boost, ×1,016 through the coast).
+- **Frames lie on a grid in *time*,** whose endpoints are the history's endpoints. The 86 % truncation cannot recur.
+- **Pacing is decided by the flight, not by phase labels.** `attention_density` builds a density from the history's own arrays — altitude rate, specific force, proximity to the ground, a kernel on each declared event — and the frame times are its inverse CDF, so endpoints are exact and the grid is monotone by construction. On the fractional profile in a 75-second video, against uniform:
+
+  | phase | % of flight | uniform | attention |
+  | --- | --- | --- | --- |
+  | boost | 4.2 % | 3.1 s | **15.7 s** |
+  | parking coast | 70.5 % | 52.9 s | **29.0 s** |
+  | deorbit coast | 19.1 % | 14.3 s | 17.5 s |
+  | entry | 6.2 % | 4.7 s | **12.7 s** |
+
+  The launch plays at **8× real time instead of 57×**, and the HUD states the rate. The specific-force term is *declared unavailable* rather than approximated when the producer carries no velocity: double-differencing sampled positions returned 0.85 m/s² on a Keplerian coast where the true value is zero, which gave the coast 48 % of the frames.
 - **Trajectories declare their phases and events** — boost, parking coast, deorbit coast, entry, with lift-off, insertion, the deorbit burn, the entry interface and impact between them — and the frame carries a timeline strip, a phase label, the next event with a countdown, and a marker at each event's location. Inferring phases from the shape of the altitude curve was a guess that broke twice.
 - **A scenario trajectory reports `has_attitude == False`** rather than substituting an identity quaternion, so the animator draws a bare marker. A coupled `FlightResult` carries a real quaternion, and `glyph_world` places the vehicle by its direction cosine matrix — checked arithmetically, not by eye. The glyph is *not* to scale, and says so: 15 m at 500 km stand-off is 1/200 000 of a pixel.
 - **Sensor markers are coloured from the same `CoverageResult` that produced the warning number,** and the animator refuses coverage whose clock lies outside the history.
 - **The GPU path is the same renderer.** `render(..., backend="cupy")` measures **344 ms → 22 ms** for a 1280×720 frame, agreeing with the CPU to 1e-11 in a colour channel.
 - **H.264 output** through `video_writer`: 1.13 MB against 14.4 MB of GIF for the same 130-frame run, and no 256-colour banding across the terminator.
 
-Lighting is a stated cheat with three settings and no honest option. `"sun"` is physically right but a launch site and an aimpoint half a globe apart cannot both be in daylight; `"camera"` removes the terminator and most of the picture with it, because a chase camera looks roughly *along* the surface; `"track"`, the default, puts a key light on the vehicle's own local vertical. The shading model (Lambertian terrain, soft terminator, atmospheric limb, ocean glint) exists so the geometry reads clearly and is calibrated against nothing.
+Lighting is a stated cheat with three settings and no honest option. `"sun"` is physically right but a launch site and an aimpoint half a globe apart cannot both be in daylight; `"camera"` removes the terminator and most of the picture with it, because a chase camera looks roughly *along* the surface; `"track"`, the default, rides a key light with the vehicle. That key is **55° above the local horizon rather than straight up**, and the reason is measurable: shading works on the cosine against a slope-perturbed normal, so an overhead light meets terrain slope at second order and changed brightness over the Himalaya by 0.5 % where a 55° light changes it by 3.7 %. With the key vertical the GMTED2010 shading is loaded, computed, and invisible. Everything else in the shading model (Lambertian terrain, soft terminator, atmospheric limb, ocean glint) exists so the geometry reads clearly and is calibrated against nothing.
 
 ---
 

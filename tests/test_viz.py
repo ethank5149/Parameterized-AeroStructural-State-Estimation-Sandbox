@@ -11,16 +11,21 @@ from passes.geodesy import WGS84_MEAN_RADIUS, GeodeticPosition
 from passes.viz import (
     DEFAULT_TEXTURE,
     NOSE_AXIS,
+    WGS84,
     Camera,
     ChaseRig,
+    Ellipsoid,
     SimulationHistory,
+    Texture,
     TrajectoryAnimator,
     ease,
     geodetic_to_cartesian,
+    geodetic_to_ecef,
     glyph_polylines,
     glyph_world,
     horizon_ring,
     load_texture,
+    local_vertical,
     look_at,
     project,
     render,
@@ -39,21 +44,32 @@ import matplotlib  # noqa: E402
 matplotlib.use("Agg")
 
 
-def _checker(rows: int = 64, cols: int = 128) -> np.ndarray:
-    """A synthetic texture whose value encodes position.
+def _checker(rows: int = 64, cols: int = 128) -> Texture:
+    """A synthetic global texture whose value encodes position.
 
     Red carries longitude and green carries latitude, so a sampled colour
-    says exactly where on the sphere it came from. That turns "does the
+    says exactly where on the body it came from. That turns "does the
     texture land in the right place" from an eyeball question into an
     arithmetic one.
+
+    Built on **pixel centres**, matching the edge-referenced bounds a
+    :class:`Texture` carries: row 0 covers 90 down to 90 - 180/rows, so its
+    centre is half a cell south of the pole rather than on it.
     """
-    lat = np.linspace(0.5, -0.5, rows)[:, None] + 0.5
-    lon = np.linspace(0.0, 1.0, cols)[None, :]
-    return np.stack(
-        [np.broadcast_to(lon, (rows, cols)), np.broadcast_to(lat, (rows, cols)),
-         np.zeros((rows, cols))],
-        axis=-1,
+    lat = (0.5 - (np.arange(rows) + 0.5) / rows)[:, None] + 0.5
+    lon = ((np.arange(cols) + 0.5) / cols)[None, :]
+    return Texture(
+        np.stack(
+            [np.broadcast_to(lon, (rows, cols)), np.broadcast_to(lat, (rows, cols)),
+             np.zeros((rows, cols))],
+            axis=-1,
+        )
     )
+
+
+def _flat(rows: int = 32, cols: int = 64) -> Texture:
+    """A uniform white global texture, for tests about lighting alone."""
+    return Texture(np.ones((rows, cols, 3)))
 
 
 class TestCamera:
@@ -113,21 +129,21 @@ class TestProjection:
         camera = look_at(np.zeros(3), 4.0 * _R, 0.0, 0.0)
         near = np.array([[1.2 * _R, 0.0, 0.0]])
         far = np.array([[-1.2 * _R, 0.0, 0.0]])
-        assert project(near, camera, radius=_R)[2][0]
-        assert not project(far, camera, radius=_R)[2][0]
+        assert project(near, camera, surface=_R)[2][0]
+        assert not project(far, camera, surface=_R)[2][0]
 
     def test_occlusion_is_only_applied_when_a_radius_is_given(self):
         camera = look_at(np.zeros(3), 4.0 * _R, 0.0, 0.0)
         far = np.array([[-1.2 * _R, 0.0, 0.0]])
         assert project(far, camera)[2][0]
-        assert not project(far, camera, radius=_R)[2][0]
+        assert not project(far, camera, surface=_R)[2][0]
 
     def test_a_point_just_off_the_limb_stays_visible(self):
         """The occlusion test must not clip geometry that merely passes
         near the limb, which is exactly where an entry trajectory sits."""
         camera = look_at(np.zeros(3), 6.0 * _R, 0.0, 0.0)
         grazing = np.array([[0.0, 1.02 * _R, 0.0]])
-        assert project(grazing, camera, radius=_R)[2][0]
+        assert project(grazing, camera, surface=_R)[2][0]
 
     def test_rejects_malformed_input(self):
         camera = look_at(np.zeros(3), 3.0 * _R, 0.0, 0.0)
@@ -181,10 +197,9 @@ class TestRender:
         """With the sun 90 degrees from the sub-camera point, exactly half
         the visible disc is lit. Checked by brightness rather than by eye."""
         camera = look_at(np.zeros(3), 8.0 * _R, 0.0, 0.0, width=300, height=300)
-        flat = np.ones((32, 64, 3))
         image, depth = render(
             camera,
-            flat,
+            _flat(),
             _R,
             sun=sun_direction(np.deg2rad(90.0)),
             atmosphere=0.0,
@@ -209,8 +224,7 @@ class TestRender:
 
     def test_lighting_from_the_camera_removes_the_terminator(self):
         camera = look_at(np.zeros(3), 5.0 * _R, 0.4, 0.2, width=200, height=200)
-        flat = np.ones((32, 64, 3))
-        image, depth = render(camera, flat, _R, sun=None, atmosphere=0.0, specular=0.0)
+        image, depth = render(camera, _flat(), _R, sun=None, atmosphere=0.0, specular=0.0)
         on_disc = np.isfinite(depth)
         assert (image[..., 0][on_disc] > 0.5).mean() > 0.98
 
@@ -230,18 +244,73 @@ class TestRender:
 
     def test_rejects_a_non_positive_radius(self):
         camera = look_at(np.zeros(3), 3.0 * _R, 0.0, 0.0, width=32, height=32)
-        with pytest.raises(ValueError, match="radius must be positive"):
+        with pytest.raises(ValueError, match="radius must be finite and positive"):
             render(camera, _checker(), 0.0)
+
+    def test_a_float_radius_renders_exactly_as_a_zero_flattening_ellipsoid(self):
+        """The compatibility path is the same code, not a parallel one.
+
+        A history built on a sphere must keep being drawn on that sphere;
+        this is the assertion that the ellipsoidal rewrite did not quietly
+        move the surface out from under it.
+        """
+        camera = look_at(np.zeros(3), 4.0 * _R, 0.3, -0.2, width=96, height=96)
+        as_float, depth_float = render(camera, _checker(), _R)
+        as_object, depth_object = render(
+            camera, _checker(), Ellipsoid(semi_major=_R, flattening=0.0)
+        )
+        assert np.array_equal(as_float, as_object)
+        assert np.array_equal(depth_float, depth_object)
+
+    def test_the_ellipsoid_puts_a_latitude_where_a_survey_does(self):
+        """The measurement the whole change is for.
+
+        A texel at 45.5 N is sampled at the point whose *geodetic* latitude
+        is 45.5 N. Reading geodetic latitude as geocentric would place it
+        0.19 degrees away, which is 21 km on the ground, and an impact
+        marker 21 km from the trajectory that produced it is the failure
+        this layer exists to prevent.
+        """
+        latitude, longitude = 45.5, 10.5
+        marked = np.zeros((180, 360, 3))
+        marked[int(90.0 - latitude), int(longitude + 180.0)] = 1.0
+        target = geodetic_to_ecef(
+            np.deg2rad(latitude), np.deg2rad(longitude), 0.0, WGS84
+        )
+        up = local_vertical(np.deg2rad(latitude), np.deg2rad(longitude))
+        camera = Camera(
+            position=target + 4.0e6 * up,
+            target=target,
+            up=np.array([0.0, 0.0, 1.0]),
+            fov=np.deg2rad(2.0),
+            width=101,
+            height=101,
+        )
+        image, _ = render(
+            camera, Texture(marked), WGS84, sun=up, ambient=1.0, night=1.0,
+            atmosphere=0.0, specular=0.0,
+        )
+        rows, columns = np.nonzero(image[..., 0] > 0.5)
+        assert rows.size > 0, "the marked texel must be visible"
+        # Within a pixel of the frame centre. The geocentric misreading
+        # would put it 0.19 degrees away, which at this range and field of
+        # view is 21 km and off the bottom of a 101-pixel frame.
+        assert float(rows.mean()) == pytest.approx(50.0, abs=1.0)
+        assert float(columns.mean()) == pytest.approx(50.0, abs=1.0)
 
 
 class TestTexture:
     @pytest.mark.skipif(not Path(DEFAULT_TEXTURE).is_file(), reason="texture not present")
     def test_the_packaged_texture_is_equirectangular(self):
         texture = load_texture()
-        rows, cols = texture.shape[:2]
-        assert texture.shape[2] == 3
+        rows, cols = texture.shape
+        assert texture.data.shape[2] == 3
         assert cols == 2 * rows, "an equirectangular image must be 2:1"
-        assert texture.min() >= 0.0 and texture.max() <= 1.0
+        # Kept as uint8 all the way to the sampler: a float64 copy of a BMNG
+        # mosaic is 800 MB, and the renderer divides by 255 anyway.
+        assert texture.data.dtype == np.uint8
+        assert texture.wraps
+        assert (texture.south, texture.north) == (-90.0, 90.0)
 
     def test_a_missing_texture_says_what_was_expected(self):
         with pytest.raises(FileNotFoundError, match="equirectangular"):
@@ -257,7 +326,7 @@ class TestTexture:
         if not Path(DEFAULT_TEXTURE).is_file():
             pytest.skip("texture not present")
         monkeypatch.chdir(tmp_path)
-        assert load_texture().shape[2] == 3
+        assert load_texture().data.shape[2] == 3
 
 
 class TestSimulationHistory:
@@ -693,7 +762,7 @@ class TestAnimator:
             frame = animator.frame_at(time)
             truth = history.sample(time)["position"]
             assert np.allclose(frame.position, truth, atol=1e-9)
-            px, py, visible = project(truth[None, :], frame.camera, radius=_R)
+            px, py, visible = project(truth[None, :], frame.camera, surface=_R)
             assert frame.vehicle_pixel == (float(px[0]), float(py[0]), bool(visible[0]))
 
     def test_a_flight_result_puts_the_glyph_nose_on_the_integrated_attitude(self):

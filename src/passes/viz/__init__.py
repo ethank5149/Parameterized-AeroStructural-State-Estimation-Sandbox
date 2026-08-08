@@ -9,7 +9,15 @@ Layered, so each piece can be tested against something:
 * :mod:`~passes.viz.history` — :class:`SimulationHistory`, the one record a
   renderer reads. Removes the second trajectory model a notebook used to
   carry.
-* :mod:`~passes.viz.globe` — ray-traced sphere, projection, depth test.
+* :mod:`~passes.viz.ellipsoid` — WGS84 geometry: geodetic conversions,
+  ray-ellipsoid intersection, the local vertical.
+* :mod:`~passes.viz.imagery` — Blue Marble Next Generation, as
+  geo-referenced :class:`~passes.viz.imagery.Texture` objects.
+* :mod:`~passes.viz.terrain` — GMTED2010 elevation and the relief map the
+  renderer shades and displaces with.
+* :mod:`~passes.viz.pacing` — attention density and the frame grid it
+  implies.
+* :mod:`~passes.viz.globe` — ray-traced ellipsoid, projection, depth test.
 * :mod:`~passes.viz.scene` — pure drawing primitives over history samples.
 * :mod:`~passes.viz.animator` — :class:`TrajectoryAnimator`, the façade a
   notebook calls.
@@ -17,7 +25,12 @@ Layered, so each piece can be tested against something:
 
 from __future__ import annotations
 
-from passes.viz.animator import Frame, TrajectoryAnimator, video_writer
+from passes.viz.animator import (
+    Frame,
+    ImageryFallback,
+    TrajectoryAnimator,
+    video_writer,
+)
 from passes.viz.ellipsoid import (
     WGS84,
     Ellipsoid,
@@ -29,6 +42,7 @@ from passes.viz.ellipsoid import (
 from passes.viz.globe import (
     DEFAULT_TEXTURE,
     Camera,
+    as_ellipsoid,
     load_texture,
     look_at,
     project,
@@ -37,7 +51,7 @@ from passes.viz.globe import (
     to_device,
 )
 from passes.viz.history import SimulationHistory
-from passes.viz.imagery import BlueMarble, default_blue_marble
+from passes.viz.imagery import BlueMarble, Texture, default_blue_marble
 from passes.viz.pacing import (
     PacingProfile,
     PacingWeights,
@@ -62,7 +76,12 @@ from passes.viz.scene import (
     site_status,
     starfield,
 )
-from passes.viz.terrain import ElevationSample, Terrain, default_terrain
+from passes.viz.terrain import (
+    ElevationSample,
+    ReliefMap,
+    Terrain,
+    default_terrain,
+)
 
 __all__ = [
     "DEFAULT_TEXTURE",
@@ -74,12 +93,16 @@ __all__ = [
     "ElevationSample",
     "Ellipsoid",
     "Frame",
+    "ImageryFallback",
     "PacingProfile",
     "PacingWeights",
+    "ReliefMap",
     "SceneStyle",
     "SimulationHistory",
     "Terrain",
+    "Texture",
     "TrajectoryAnimator",
+    "as_ellipsoid",
     "attention_density",
     "default_blue_marble",
     "default_terrain",

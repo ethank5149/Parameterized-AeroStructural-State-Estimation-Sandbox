@@ -36,6 +36,23 @@ changes: northern hemisphere snow line, Sahel vegetation, sea ice. A
 January launch rendered on the August texture is a different planet at the
 latitudes an ICBM trajectory actually crosses. :meth:`BlueMarble.for_date`
 resolves a date to the right month.
+
+Everything leaves here as a :class:`Texture`
+--------------------------------------------
+
+A raw array is not enough to draw with, because the renderer has to know
+*where on the Earth each texel is*. The global mosaic and a native-
+resolution crop differ in exactly that, and nothing else, so both come back
+as a :class:`Texture`: pixels plus the degree box they cover, with the box
+given in **pixel edges** — the convention rasterio reports and GDAL stores.
+
+That distinction is not pedantry. The renderer previously mapped latitude
++90 to row 0 and -90 to row ``rows-1``, which places texel *centres* on the
+poles and is a half-pixel shift against an edge-aligned source. On the
+4096-row texture it used that was 2.4 km on the ground; on an
+8192-row BMNG mosaic it is 1.2 km, and on a 15-arc-second close-up it is
+230 m — the same order as the impact accuracy the rest of this package
+argues about.
 """
 
 from __future__ import annotations
@@ -49,9 +66,107 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-__all__ = ["MONTH_NAMES", "BlueMarble", "TileKey", "default_blue_marble"]
+__all__ = [
+    "MONTH_NAMES",
+    "BlueMarble",
+    "Texture",
+    "TileKey",
+    "default_blue_marble",
+]
 
 _ByteImage = NDArray[np.uint8]
+
+#: Mosaics already read this process, keyed by cache file, height and month.
+#: Bounded by the number of distinct months a run touches, which is one.
+_MOSAICS: dict[tuple[str, int, int], _ByteImage] = {}
+
+
+@dataclass(frozen=True)
+class Texture:
+    """An image and the degree box it covers, in pixel edges.
+
+    Attributes
+    ----------
+    data:
+        ``(rows, cols, 3)``. ``uint8`` straight from the source, or float in
+        ``[0, 1]``; :func:`~passes.viz.globe.render` normalises on the way
+        in and does not care which. May live on a GPU — nothing here indexes
+        it, so the array only has to support ``.shape``.
+    south, north, west, east:
+        Degree bounds of the image's outer edges. Row 0's *top* edge is at
+        ``north`` and column 0's *left* edge at ``west``.
+
+    Notes
+    -----
+    ``wraps`` is derived rather than passed: a texture is treated as
+    seamless in longitude exactly when it spans the full 360 degrees, which
+    is the only case where wrapping is correct. A 90-degree crop that
+    wrapped would sample the far side of the tile at its edge.
+    """
+
+    data: Any
+    south: float = -90.0
+    north: float = 90.0
+    west: float = -180.0
+    east: float = 180.0
+
+    def __post_init__(self) -> None:
+        shape = tuple(int(n) for n in self.data.shape)
+        if len(shape) != 3 or shape[2] != 3:
+            msg = f"texture data must have shape (rows, cols, 3), got {shape}"
+            raise ValueError(msg)
+        if not self.north > self.south:
+            msg = f"texture needs north > south, got {self.south} to {self.north}"
+            raise ValueError(msg)
+        if not self.east > self.west:
+            msg = (
+                f"texture needs east > west without wrapping the antimeridian, "
+                f"got {self.west} to {self.east}"
+            )
+            raise ValueError(msg)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """``(rows, cols)``."""
+        return int(self.data.shape[0]), int(self.data.shape[1])
+
+    @property
+    def wraps(self) -> bool:
+        """Whether longitude sampling should wrap — full-globe textures only."""
+        return bool(np.isclose(self.east - self.west, 360.0))
+
+    @property
+    def degrees_per_pixel(self) -> tuple[float, float]:
+        """``(latitude, longitude)`` degrees per pixel."""
+        rows, cols = self.shape
+        return (self.north - self.south) / rows, (self.east - self.west) / cols
+
+    @property
+    def ground_resolution(self) -> float:
+        """Metres per pixel in longitude at the box's mid-latitude.
+
+        The number a caller compares against a camera's metres-per-pixel to
+        decide whether this texture is worth reading. Longitude rather than
+        latitude because that is the axis that shrinks with the cosine, so
+        it is the binding one.
+        """
+        _, d_lon = self.degrees_per_pixel
+        mid = np.deg2rad(0.5 * (self.north + self.south))
+        return float(np.deg2rad(d_lon) * 6378137.0 * max(np.cos(mid), 1.0e-6))
+
+    def covers(
+        self, latitude: float, longitude: float, margin: float = 0.0
+    ) -> bool:
+        """Whether a degree point lies inside the box, less ``margin`` degrees."""
+        lon = (float(longitude) - self.west) % 360.0 + self.west
+        return bool(
+            self.south + margin <= float(latitude) <= self.north - margin
+            and self.west + margin <= lon <= self.east - margin
+        )
+
+    def with_data(self, data: Any) -> Texture:
+        """The same box with different pixels — for a device upload."""
+        return Texture(data, self.south, self.north, self.west, self.east)
 
 MONTH_NAMES = (
     "january", "february", "march", "april", "may", "june",
@@ -62,6 +177,9 @@ MONTH_NAMES = (
 #: Columns A-D run west to east from 180 W; rows 1-2 run north then south.
 _COLUMN_WEST = {"A": -180.0, "B": -90.0, "C": 0.0, "D": 90.0}
 _ROW_NORTH = {"1": 90.0, "2": 0.0}
+#: The same layout as whole-tile indices, for assembling on a global grid.
+_COLUMN_INDEX = {"A": 0, "B": 1, "C": 2, "D": 3}
+_ROW_INDEX = {"1": 0, "2": 1}
 
 TileKey = str
 """One of ``A1``, ``A2``, ..., ``D2``."""
@@ -174,13 +292,25 @@ class BlueMarble:
         materialised. The source has no overviews, so this still decompresses
         every strip — about a minute a month — which is why the result is
         cached.
+
+        Cached **twice**: to disk against the rebuild, and in memory against
+        the reload. A 4096-row mosaic is 100 MB, and an animator that
+        constructs one per call spent longer reading the same file off disk
+        than rendering the frames it was read for.
         """
         if height < 64 or height % 2 != 0:
             msg = f"mosaic height must be even and at least 64, got {height}"
             raise ValueError(msg)
         destination = self.mosaic_path(height, month)
+        cache_key = (str(destination.resolve()), int(height), int(month))
+        if not rebuild:
+            held = _MOSAICS.get(cache_key)
+            if held is not None:
+                return held
         if destination.is_file() and not rebuild:
-            return np.asarray(np.load(destination))
+            loaded: _ByteImage = np.asarray(np.load(destination))
+            _MOSAICS[cache_key] = loaded
+            return loaded
 
         try:
             import rasterio
@@ -209,6 +339,7 @@ class BlueMarble:
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         np.save(destination, image)
+        _MOSAICS[cache_key] = image
         return image
 
     # -- native-resolution window ------------------------------------------
@@ -217,19 +348,34 @@ class BlueMarble:
         self,
         latitude: tuple[float, float],
         longitude: tuple[float, float],
+        month: int = 1,
         max_width: int = 4096,
-    ) -> tuple[_ByteImage, tuple[float, float, float, float]]:
+    ) -> Texture:
         """Native-resolution crop of a lat/lon box, in degrees.
 
-        Returns the image and its actual ``(south, north, west, east)``
-        bounds, which are snapped outward to whole source pixels — a caller
-        that assumed it got exactly the box it asked for would misregister
-        the texture by up to half a pixel, and at 15 arc-seconds that is
-        230 m on the ground.
+        Returns a :class:`Texture` whose bounds are snapped **outward to
+        whole source pixels** — a caller that assumed it got exactly the box
+        it asked for would misregister the texture by up to half a pixel,
+        and at 15 arc-seconds that is 230 m on the ground.
 
         Boxes spanning the antimeridian are refused rather than silently
         wrapped: the crop would be two disjoint reads, and returning one
         array with a seam in the middle of it is worse than an error.
+
+        Notes
+        -----
+        Boxes crossing a tile edge are assembled from every tile they touch,
+        not from the first one. The tile grid breaks at longitudes -90, 0
+        and 90 and **at the equator**, so "a close-up never straddles an
+        edge" is not true of anything launched from or aimed at low
+        latitudes; an earlier version took the first intersecting tile and
+        returned a crop quietly narrower than the box asked for.
+
+        Assembly is by a shared **integer decimation stride** over the
+        global 15-arc-second grid rather than by per-tile output shapes.
+        Independent rounding per tile puts the pieces a fraction of a pixel
+        out of register, which shows up as a visible line down the seam at
+        exactly the resolution this method exists to provide.
         """
         try:
             import rasterio
@@ -249,54 +395,75 @@ class BlueMarble:
         if not (-90.0 <= south < north <= 90.0):
             msg = f"latitude box must lie in [-90, 90] and be non-empty, got {latitude}"
             raise ValueError(msg)
-
-        month = self.months[0]
-        pieces: list[tuple[Any, ...]] = []
-        for key, path in sorted(self.tiles(month).items()):
-            tile_west = _COLUMN_WEST[key[0]]
-            tile_north = _ROW_NORTH[key[1]]
-            tile_east, tile_south = tile_west + 90.0, tile_north - 90.0
-            if east <= tile_west or west >= tile_east:
-                continue
-            if north <= tile_south or south >= tile_north:
-                continue
-            pieces.append((key, path, tile_west, tile_north))
-        if not pieces:  # pragma: no cover - the boxes above tile the globe
-            msg = f"no Blue Marble tile covers {latitude}, {longitude}"
+        if not (west >= -180.0 and east <= 180.0):
+            msg = f"longitude box must lie in [-180, 180], got ({west}, {east})"
             raise ValueError(msg)
 
-        # Single-tile fast path is the common one: a launch-pad or impact
-        # close-up is a fraction of a degree and never straddles a 90-degree
-        # tile edge except by coincidence.
-        key, path, tile_west, tile_north = pieces[0]
-        with rasterio.open(path) as handle:
-            degrees_per_pixel = 90.0 / handle.width
-            col0 = int(np.floor((west - tile_west) / degrees_per_pixel))
-            col1 = int(np.ceil((east - tile_west) / degrees_per_pixel))
-            row0 = int(np.floor((tile_north - north) / degrees_per_pixel))
-            row1 = int(np.ceil((tile_north - south) / degrees_per_pixel))
-            col0, col1 = max(col0, 0), min(col1, handle.width)
-            row0, row1 = max(row0, 0), min(row1, handle.height)
-            span_w, span_h = col1 - col0, row1 - row0
-            if span_w <= 0 or span_h <= 0:  # pragma: no cover - guarded above
-                msg = f"empty crop for {latitude}, {longitude}"
-                raise ValueError(msg)
-            scale = min(1.0, max_width / span_w)
-            out_w = max(round(span_w * scale), 1)
-            out_h = max(round(span_h * scale), 1)
-            block = handle.read(
-                indexes=[1, 2, 3],
-                window=Window(col0, row0, span_w, span_h),
-                out_shape=(3, out_h, out_w),
-                resampling=rasterio.enums.Resampling.average,
-            )
-        bounds = (
-            tile_north - row1 * degrees_per_pixel,
-            tile_north - row0 * degrees_per_pixel,
-            tile_west + col0 * degrees_per_pixel,
-            tile_west + col1 * degrees_per_pixel,
+        tiles = self.tiles(self.month_of(month))
+        # Every BMNG tile is the same size, so one global pixel grid indexes
+        # all eight and the per-tile offsets are exact integers.
+        with rasterio.open(next(iter(tiles.values()))) as probe:
+            tile_pixels = int(probe.width)
+        degrees_per_pixel = 90.0 / tile_pixels
+
+        col0 = int(np.floor((west + 180.0) / degrees_per_pixel))
+        col1 = int(np.ceil((east + 180.0) / degrees_per_pixel))
+        row0 = int(np.floor((90.0 - north) / degrees_per_pixel))
+        row1 = int(np.ceil((90.0 - south) / degrees_per_pixel))
+        col0, col1 = max(col0, 0), min(col1, 4 * tile_pixels)
+        row0, row1 = max(row0, 0), min(row1, 2 * tile_pixels)
+        span_w, span_h = col1 - col0, row1 - row0
+        if span_w <= 0 or span_h <= 0:  # pragma: no cover - guarded above
+            msg = f"empty crop for {latitude}, {longitude}"
+            raise ValueError(msg)
+
+        # One stride for the whole crop. Snapping the origin to a multiple of
+        # it keeps every tile's contribution on the same output lattice.
+        stride = max(int(np.ceil(span_w / max(int(max_width), 1))), 1)
+        col0 -= col0 % stride
+        row0 -= row0 % stride
+        out_w = max((col1 - col0) // stride, 1)
+        out_h = max((row1 - row0) // stride, 1)
+        col1, row1 = col0 + out_w * stride, row0 + out_h * stride
+
+        image = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+        for key, path in sorted(tiles.items()):
+            left = _COLUMN_INDEX[key[0]] * tile_pixels
+            top = _ROW_INDEX[key[1]] * tile_pixels
+            # Overlap of the requested crop with this tile, in global pixels.
+            c0, c1 = max(col0, left), min(col1, left + tile_pixels)
+            r0, r1 = max(row0, top), min(row1, top + tile_pixels)
+            # Round in to whole output pixels so a tile never writes a
+            # partially-covered one, which would leave a black seam.
+            c0 += (-(c0 - col0)) % stride
+            r0 += (-(r0 - row0)) % stride
+            c1 -= (c1 - col0) % stride
+            r1 -= (r1 - row0) % stride
+            if c1 <= c0 or r1 <= r0:
+                continue
+            with rasterio.open(path) as handle:
+                block = handle.read(
+                    indexes=[1, 2, 3],
+                    window=Window(c0 - left, r0 - top, c1 - c0, r1 - r0),
+                    out_shape=(3, (r1 - r0) // stride, (c1 - c0) // stride),
+                    resampling=rasterio.enums.Resampling.average,
+                )
+            slot_r, slot_c = (r0 - row0) // stride, (c0 - col0) // stride
+            image[
+                slot_r : slot_r + block.shape[1], slot_c : slot_c + block.shape[2]
+            ] = np.transpose(block, (1, 2, 0))
+
+        return Texture(
+            image,
+            south=90.0 - row1 * degrees_per_pixel,
+            north=90.0 - row0 * degrees_per_pixel,
+            west=col0 * degrees_per_pixel - 180.0,
+            east=col1 * degrees_per_pixel - 180.0,
         )
-        return np.transpose(block, (1, 2, 0)), bounds
+
+    def texture(self, height: int = 4096, month: int = 1) -> Texture:
+        """The global mosaic as a :class:`Texture`, bounds and all."""
+        return Texture(self.mosaic(height=height, month=self.month_of(month)))
 
 
 def default_blue_marble(root: str | Path | None = None) -> BlueMarble:

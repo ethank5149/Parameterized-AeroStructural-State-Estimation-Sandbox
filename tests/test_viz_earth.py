@@ -26,13 +26,16 @@ from passes.viz.ellipsoid import (
     local_vertical,
     ray_ellipsoid,
 )
+from passes.viz.globe import Camera, render
 from passes.viz.history import SimulationHistory
+from passes.viz.imagery import Texture, default_blue_marble
 from passes.viz.pacing import (
     PacingProfile,
     PacingWeights,
     attention_density,
     uniform_pacing,
 )
+from passes.viz.terrain import ReliefMap, default_terrain
 
 REFERENCE = Path(__file__).resolve().parents[1] / "reference"
 HAVE_TERRAIN = (REFERENCE / "GMTED2010").is_dir()
@@ -285,18 +288,52 @@ class TestImagery:
 
     def test_window_returns_its_actual_bounds(self) -> None:
         """Snapped outward to whole source pixels, and reported as such."""
-        image, (south, north, west, east) = self.archive().window(
-            (51.0, 51.2), (59.7, 59.95), max_width=512
-        )
-        assert image.ndim == 3 and image.shape[2] == 3
+        crop = self.archive().window((51.0, 51.2), (59.7, 59.95), max_width=512)
+        assert crop.data.ndim == 3 and crop.data.shape[2] == 3
         # Outward to whole source pixels, to within the float representation
         # of a degree — the snap is computed in degrees and 59.95 is not one.
         epsilon = 1e-9
-        assert south <= 51.0 + epsilon and north >= 51.2 - epsilon
-        assert west <= 59.7 + epsilon and east >= 59.95 - epsilon
-        # 15 arc-seconds is 1/240 of a degree; the snap cannot exceed one cell.
-        assert north - 51.2 < 1.0 / 240.0
-        assert east - 59.95 < 1.0 / 240.0
+        assert crop.south <= 51.0 + epsilon and crop.north >= 51.2 - epsilon
+        assert crop.west <= 59.7 + epsilon and crop.east >= 59.95 - epsilon
+        # 15 arc-seconds is 1/240 of a degree. This box is 60 source pixels
+        # wide against a 512-pixel budget, so the decimation stride is one
+        # and the snap cannot exceed a single cell.
+        assert crop.north - 51.2 < 1.0 / 240.0
+        assert crop.east - 59.95 < 1.0 / 240.0
+        assert not crop.wraps
+
+    def test_window_spanning_a_tile_edge_is_assembled_from_both(self) -> None:
+        """The tile grid breaks at the equator and every 90 degrees.
+
+        An earlier version took the first intersecting tile and returned a
+        crop quietly narrower than the box asked for, which is wrong for
+        anything launched from or aimed at a low latitude.
+        """
+        crop = self.archive().window((-0.4, 0.4), (36.0, 36.8), max_width=512)
+        assert crop.south <= -0.4 and crop.north >= 0.4
+        rows, _ = crop.shape
+        northern = np.asarray(crop.data[: rows // 2], dtype=np.float64)
+        southern = np.asarray(crop.data[rows // 2 :], dtype=np.float64)
+        # Both halves carry image, so neither tile was dropped. A missing
+        # tile would leave its half at exactly zero.
+        assert northern.mean() > 1.0
+        assert southern.mean() > 1.0
+
+    def test_window_takes_the_month_it_is_asked_for(self) -> None:
+        """The crop must follow the same month the mosaic does.
+
+        It did not: the first version indexed the archive by ``months[0]``
+        and returned January whatever was asked for, so a close-up could
+        show snow the mosaic behind it had melted.
+        """
+        archive = self.archive()
+        if len(archive.months) < 2:  # pragma: no cover - partial archive
+            pytest.skip("needs at least two complete months")
+        box = ((60.0, 60.3), (30.0, 30.3))
+        first = archive.window(*box, month=archive.months[0], max_width=256)
+        other = archive.window(*box, month=archive.months[-1], max_width=256)
+        assert first.data.shape == other.data.shape
+        assert not np.array_equal(first.data, other.data)
 
 
 class TestPacing:
@@ -410,3 +447,221 @@ class TestPacing:
             PacingWeights(ceiling=0.5)
         with pytest.raises(ValueError, match="compression"):
             PacingWeights(compression=0.0)
+
+
+@pytest.mark.skipif(not HAVE_TERRAIN, reason="GMTED2010 archive not present")
+class TestRelief:
+    """The slopes the globe is shaded and displaced with."""
+
+    @staticmethod
+    def relief() -> ReliefMap:
+        return default_terrain().relief()
+
+    def test_slopes_are_physical_everywhere_including_the_poles(self) -> None:
+        """The defect the widening east stencil exists to fix.
+
+        Differencing over one cell at the top row divides a real elevation
+        step by a 7.5 m baseline, and that returned a **slope of 186** — an
+        89.7 degree cliff running round the pole. No terrain on Earth
+        exceeds about 45 degrees averaged over a 10 km cell.
+        """
+        relief = self.relief()
+        magnitude = np.hypot(relief.slope_east, relief.slope_north)
+        assert float(magnitude.max()) < 1.0
+        # And the steepest ground is somewhere plausible rather than at a
+        # pole: the Antarctic and Andean scarps, not row zero.
+        rows = relief.shape[0]
+        steepest = int(np.argmax(magnitude) // relief.shape[1])
+        latitude = 90.0 - (steepest + 0.5) * 180.0 / rows
+        assert -85.0 < latitude < 85.0
+
+    def test_slope_is_rise_over_run_in_metres(self) -> None:
+        """A synthetic ramp of known gradient, so the metric is checked.
+
+        A degree of longitude is 111 km at the equator and 19 km at 80
+        north; dividing by degrees instead of metres would make every
+        high-latitude hill a cliff.
+        """
+        rows, cols = 180, 360
+        # 1000 m rise across the whole equatorial circumference.
+        grid = np.tile(np.linspace(0.0, 1000.0, cols, dtype=np.float32), (rows, 1))
+        relief = ReliefMap.from_grid(grid)
+        equator = rows // 2
+        expected = 1000.0 / (2.0 * np.pi * 6378137.0)
+        middle = relief.slope_east[equator, cols // 2]
+        assert float(middle) == pytest.approx(expected, rel=0.02)
+
+    def test_exaggeration_scales_the_slopes_and_says_so(self) -> None:
+        grid = np.tile(np.linspace(0.0, 1000.0, 360, dtype=np.float32), (180, 1))
+        plain = ReliefMap.from_grid(grid)
+        doubled = ReliefMap.from_grid(grid, exaggeration=2.0)
+        assert doubled.exaggeration == 2.0
+        assert np.allclose(doubled.slope_east, 2.0 * plain.slope_east)
+        # Elevation itself is untouched: the exaggeration is a shading
+        # choice and must not leak into a height anyone reads.
+        assert np.array_equal(doubled.elevation, plain.elevation)
+
+    def test_longitude_wraps_and_latitude_does_not(self) -> None:
+        """A one-sided difference at the antimeridian would draw a
+        meridian-long false scarp down the Pacific."""
+        grid = np.zeros((180, 360), dtype=np.float32)
+        grid[:, 0] = 1000.0
+        relief = ReliefMap.from_grid(grid)
+        # The step is seen from *both* sides of the seam.
+        assert float(relief.slope_east[90, 1]) < 0.0
+        assert float(relief.slope_east[90, -1]) > 0.0
+
+    def test_mismatched_grids_are_refused(self) -> None:
+        with pytest.raises(ValueError, match="must match the elevation grid"):
+            ReliefMap(np.zeros((4, 8)), np.zeros((4, 8)), np.zeros((2, 2)))
+
+
+@pytest.mark.skipif(
+    not (HAVE_TERRAIN and HAVE_IMAGERY), reason="reference archives not present"
+)
+class TestRendererWiring:
+    """What a rendered frame actually gets from the four data modules."""
+
+    @staticmethod
+    def imagery() -> Texture:
+        return default_blue_marble().texture(height=1024, month=1)
+
+    @staticmethod
+    def overhead(latitude: float, longitude: float, altitude: float) -> Camera:
+        point = geodetic_to_ecef(
+            np.deg2rad(latitude), np.deg2rad(longitude), 0.0, WGS84
+        )
+        up = local_vertical(np.deg2rad(latitude), np.deg2rad(longitude))
+        return Camera(
+            position=point + altitude * up,
+            target=point,
+            up=np.array([0.0, 0.0, 1.0]),
+            fov=np.deg2rad(30.0),
+            width=180,
+            height=180,
+        )
+
+    @staticmethod
+    def light(latitude: float, longitude: float, elevation_deg: float) -> np.ndarray:
+        up = local_vertical(np.deg2rad(latitude), np.deg2rad(longitude))
+        east = np.array([-np.sin(np.deg2rad(longitude)), np.cos(np.deg2rad(longitude)), 0.0])
+        angle = np.deg2rad(elevation_deg)
+        return np.asarray(np.sin(angle) * up + np.cos(angle) * east)
+
+    def test_relief_shading_needs_a_light_off_the_vertical(self) -> None:
+        """Measured, because it decides the animator's key-light default.
+
+        Shading works on the cosine against a tilted normal, so a light
+        along the local vertical meets terrain slope at second order and
+        does essentially nothing. This is why ``lighting="track"`` no
+        longer points the key straight up.
+        """
+        latitude, longitude = 28.0, 86.9  # Himalaya
+        camera = self.overhead(latitude, longitude, 400.0e3)
+        relief = default_terrain().relief()
+        texture = self.imagery()
+        contrast = {}
+        for elevation_deg in (90.0, 55.0):
+            sun = self.light(latitude, longitude, elevation_deg)
+            smooth, _ = render(
+                camera, texture, WGS84, sun=sun, atmosphere=0.0, specular=0.0
+            )
+            shaded, _ = render(
+                camera, texture, WGS84, sun=sun, relief=relief,
+                atmosphere=0.0, specular=0.0,
+            )
+            contrast[elevation_deg] = float(np.abs(shaded - smooth).max())
+        assert contrast[55.0] > 5.0 * contrast[90.0]
+        assert contrast[55.0] > 0.01
+
+    def test_relief_shading_does_nothing_over_the_ocean(self) -> None:
+        """Flat water has no slope, so the term must be identically zero
+        there — a shading model that tinted the sea would be decoration."""
+        latitude, longitude = 0.0, -140.0
+        camera = self.overhead(latitude, longitude, 400.0e3)
+        sun = self.light(latitude, longitude, 55.0)
+        texture = self.imagery()
+        smooth, _ = render(camera, texture, WGS84, sun=sun, atmosphere=0.0, specular=0.0)
+        shaded, _ = render(
+            camera, texture, WGS84, sun=sun, relief=default_terrain().relief(),
+            atmosphere=0.0, specular=0.0,
+        )
+        assert np.allclose(shaded, smooth, atol=1e-12)
+
+    def test_displacement_moves_the_ground_by_the_terrain_height(self) -> None:
+        """The depth buffer must shorten by the elevation under the ray.
+
+        Looking straight down, the distance to the ground is the camera's
+        height less the terrain's, so this is a direct comparison against
+        :meth:`Terrain.elevation` rather than against a picture.
+        """
+        latitude, longitude, height = 28.0, 86.9, 60.0e3
+        camera = self.overhead(latitude, longitude, height)
+        relief = default_terrain().relief()
+        sun = self.light(latitude, longitude, 55.0)
+        _, smooth = render(
+            camera, self.imagery(), WGS84, sun=sun, relief=relief,
+            atmosphere=0.0, specular=0.0,
+        )
+        _, moved = render(
+            camera, self.imagery(), WGS84, sun=sun, relief=relief, displace=True,
+            atmosphere=0.0, specular=0.0,
+        )
+        centre = (camera.height // 2, camera.width // 2)
+        lifted = float(smooth[centre] - moved[centre])
+        # Against the same coarse grid the march reads, not against the
+        # 7.5-arc-second archive: a 9.8 km cell does not carry a summit.
+        rows, cols = relief.shape
+        row = int((90.0 - latitude) / (180.0 / rows))
+        column = int((longitude + 180.0) / (360.0 / cols))
+        expected = float(relief.elevation[row, column])
+        assert lifted == pytest.approx(expected, rel=0.05, abs=100.0)
+        assert lifted > 4000.0, "the Himalaya must lift the ground kilometres"
+
+    def test_displacement_needs_a_relief_map(self) -> None:
+        with pytest.raises(ValueError, match="needs a relief map"):
+            render(
+                self.overhead(0.0, 0.0, 500.0e3), self.imagery(), WGS84, displace=True
+            )
+
+    def test_a_native_resolution_crop_composites_over_the_mosaic(self) -> None:
+        """The close-up path: the frame must change, and change *sharply*.
+
+        At a 20 km stand-off the global mosaic shows about one texel per
+        forty pixels, so the crop is not a refinement of the picture — it
+        is the difference between a colour field and a coastline.
+        """
+        latitude, longitude = 51.09, 59.84  # the bundled launch site
+        camera = self.overhead(latitude, longitude, 20.0e3)
+        mosaic = self.imagery()
+        crop = default_blue_marble().window(
+            (latitude - 0.5, latitude + 0.5), (longitude - 0.5, longitude + 0.5),
+            month=1, max_width=1024,
+        )
+        sun = self.light(latitude, longitude, 55.0)
+        coarse, _ = render(camera, mosaic, WGS84, sun=sun, atmosphere=0.0, specular=0.0)
+        fine, _ = render(
+            camera, [mosaic, crop], WGS84, sun=sun, atmosphere=0.0, specular=0.0
+        )
+        assert crop.ground_resolution < 0.1 * mosaic.ground_resolution
+        # Local contrast: the standard deviation of neighbouring-pixel
+        # differences, which is what "detail" means and what a smooth
+        # gradient does not have.
+        def texture_energy(image: np.ndarray) -> float:
+            return float(np.std(np.diff(image[..., 0], axis=1)))
+
+        assert texture_energy(fine) > 3.0 * texture_energy(coarse)
+
+    def test_outside_its_box_a_crop_changes_nothing(self) -> None:
+        """The composite is bounded by the crop's own footprint, so a
+        close-up over the pad cannot alter the far side of the planet."""
+        camera = self.overhead(-20.0, -100.0, 2.0e6)
+        mosaic = self.imagery()
+        crop = default_blue_marble().window((51.0, 51.5), (59.5, 60.0), month=1,
+                                            max_width=256)
+        sun = self.light(-20.0, -100.0, 55.0)
+        plain, _ = render(camera, mosaic, WGS84, sun=sun, atmosphere=0.0, specular=0.0)
+        stacked, _ = render(
+            camera, [mosaic, crop], WGS84, sun=sun, atmosphere=0.0, specular=0.0
+        )
+        assert np.array_equal(plain, stacked)
